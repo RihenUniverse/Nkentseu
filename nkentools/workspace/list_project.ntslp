@@ -1,0 +1,6 @@
+# list_project.ntslp
+# liste de tout les projects contenu dans le worspace actuelle
+
+. = ./
+AppBase = ./AppBase
+NativeActivity = ./NativeActivity

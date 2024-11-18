@@ -1,0 +1,78 @@
+apply plugin: 'com.android.application'
+
+android {
+  namespace '{1}'
+  compileSdkVersion {2}
+  ndkVersion '{3}'
+
+  defaultConfig {
+      applicationId = '{1}'
+      minSdkVersion {4}
+      targetSdkVersion {5}
+
+      externalNativeBuild {
+          ndkBuild {
+              arguments "MKA_CONFIG=${MKA_CONFIG}" // Configuration dynamique basée sur le type de build
+          }
+      }
+  }
+  
+  externalNativeBuild {
+      ndkBuild {
+          path '{10}' // Chemin vers votre fichier .mk
+      }
+  }
+
+  buildDir = project.findProperty('buildDir') ?: "$rootDir/build"
+
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_{6}
+    targetCompatibility JavaVersion.VERSION_{7}
+  }
+
+  applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            def apkPath = project.findProperty('apkPath') ?: "AppBase"
+            def apkName = project.findProperty('apkName') ?: "AppBase-1.0"
+            def variantSuffix = variant.buildType.name
+            //output.outputFileName = "${apkPath}/${apkName}-${variant.versionName}-${variantSuffix}.apk" // Nom de l'APK
+            output.outputFileName = "${apkName}-${variant.versionName}-${variantSuffix}.apk" // Nom de l'APK
+
+            // Ajouter une tâche pour copier l'APK dans le répertoire de destination
+            variant.assemble.doLast {
+                def buildDir = output.outputFile.parent  // Répertoire où l'APK est généré
+                def sourceApk = new File(buildDir, output.outputFileName)
+                def destinationDir = new File("$buildDir/$apkPath")
+
+                // Créer le répertoire de destination s'il n'existe pas
+                if (!destinationDir.exists()) {
+                    destinationDir.mkdirs()
+                }
+
+                // Copier l'APK
+                def destinationApk = new File(destinationDir, sourceApk.name)
+                project.copy {
+                    from sourceApk
+                    into destinationDir
+                }
+            }
+        }
+  }
+
+  buildTypes {
+    release {
+      minifyEnabled false
+      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+    }
+    debug {
+      minifyEnabled false
+      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+    }
+  }
+
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    {9}
+}

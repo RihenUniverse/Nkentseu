@@ -1,0 +1,35 @@
+<?xml version="{1}" encoding="{2}"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+  android:versionCode="{3}"
+  android:versionName="{4}"
+>
+  <application
+    android:allowBackup="{5}"
+    android:fullBackupContent="{6}"
+    android:hardwareAccelerated="true"
+    android:hasCode="false"
+    android:label="{7}"
+  >
+
+    <activity
+      android:name="android.app.NativeActivity"
+      android:configChanges="orientation|keyboardHidden"
+      android:label="{8}"
+      android:hardwareAccelerated="true"
+      android:exported="{9}">
+      <meta-data
+        android:name="android.app.lib_name"
+        android:value="{10}" />
+      <meta-data
+        android:name="android.app.func_name"
+        android:value="{11}" />
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+  <!--permissions-->
+  {12}
+  <!--/permissions-->
+</manifest>

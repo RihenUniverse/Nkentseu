@@ -1,0 +1,22 @@
+#.nkenclean
+# fichier et dossier qu'on veux supprimer lorsque la command clean est appeler
+
+*.sln 
+*.csproj 
+*.vbproj 
+*.vcxproj 
+*.fsproj 
+*.sqlproj 
+*.vcxproj.user 
+Makefile 
+*.vcxproj.filters 
+*.xcodeproj 
+*.xcworkspace 
+*.pbxproj 
+*.xcconfig 
+*.mk
+
+.vscode/
+.vs/
+[bB]uild/
+platforms/android/

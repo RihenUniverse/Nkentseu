@@ -1,0 +1,17 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:{1}'
+    }
+}
+
+plugins {
+    id 'com.android.application' version '{2}' apply false
+}
+
+task clean(type: Delete) {
+    delete rootProject.buildDir
+}
