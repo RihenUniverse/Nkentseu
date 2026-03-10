@@ -316,7 +316,7 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
     es.AddEventCallback<NkGamepadAxisEvent>(
         [&state](NkGamepadAxisEvent* ev) {
             float v = ev->GetValue();
-            if (std::fabs(v) < 0.12f) return; // dead-zone
+            if (math::NkFabs(v) < 0.12f) return; // dead-zone
 
             switch (ev->GetAxis()) {
                 case NkGamepadAxis::NK_GP_AXIS_LX:
