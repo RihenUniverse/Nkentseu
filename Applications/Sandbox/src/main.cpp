@@ -26,7 +26,8 @@
 #include <assert.h>
 #include <random>
 #include <cstdlib>
-#include "Mat4d.h" 
+#include "Mat4d.h"
+#include "Quat.h"
 #include "NKImage.h" 
 
 
@@ -95,7 +96,9 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
     Vec2d u, w, n;
     Vec3d i, j, k;
     Vec4d s, q;
+    Mat3d m1, m2, m3;
     Mat4d m, r, inv;
+    Quat q1, q2, q3;
 
 
     // TP1 : InspectFloat(float x)
@@ -423,6 +426,42 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
         assert(approxEq(outR.z, R2.z, 5.0));
     }
 
+
+
+    // TPs semaine 4
+
+
+    // TP1 : Quaternions complets 
+
+    // 1. Vérifier Rotate et FromAxis (avec Pi)
+    i = {1,0,0};
+    q1 = FromAxisAngle({0,1,0}, NK_PI_D / 2.0f);
+    j = Rotate(q1, i);
+    assert(std::fabs(j.x - 0.0) < kEps);
+    assert(std::fabs(j.y - 0.0) < kEps);
+    assert(std::fabs(j.z + 1.0) < kEps);
+
+    // 2. Aller-retour Quat => Mat3d => Quat
+    dist = std::uniform_real_distribution<double>(-1.0, 1.0);
+    for(int t = 0; t < 50; t++){
+        q1 = { dist(rng), dist(rng), dist(rng), dist(rng) };
+        q1 = q1.Normalized();
+
+        m1 = ToMat3(q1);
+        q2 = FromMat3(m1);
+        q2 = q2.Normalized();
+
+        assert(ApproxQuat(q1, q2, 1e-4f));
+    }
+
+    // 3.  Vérification: Quat x Quat.Inverse() = identité
+    for(int t = 0; t < 50; t++){
+        q1 = { dist(rng), dist(rng), dist(rng), dist(rng) };
+        q1 = q1.Normalized();
+        q2 = q1.Inverse();
+        q3 = q1 * q2;
+        assert(ApproxQuat(q3, Quat::Identity(), 1e-4f));
+    }
 
 
      
