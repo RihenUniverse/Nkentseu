@@ -254,7 +254,52 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
     static_assert(sizeof(Vec2d) == 16, "Vec2d must be 16 bytes"); // 20
 
 
+    // TP5 : Vec3d avec Gram-Schmidt
     
+    // 1 & 2. Cross Product
+    i = {1,0,0}, j = {0,1,0}, k = {0,0,1};
+    // règle main droite
+    assert(ApproxVec(Cross(i, j), k));               // 1
+    assert(ApproxVec(Cross(j, i), {0,0,-1}));        // 2
+    // base complète
+    assert(ApproxVec(Cross(j, k), i));               // 3
+    assert(ApproxVec(Cross(k, i), j));               // 4
+    // orthogonalité
+    assert(approxEq(Dot(Cross(i, j), i), 0));        // 5
+    assert(approxEq(Dot(Cross(i, j), j), 0));        // 6
+
+    // 2. Gram-Schmidt sur 10 triplets aléatoires 
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<double> dist(-10.0, 10.0);
+
+    for(int t = 0; t < 10; ++t) {
+        Vec3d a{dist(rng), dist(rng), dist(rng)};
+        Vec3d b{dist(rng), dist(rng), dist(rng)};
+        Vec3d c{dist(rng), dist(rng), dist(rng)};
+
+        // Gram-Schmidt
+        Vec3d ui = a.Normalized();
+        Vec3d vi = (b - Project(b, ui)).Normalized();
+        Vec3d wi = (c - Project(c, ui) - Project(c, vi)).Normalized();
+        // normes
+        assert(approxEq(ui.Norm(), 1.0));  // 7
+        assert(approxEq(vi.Norm(), 1.0));  // 8
+        assert(approxEq(wi.Norm(), 1.0));  // 9
+
+        // orthogonalité
+        assert(approxEq(Dot(ui, vi), 0.0));  // 10
+        assert(approxEq(Dot(ui, wi), 0.0));  // 11
+        assert(approxEq(Dot(vi, wi), 0.0));  // 12
+    }
+
+    // 3. Project et Reject
+    i = {3,4,0}, j = {1,0,0};
+    Vec3d prj = Project(i, j);
+    Vec3d rej = Reject(i, j);
+    assert(ApproxVec(prj + rej, i)); // 13
+
+
+
      
     // -------------------------------------------------------------------------
     // 5. Boucle principale
