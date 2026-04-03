@@ -26,6 +26,8 @@
 #include <assert.h>
 #include <random>
 #include <cstdlib>
+#include "Mat4d.h" 
+
 
 #ifndef NK_SANDBOX_RENDERER_API
 #define NK_SANDBOX_RENDERER_API nkentseu::NkRendererApi::NK_SOFTWARE
@@ -338,6 +340,38 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
     img.SavePPM("cube.ppm");
 
 
+    // TP7 : Mat4d et inverse
+    for(int t=0;t<10;t++) {
+        for(int i=0;i<4;i++)
+            for(int j=0;j<4;j++)
+                m(i, j) = dist(rng);
+        
+        // 1. M × Identity() == M
+        r = m * Mat4d::Identity();
+        assert(ApproxMat(r, m)); // 1–10
+
+        // 2. M × M⁻¹ == Identity()
+        if(Inverse(m, inv)) // skip singulière
+            assert(ApproxMat(m * inv, Mat4d::Identity(), 1e-10f)); // 11–20
+    }
+
+    // 3. Inverse d'une matrice singulière
+    m = Mat4d::Identity();
+    // rendre singulière (ligne dupliquée)
+    for(int j=0;j<4;j++)
+        m(1, j) = m(0, j);
+    assert(!Inverse(m, inv)); // 21
+
+    // 4. RotateAxis({0,1,0}, PI/2) × {1,0,0,1} == {0,0,-1,1} 
+    r = RotateAxis({0,1,0}, PI/2);
+    s = {1,0,0,1};
+    q = r * s;
+    assert(approxEq(q.x, 0.0));   // 22
+    assert(approxEq(q.y, 0.0));   // 23
+    assert(approxEq(q.z, -1.0));  // 24
+
+
+    
      
     // -------------------------------------------------------------------------
     // 5. Boucle principale
