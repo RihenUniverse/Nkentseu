@@ -208,6 +208,53 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
     assert(approxEq(s2, 100000.0f, 1e-1f)); // 33
 
 
+
+    // TP4 : Vec2d complet et implémentations
+
+    // 1. Dot product 
+    assert(Dot({1,0}, {0,1}) == 0.0);      // 1
+    assert(Dot({1,0}, {1,0}) == 1.0);      // 2
+    assert(Dot({3,4}, {3,4}) == 25.0);     // 3
+    assert(Dot({-1,0}, {1,0}) == -1.0);    // 4
+    assert(Dot({2,3}, {4,5}) == 23.0);     // 5
+    assert(Dot({0,0}, {5,7}) == 0.0);      // 6
+
+    // 2. CROSS2D 
+    assert(Cross2D({1,0}, {0,1}) == 1.0);   // 7
+    assert(Cross2D({0,1}, {1,0}) == -1.0);  // 8
+    assert(Cross2D({1,1}, {1,1}) == 0.0);   // 9
+    assert(Cross2D({2,0}, {0,2}) == 4.0);   // 10
+
+    // 3. NORMALISATION 
+    w = {3,4};
+    n = w.Normalized();
+    assert(std::fabs(n.Norm() - 1.0) < kEps);   // 11
+
+    // direction conservée
+    assert(std::fabs(n.x - 0.6) < kEps);    // 12
+    assert(std::fabs(n.y - 0.8) < kEps);    // 13
+
+    // vecteur unitaire reste inchangé
+    u = {1,0};
+    u = u.Normalized();
+    assert(std::fabs(u.x - 1.0) < kEps);   // 14
+
+    // 4. OPERATOR [] 
+    w = {10, 20};
+    assert(w[0] == 10.0);   // 15
+    assert(w[1] == 20.0);   // 16
+    w[0] = 30;
+    assert(w.x == 30.0);    // 17
+    w[1] = 40;
+    assert(w.y == 40.0);    // 18
+    u = {5, 6};
+    assert(u[0] == 5.0);    // 19
+
+    // 5. STATIC ASSERT 
+    static_assert(sizeof(Vec2d) == 16, "Vec2d must be 16 bytes"); // 20
+
+
+    
      
     // -------------------------------------------------------------------------
     // 5. Boucle principale
