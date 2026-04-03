@@ -464,6 +464,47 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
     }
 
 
+
+    // TP2 : Animation SLERP
+
+    // 1. Animation d'une rotation sur 60 frames via le rasteriseur
+    q1 = FromAxisAngle({0,1,0}, 0);
+    q2 = FromAxisAngle({0,1,0}, NK_PI_D);
+
+    for(int frame = 0; frame < 60; frame++){
+        double t = frame / 59.0;
+        Quat q = Slerp(q1, q2, t);
+        Mat4d R = FromRT(ToMat3(q), {0,0,0});
+
+        img = NkImage(width, height);
+        std::vector<Vec3d> screen;
+        for(auto v : cube){
+            Vec4d p = P * (V * (R * v));     // rotation + Vue + Projection
+            screen.push_back(ProjectToScreen(p, width, height));
+        }
+
+        for(auto [i,j] : edges)
+            img.DrawLine((int)screen[i].x, (int)screen[i].y, (int)screen[j].x, (int)screen[j].y, 255);
+        img.SavePPM("Slerp__frame_TP11_"+std::to_string(frame)+".ppm");
+    }
+
+    for(int frame = 0; frame < 60; frame++){
+        double t = frame / 59.0;
+        Quat q = Lerp(q1, q2, t);
+        Mat4d R = FromRT(ToMat3(q), {0,0,0});
+
+        img = NkImage(width, height);
+        std::vector<Vec3d> screen;
+        for(auto v : cube){
+            Vec4d p = P * (V * (R * v));     // rotation + Vue + Projection
+            screen.push_back(ProjectToScreen(p, width, height));
+        }
+
+        for(auto [i,j] : edges)
+            img.DrawLine((int)screen[i].x, (int)screen[i].y, (int)screen[j].x, (int)screen[j].y, 255);
+        img.SavePPM("Lerp__frame_TP11_"+std::to_string(frame)+".ppm");
+    }
+
      
     // -------------------------------------------------------------------------
     // 5. Boucle principale
