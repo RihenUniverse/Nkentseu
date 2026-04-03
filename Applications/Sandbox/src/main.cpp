@@ -255,7 +255,7 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
 
 
     // TP5 : Vec3d avec Gram-Schmidt
-    
+
     // 1 & 2. Cross Product
     i = {1,0,0}, j = {0,1,0}, k = {0,0,1};
     // règle main droite
@@ -298,6 +298,44 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
     Vec3d rej = Reject(i, j);
     assert(ApproxVec(prj + rej, i)); // 13
 
+
+
+     //  TP6: Vec4d et projection perspective simple
+    std::vector<Vec4d> cube = {
+        {-0.5,-0.5,-0.5,1}, {0.5,-0.5,-0.5,1},
+        {0.5, 0.5,-0.5,1}, {-0.5, 0.5,-0.5,1},
+        {-0.5,-0.5, 0.5,1}, {0.5,-0.5, 0.5,1},
+        {0.5, 0.5, 0.5,1}, {-0.5, 0.5, 0.5,1}
+    };
+    std::vector<Vec2d> proj;
+
+    // Position de la camera et projections
+    double z_cam = 2.0;
+    for(auto& p : cube){
+        p.z += z_cam;
+        proj.push_back(ProjectPoint(p));
+    }
+
+    // Dessin des coins dans Image
+    for(const auto& p : proj) {
+        int x = (int)p.x, y = (int)p.y;
+        // petit carré
+        for(int dx = -2; dx <= 2; dx++)
+            for(int dy = -2; dy <= 2; dy++)
+                img.SetPixel(x+dx, y+dy, 255, 0, 0);
+    }
+    
+    // Arêtes du cube
+    std::vector<std::pair<int,int>> edges = {
+        {0,1},{1,2},{2,3},{3,0}, // face arrière
+        {4,5},{5,6},{6,7},{7,4}, // face avant
+        {0,4},{1,5},{2,6},{3,7}  // connexions
+    };
+
+    // Dessin dans l'image
+    for(auto [i,j] : edges)
+        img.DrawLine((int)proj[i].x, (int)proj[i].y, (int)proj[j].x, (int)proj[j].y);
+    img.SavePPM("cube.ppm");
 
 
      
