@@ -123,6 +123,91 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
     // 4. Comparaison : Epsilon machine par boucle vs std::numeric_limits<float>::epsilon() 
     logger.Info("\nEpsilon Machine (loop) : {0}\nEpsilon Machine (std)  : {1}", epsilonMachine(), std::numeric_limits<float>::epsilon());
     
+
+    // TP3 : NkMath/Float.h
+
+    // 1. Tests isFiniteValid     
+    assert(!isFiniteValid(std::numeric_limits<float>::quiet_NaN())); // 1
+    assert(!isFiniteValid(std::numeric_limits<float>::infinity()));  // 2
+    assert(!isFiniteValid(-std::numeric_limits<float>::infinity())); // 3
+    assert(isFiniteValid(0.0f));                                     // 4
+    assert(isFiniteValid(1.0f));                                     // 5
+
+    // 2. Tests nearlyZero 
+    assert(nearlyZero(0.0f, 1e-6f));     // 6
+    assert(nearlyZero(1e-7f, 1e-6f));    // 7
+    assert(!nearlyZero(1e-5f, 1e-6f));   // 8
+
+    assert(nearlyZero(-1e-7f, 1e-6f));   // 9
+    assert(!nearlyZero(-1e-5f, 1e-6f));  // 10
+
+    assert(nearlyZero(1e-3f, 1e-2f));    // 11
+    assert(!nearlyZero(1e-2f, 1e-3f));   // 12
+
+    assert(nearlyZero(5e-8f, 1e-7f));    // 13
+
+    // 3. Tests approxEq 
+    assert(approxEq(1.0f, 1.0f, 1e-6f));           // 14
+    assert(approxEq(1.0f, 1.0000001f, 1e-5f));     // 15
+    assert(!approxEq(1.0f, 1.1f, 1e-3f));          // 16
+
+    assert(approxEq(0.0f, 1e-7f, 1e-6f));          // 17
+    assert(!approxEq(0.0f, 1e-4f, 1e-6f));         // 18
+
+    assert(approxEq(-1.0f, -1.000001f, 1e-5f));    // 19
+    assert(!approxEq(-1.0f, -1.1f, 1e-2f));        // 20
+
+    assert(approxEq(1000.0f, 1000.0001f, 1e-3f));  // 21
+    assert(approxEq(1000.0f, 1001.0f, 1e-3f));     // 22
+
+    assert(approxEq(1e-7f, 2e-7f, 1e-6f));         // 23
+
+    // 4. Tests kahanSum vs accumulate    
+    v = std::vector<float>(1000, 0.1f);
+    s1 = std::accumulate(v.begin(), v.end(), 0.0f);
+    s2 = kahanSum(v);
+    assert(std::fabs(s2 - 100.0f) < std::fabs(s1 - 100.0f)); // 24
+    
+    v = std::vector<float>(10000, 0.1f);
+    s1 = std::accumulate(v.begin(), v.end(), 0.0f);
+    s2 = kahanSum(v);
+    assert(std::fabs(s2 - 1000.0f) < std::fabs(s1 - 1000.0f)); // 25
+    
+    v = std::vector<float>({1e8f, 1.0f, -1e8f});
+    s1 = std::accumulate(v.begin(), v.end(), 0.0f);
+    s2 = kahanSum(v);
+    assert(std::fabs(s2 - 1.0f) <= std::fabs(s1 - 1.0f)); // 26
+
+    v = std::vector<float>({1.0f, 1e8f, -1e8f});
+    s1 = std::accumulate(v.begin(), v.end(), 0.0f);
+    s2 = kahanSum(v);
+    assert(std::fabs(s2 - 1.0f) <= std::fabs(s1 - 1.0f)); // 27
+    
+    v = std::vector<float>(100000, 0.01f);
+    s2 = kahanSum(v);
+    assert(approxEq(s2, 1000.0f, 1e-2f)); // 28
+
+    v = std::vector<float>(100000, 1e-5f);
+    s2 = kahanSum(v);
+    assert(approxEq(s2, 1.0f, 1e-3f)); // 29
+    
+    v = std::vector<float>({0.1f, 0.2f, 0.3f});
+    s2 = kahanSum(v);
+    assert(approxEq(s2, 0.6f, 1e-6f)); // 30
+
+    v = std::vector<float>(50000, 0.2f);
+    s2 = kahanSum(v);
+    assert(approxEq(s2, 10000.0f, 1e-2f)); // 31
+    
+    v = std::vector<float>({1e7f, 1.0f, 1.0f, -1e7f});
+    s2 = kahanSum(v);
+    assert(approxEq(s2, 2.0f, 1e-3f)); // 32
+
+    v = std::vector<float>(1000000, 0.1f);
+    s2 = kahanSum(v);
+    assert(approxEq(s2, 100000.0f, 1e-1f)); // 33
+
+
      
     // -------------------------------------------------------------------------
     // 5. Boucle principale
