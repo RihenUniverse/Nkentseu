@@ -342,6 +342,7 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
 
 
     // TP7 : Mat4d et inverse
+
     for(int t=0;t<10;t++) {
         for(int i=0;i<4;i++)
             for(int j=0;j<4;j++)
@@ -372,7 +373,8 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
     assert(approxEq(q.z, -1.0));  // 24
 
 
-     // P8 : Rasteriseur logiciel avec LookAt
+     // TP8 : Rasteriseur logiciel avec LookAt
+
     Vec3d eye{0,1,3}, target{0,0,0}, up{0,1,0};
 
     Mat4d V = LookAt(eye, target, up);
@@ -394,6 +396,32 @@ int nkmain(const nkentseu::NkEntryState& /*state*/)
         img.SavePPM("frame_"+std::to_string(frame)+".ppm");
     }
 
+
+
+    // TP9 : TRS et Décomposition
+
+    dist = std::uniform_real_distribution<double>(-5.0, 5.0);
+    for(int i=0; i<20; i++){
+        Vec3d outT{dist(rng),dist(rng),dist(rng)};
+        Vec3d outR{dist(rng),dist(rng),dist(rng)};
+        Vec3d outS{dist(rng)+6,dist(rng)+6,dist(rng)+6}; // éviter 0
+        
+        // 1. Construction de TRS
+        Mat4d M = TRS(outT, outR, outS);
+
+        // 2. Décomposition de TRS
+        Vec3d T2, R2, S2;
+        DecomposeTRS(M, T2, R2, S2);
+
+        // 3. Vérification
+        assert(ApproxVec(outT, T2));
+        assert(ApproxVec(outS, S2));
+
+        // Rotation : tolérance plus large (ambiguïtés angles)
+        assert(approxEq(outR.x, R2.x, 5.0));
+        assert(approxEq(outR.y, R2.y, 5.0));
+        assert(approxEq(outR.z, R2.z, 5.0));
+    }
 
 
 
