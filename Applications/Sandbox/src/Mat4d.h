@@ -1,5 +1,6 @@
 #pragma once 
 #include "Vec4d.h" 
+#include "Mat3d.h"
 #include <array> 
  
 namespace NkMath { 
