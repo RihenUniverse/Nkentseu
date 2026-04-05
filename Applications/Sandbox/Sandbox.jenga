@@ -51,6 +51,7 @@ def configure_sandbox_app(project_name: str, source_file: str, app_id_suffix: st
 
         includedirs([
             "src",
+            "include",
             "%{wks.location}/Externals",
             "%{NKWindow.location}/src",
             "%{NKRenderer.location}/src",
@@ -230,12 +231,4 @@ def configure_sandbox_app(project_name: str, source_file: str, app_id_suffix: st
                         "uuid", "ole32", "dinput8", "dxguid"
                     ])
 
-configure_sandbox_app("Sandbox", "src/main.cpp", "sandbox")
-configure_sandbox_app("SandboxDBase", "src/main1.cpp", "sandbox.base")
-configure_sandbox_app("SandboxDiagnostic", "src/main2.cpp", "sandbox.diagnostic")
-configure_sandbox_app("SandboxPatternDispatcher", "src/main3.cpp", "sandbox.pattern.dispatcher")
-configure_sandbox_app("SandboxPatternPolling", "src/main4.cpp", "sandbox.pattern.polling")
-configure_sandbox_app("SandboxPatternCallback", "src/main5.cpp", "sandbox.pattern.callback")
-configure_sandbox_app("SandboxMultiWindow", "src/main6.cpp", "sandbox.multiwindow")
-configure_sandbox_app("SandboxStressRingBuffer", "src/main7.cpp", "sandbox.stress.ringbuffer")
-configure_sandbox_app("SandboxGamepadPS3", "src/main8.cpp", "sandbox.gamepad.ps3")
+configure_sandbox_app("Sandbox", "src/**.cpp", "sandbox")
