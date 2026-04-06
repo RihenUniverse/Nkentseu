@@ -89,5 +89,6 @@
         "deque": "cpp",
         "__split_buffer": "cpp",
         "__config": "cpp"
-    }
+    },
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }

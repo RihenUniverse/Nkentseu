@@ -1,0 +1,201 @@
+\documentclass[12pt,a4paper]{report}
+
+% =========================
+% PACKAGES
+% =========================
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{geometry}
+\usepackage{setspace}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{longtable}
+
+% =========================
+% PAGE SETUP
+% =========================
+\geometry{left=3cm,right=3cm,top=2.5cm,bottom=2.5cm}
+\onehalfspacing
+\hypersetup{colorlinks=true,linkcolor=black,urlcolor=blue}
+
+\begin{document}
+
+% =========================
+% PAGE DE GARDE
+% =========================
+\begin{titlepage}
+\begin{center}
+\vspace*{5cm}
+
+
+\textbf{\Large École Nationale Supérieure Polytechnique de Yaoundé}\\
+Département de Génie Informatique\\[1cm]
+
+
+\textbf{ANI-IA 4068: Coder pour la VR, AR, XR II}\\[1cm]
+
+\rule{\textwidth}{0.5pt}\\
+{\LARGE \textbf{RAPPORT DES TPs DES SEMAINES 1 - 4}}\\
+\rule{\textwidth}{0.5pt}\\[2cm]
+
+\end{center}
+\begin{center}
+\begin{flushleft}
+
+\text{\textbf{Nom :} MEZAGO Wilfried Aymar}\\
+\text{\textbf{Matricule :} 22P001}\\
+\text{\textbf{Spécialité :} AIA 4}\\[1cm]
+\end{flushleft}
+
+\begin{flushleft}
+\textbf{Sous la supervision de :}\\
+Ing TEUGUIA TADJUIDJE Rodolf Sédéris
+\end{flushleft}
+
+\vfill
+Année académique 2025--2026
+\end{center}
+\end{titlepage}
+
+% =========================
+% TABLE DES MATIERES
+% =========================
+\pagenumbering{roman}
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+
+% =========================
+% INTRODUCTION
+% =========================
+\chapter*{Introduction}
+\addcontentsline{toc}{chapter}{Introduction}
+
+L'objectif de ces quatre premières semaines était de poser les bases numériques et mathématiques indispensables au pipeline complet de réalité augmentée.
+Il était donc question ici de fournir des éléments de réponse à travers des tests et des implémentations.
+
+
+% =========================
+% =========================
+% Semaine 1
+% =========================
+\chapter{SEMAINE 1: IEEE 754 & Arithmétique Flottante}
+
+L'objectif de cette semaine était d'apprendre la représentation et la manipulation des nombres flottants : coordonnées 3D, matrices de projection, résidus de calibration, valeurs de pixels avec \textbf{IEEE 754}.
+
+% -------------------------
+\section{La fonction InspectFloat}
+
+Il était question dans ce TP d'implémenter la fonction inspectFloat(float x) qui affiche les 3 champs (signe, exposant, mantisse) en binaire sur la console. Les réslutats obtenus ont permis d'aboutir aux réponses suivantes:
+
+\begin{enumerate}
+    \item \textbf{Pourquoi 0.1f n'est-il pas exact ? } Le resultat obtenu laisse remarquer que la mantisse présente un motif périodique infini (1100). Comme la mémoire d'un float est limitée à 23 bits pour la mantisse, ce motif est tronqué. La valeur réelle stockée n'est donc pas exactement $0.1$, mais une approximation.
+    \item Après implémentation, nous avons bien \textbf{Signe :} $0$ , \textbf{Exposant brut: } $01111111$ (soit 127 en décimal), et \textbf{Mantisse :} $00000000000000000000000$. Donc 1.0f a une représentation exacte, sans perte de précision.
+    \item Les résultats permettent d'itentifier \textbf{+Inf} en $0$ - $11111111$ - $00000000000000000000000$ .
+    \item De même, pour \textbf{nan} on obtient $1$ - $11111111$ - $10000000000000000000000$ .
+    \item Avec \textbf{-0.0f} on a $1$ - $00000000$ - $00000000000000000000000$ et \textbf{0.0f} nous donne $0$ - $00000000$ - $00000000000000000000000$.
+    \item L'affichage de \textbf{1.17549e-38} nous donne $0$ - $00000001$ - $00000000000000000000000$.
+\end{enumerate}
+
+% -------------------------
+\section{Kahan et Welford}
+
+Il était question ici de démontrez empiriquement les problèmes de précision.
+
+\begin{enumerate}
+    \item La comparaison d'une boucle d'accumulation classique avec l'algorithme de Kahan revèle que cette dernière donne un resultat bien plus précis.
+    \item La mise en évidence d'une formule de variance naive avec celle de Welford montre que la méthode de Welford reste stable et juste.
+    \item Les deux valeurs de Epsilon machine sont exactement sont identique soit 1.19209e-07 
+\end{enumerate}
+
+% =========================
+% SEMAINE 2
+% =========================
+\chapter{SEMAINE 2 : Géométrie Vectorielle ($Vec2d$, $Vec3d$, $Vec4d$)}
+
+L'objectif de cette semaine était la compréhension des vecteurs qui sont la base du pipeline AR.
+
+% -------------------------
+\section{Vec2d complet}
+
+Ici nous avons procédé à l'implémentation de Vec2d , son produit scalaire, son produit vectoriel simulé en 2D.
+
+\text{Produit scalaire: } $$\vec{u} \cdot \vec{v} = u_x v_x + u_y v_y + u_z v_z = \|\vec{u}\| \|\vec{v}\| \cos(\theta)$$
+
+% -------------------------
+\section{Vec3d avec Gram-Schmidt}
+
+Nous avons implémenté les calculs de directions et de normales, ainsi que le procédé de Gram-Schmidt capable de reconstruire une base orthonormée propre à partir de 3 vecteurs quelconques non coplanaires.
+
+\text{Projection d'un vecteur $\vec{v}$ sur $\vec{u}$ (Gram-Schmidt) :   } $$\text{proj}_{\vec{u}}(\vec{v}) = \frac{\vec{u} \cdot \vec{v}}{\|\vec{u}\|^2} \vec{u}$$
+
+
+% -------------------------
+\section{Vec4d et projection perspective simple}
+
+Nous avos implémenté des vecteurs à 4 composantes en différenciant les points (poids $w=1$) et les directions ($w=0$) afin de séparer correctement l'impact des translations lors des projections.
+
+
+% =========================
+% =========================
+% SEMAINE 3
+% =========================
+\chapter{SEMAINE 3 : Matrices et Visualisation}
+
+Cette semaine avait pour objectif la compréhension des matrices et leur visualisation.
+
+% -------------------------
+\section{Mat4d et inverse}
+
+On a implémenté l'inversion d'une matrice $4*4$ construite par l'algorithme de Gauss-Jordan avec recherche de pivot partiel pour préserver la stabilité numérique.
+\text{On vérifiait l'intégrité du calcul en s'assurant que :   } $$M \times M^{-1} = I$$ \quad (Où $I$ est la matrice identité).
+
+
+% -------------------------
+\section{Projections et Rendu LookAt}
+
+Nous avons ici procédé par :
+\begin{itemize}
+    \item l'élaboration de matrices de translation, de mise à l'échelle et de rotation autour d'un axe arbitraire (formule de Rodrigues)   $$\mathbf{R} = \mathbf{I} + (\sin \theta)\mathbf{K} + (1 - \cos \theta)\mathbf{K}^2$$  \quad (Où $\mathbf{K}$ est la matrice antisymétrique du produit vectoriel de l'axe).
+    \item Fusion des transformations dans l'ordre strict TRS
+    \item Implémentation de la fonction LookAt simulant le positionnement d'un observateur et d'une matrice de projection perspective gérant le découpage géométrique et export du rendu filaire d'un cube dans un fichier d'image portable (PPM puis conversion en png).
+\end{itemize}
+
+
+% =========================
+% =========================
+% SEMAINE 4
+% =========================
+\chapter{SEMAINE 4 : Rotations et Quaternions ($Quat$)}
+
+Cette semaine a pour objectif de montrer le rôle crucial que jouent les Quaternions dans le pipeline AR tout en mettant le problème majeur qu'ils résolvent.
+
+% -------------------------
+\section{Quaternions complets}
+
+Nous avons implémenté et vérifié des fonctions de création de quaternions à partir d'un axe et d'un angle ($FromAxisAngle$), ainsi que de la rotation d'un vecteur 3D par un quaternion unitaire ($Rotate$), montrant qu'une rotation de $\pi/2$ d'un vecteur initialement placé sur l'axe X autour de l'axe Y renvoie fidèlement un vecteur dirigé vers l'axe -Z (à un epsilon près). Nous avons également réalisé des conversions automatiques entre quaternions et matrices de rotation $3\times 3$ à l'aide de 50 générations de quaternions aléatoires normalisés.
+
+% -------------------------
+\section{Animation SLERP}
+
+Ici, nous avons effectué un calcul itératif et rendu d'une rotation de cube sur 60 frames reliant une orientation nulle à un demi-tour ($\pi$) autour de l'axe Y selon la formule $$\text{SLERP}(q_1, q_2, t) = \frac{\sin((1-t)\theta)}{\sin \theta}q_1 + \frac{\sin(t\theta)}{\sin \theta}q_2$$. Résultat, le code a produit une séquence d'images PPM numérotées décrivant un mouvement à vitesse angulaire parfaitement constante, sans subir le blocage de cardan (Gimbal Lock) des angles d'Euler.
+En comparaison avec une série parallèle de 60 frames d'animation en utilisant l'interpolation linéaire classique des composantes des quaternions \textbf{LERP} il en est ressorti que bien que les images s'exportent de la même façon, la trajectoire linéaire ne préserve pas naturellement la vitesse angulaire (accélération puis décélération au centre de l'arc de cercle), mettant en valeur la supériorité esthétique et cinématique du SLERP pour l'interpolation d'orientations.
+
+Les images se trouvent au chemin: $.\Nkentseu\Images$ dans les deux formats.
+
+% =========================
+% CONCLUSION
+% =========================
+\chapter*{Conclusion}
+\addcontentsline{toc}{chapter}{Conclusion}
+
+Ce travail a permis à la compréhension de la précision numérique, de l'algèbre géométrique dans l'espace, de la projection et la simulation de caméra et de la fluidité cinématique et l'évitement du "Gimbal Lock", qui constituent une base solide pour la suite de cours.
+
+\end{document}
