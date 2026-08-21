@@ -1450,6 +1450,7 @@ Preuve : `Applications/NkMatGraphCheck` — **application** console, **35 cas, 0
 | prototypes de nœuds | ✅ 5 | Principled · Diffuse · Emission · **Mix Shader** · Material Output |
 | validation de domaine | ✅ | zéro sortie · sorties multiples · sortie non reliée · cycle |
 | **compilateur → NkSL** | ✅ v1 | `Materials/Graph/NkMatGraphCompile.h` |
+| **preuve de RENDU sur GPU** | ✅ | `Applications/NkMatGraphDemo` — DX11 headless, 7 cas, 4 mutations rouges |
 | masque de couche par **texture** | ✅ | 4 canaux, binding 9, `SetLayerV1MaskMap()` |
 | nœuds Texture / ColorRamp / Math / Mapping | ❌ | débloqués : le cœur porte enfin des paramètres |
 | canevas d'édition | ❌ | couche 2, `NKEditorKit`, partagé — pas ce chantier |
@@ -1474,6 +1475,59 @@ celle de Blender ; seule son exécution diffère.
 
 **3. Une entrée ni câblée ni renseignée donne le NOIR.** Le blanc ferait passer un
 matériau non fini pour un matériau clair. Le neutre doit **se voir**.
+
+#### La preuve de rendu — et pourquoi elle ne regarde **pas** l'image
+
+`NkMatGraphDemo` (2026-08-22) : device **DX11 headless** (pas de HWND, donc pas
+de swapchain), `Tools/Offscreen` **réutilisé tel quel** — aucune ligne de
+`NkOffscreenTarget` modifiée —, lecture par `ReadbackPixels`, jamais par
+`Capture(path)`.
+
+⚠️ **Il ne compare aucune image, et c'est délibéré.** Le même jour, en vérifiant
+qu'un témoin par signature d'image saurait attraper une erreur de binding, on a
+écrit volontairement un descripteur sur un binding absent du layout : **aucune
+erreur, aucun journal, cinq signatures identiques**. *Une ressource qui n'arrive
+pas ne change pas l'image tant que personne ne la lit.* Un témoin par capture est
+donc structurellement aveugle à toute une classe de défauts.
+
+**Ce qu'on mesure à la place : des écarts entre canaux d'un même pixel**, dont la
+valeur attendue se calcule **depuis le graphe**, sans rien savoir du modèle
+d'éclairage. Avec un nœud `Emission`, le graphe impose `albedo = 0` et
+`metallic = 0`, donc `diffuse = 0` et `specColor = vec3(1)` : **tout ce qui n'est
+pas l'émission est achromatique**. La soustraction de deux canaux élimine ce
+terme gris inconnu ; ce qui reste est exactement ce que le graphe a déclaré.
+
+Rendu en RGBA8 **UNORM** (linéaire, pas sRGB) pour que l'attendu reste un entier
+exact. Résultats mesurés :
+
+| graphe | pixel central | attendu, calculé depuis le graphe | mesuré |
+|---|---|---|---|
+| Emission rouge `128/255` | (180, 52, 52) | V == B, écart R−V = **128** | exact |
+| Emission verte `128/255` | (52, 180, 52) | R == B, écart V−R = **128** | exact |
+| `Mix Shader(rouge, verte, 0)` | (180, 52, 52) | identique au rouge seul, 3 canaux | exact |
+| `Mix Shader(rouge, verte, 1)` | (52, 180, 52) | identique au vert seul | exact |
+| `Mix Shader(rouge, verte, 0,5)` | (116, 116, 52) | R == V, écarts = **64** = la moitié | exact |
+
+Le plancher achromatique vaut **52** dans les cinq rendus — c'est ce qui autorise
+à les comparer entre eux, et c'est vérifié par un cas à part.
+
+**Deux cas existent uniquement pour empêcher un faux vert** : le fond
+d'effacement est **magenta**, une couleur que ces graphes ne peuvent pas
+produire, de sorte qu'un tracé qui n'aurait pas eu lieu se voie au lieu de se
+confondre avec du noir ; et le plancher gris est comparé entre rendus, faute de
+quoi toutes les comparaisons croisées seraient sans valeur.
+
+⚠️ **Deux pièges payés en chemin, qui reserviront** :
+- le générateur HLSL **déduit la sémantique d'un attribut de son NOM de
+  variable** (`NkSLCodeGenHLSLStructs.cpp`) : `aPos` → `POSITION`, mais `aColor`
+  et `aUV` ne figurent dans aucune entrée et retombent sur `TEXCOORD<location>`.
+  Le layout C++ cesse alors de correspondre au shader **sans le moindre
+  message**. Le banc n'utilise donc qu'un seul attribut, dont le nom est dans la
+  table, et synthétise les autres varyings dans le vertex.
+- `EndCapture` est **obligatoire** avant `ReadbackPixels` : le readback suppose la
+  texture en `SHADER_READ`, état que seule cette fermeture rétablit. Écrire la
+  passe à la main laisse la texture dans le mauvais état et le readback lit du
+  vide **sans se plaindre**.
 
 #### ⚠️ Ce qui reste à savoir avant de continuer
 
