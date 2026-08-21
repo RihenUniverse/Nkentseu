@@ -45,6 +45,44 @@ namespace nkentseu {
 				s.Append(b);
 			}
 
+			// ⚠️ FORMATEUR SEPARE POUR LES VALEURS, et la raison est mesurable :
+			// `%.6f` PERD de l'information. Un tiers s'ecrit « 0.333333 » et se
+			// relit 0.333333f, qui n'est pas le flottant de depart — l'egalite
+			// exacte de `NkGraphValue::Equals` echouerait alors sur un
+			// aller-retour pourtant correct. `%.9g` est le nombre de chiffres
+			// significatifs qui garantit qu'un `float` traverse texte -> binaire
+			// sans changer d'un bit.
+			//
+			// Les positions `x, y` gardent `%.6f` : c'est une dette anterieure a
+			// ce fichier-ci, elle n'a jamais gene (un pixel de canevas ne se
+			// compare pas au bit pres) et la changer reecrirait tous les fichiers
+			// existants sans rien corriger de reel.
+			inline void PutValF32(NkString &s, float32 v) {
+				char b[40];
+				snprintf(b, sizeof(b), "%.9g", (double)v);
+				s.Append(b);
+			}
+
+			// Ecrit la charge utile commune a `def` et `prop` :
+			//     <idType> <nbReels> <r0> ... [texte]
+			// Le texte vient EN DERNIER et occupe le reste de la ligne — meme
+			// convention que les libelles, pour la meme raison : aucun
+			// echappement a mal gerer. Il n'est ecrit que s'il n'est pas vide,
+			// sinon la ligne trainerait une espace finale.
+			inline void PutValue(NkString &s, const NkGraphValue &v) {
+				PutU32(s, v.type);
+				s.Append(' ');
+				PutU32(s, (uint32)v.numbers.Size());
+				for (uint32 i = 0; i < (uint32)v.numbers.Size(); ++i) {
+					s.Append(' ');
+					PutValF32(s, v.numbers[i]);
+				}
+				if (v.text.Size() > 0) {
+					s.Append(' ');
+					s.Append(v.text);
+				}
+			}
+
 			// Avance jusqu'au prochain jeton, renvoie sa longueur. `p` pointe dessus.
 			inline const char *NextToken(const char *p, uint32 &len) {
 				while (*p == ' ' || *p == '\t')
@@ -100,6 +138,22 @@ namespace nkentseu {
 				out = NkString("");
 				while (*p && *p != '\n' && *p != '\r')
 					out.Append(*p++);
+			}
+
+			// Miroir exact de PutValue. Le texte prend le reste de la ligne.
+			inline void TakeValue(const char *&p, NkGraphValue &v) {
+				v.Clear();
+				v.type = (NkTypeId)TokenU32(p);
+				const uint32 n = TokenU32(p);
+				// Borne DURE. Le compte vient du FICHIER : un fichier corrompu
+				// annoncant quatre milliards de reels ferait exploser la memoire avant
+				// que la moindre validation n'ait la parole. On borne donc a la LECTURE,
+				// la ou le nombre entre — valider apres serait deja trop tard.
+				const uint32 kMax = 4096u;
+				const uint32 count = n < kMax ? n : kMax;
+				for (uint32 i = 0; i < count; ++i)
+					v.numbers.PushBack(TokenF32(p));
+				RestOfLine(p, v.text);
 			}
 
 			inline const char *NextLine(const char *p) {
@@ -175,6 +229,26 @@ namespace nkentseu {
 					out.Append(n.subgraph);
 					out.Append('\n');
 				}
+				// Les proprietes suivent leur noeud, AVANT ses prises, et dans leur
+				// ordre d'insertion : cet ordre est ce qui rend l'aller-retour
+				// reproductible au caractere pres.
+				for (uint32 k = 0; k < (uint32)n.props.Size(); ++k) {
+					const NkGraphProp &pr = n.props[k];
+					// Une valeur JAMAIS RENSEIGNEE n'ecrit AUCUNE ligne. C'est ce qui evite
+					// le defaut paye par l'agent NkUIDesign dans la nuit du 21 au 22/08 :
+					// un ecrivain qui emet quand meme sa ligne ecrirait un type 0 et zero
+					// reel, et la relecture rendrait une valeur « renseignee a vide » —
+					// indiscernable a l'oeil, differente au sens, et SANS erreur.
+					if (!pr.value.IsSet())
+						continue;
+					out.Append("prop ");
+					detail::PutU32(out, n.id);
+					out.Append(' ');
+					out.Append(pr.name);
+					out.Append(' ');
+					detail::PutValue(out, pr.value);
+					out.Append('\n');
+				}
 				// Les sockets suivent leur noeud, dans l'ordre : cet ordre EST leur
 				// index, et les liens s'y referent.
 				for (uint32 k = 0; k < (uint32)n.sockets.Size(); ++k) {
@@ -186,6 +260,18 @@ namespace nkentseu {
 					out.Append(' ');
 					out.Append(s.name);
 					out.Append('\n');
+					// Le defaut suit SA prise et la designe par son INDEX — le meme index
+					// que les liens emploient, donc la meme regle : il vaut l'ordre
+					// d'ecriture des prises, et rien d'autre.
+					if (s.defaultValue.IsSet()) {
+						out.Append("def ");
+						detail::PutU32(out, n.id);
+						out.Append(' ');
+						detail::PutU32(out, k);
+						out.Append(' ');
+						detail::PutValue(out, s.defaultValue);
+						out.Append('\n');
+					}
 				}
 			}
 
@@ -260,6 +346,31 @@ namespace nkentseu {
 					NkNode *n = Find(nid);
 					if (n)
 						n->sockets.PushBack(s);
+				} else if (detail::GraphStrEq(kw, "prop")) {
+					const uint32 nid = detail::TokenU32(p);
+					NkString name;
+					detail::TokenStr(p, name);
+					NkGraphValue v;
+					detail::TakeValue(p, v);
+					NkNode *n = Find(nid);
+					if (n && name.Size() > 0) {
+						NkGraphProp pr;
+						pr.name = name;
+						pr.value = v;
+						n->props.PushBack(pr);
+					}
+				} else if (detail::GraphStrEq(kw, "def")) {
+					const uint32 nid = detail::TokenU32(p);
+					const uint32 sidx = detail::TokenU32(p);
+					NkGraphValue v;
+					detail::TakeValue(p, v);
+					NkNode *n = Find(nid);
+					// HORS BORNES : ON LAISSE TOMBER, ON NE RABAT PAS. Rabattre l'index sur
+					// la derniere prise — ou sur zero — poserait la valeur sur une prise QUI
+					// N'EST PAS LA SIENNE : le graphe paraitrait sain et calculerait autre
+					// chose. Une valeur perdue finit par se voir ; une valeur DEPLACEE, non.
+					if (n && sidx < (uint32)n->sockets.Size())
+						n->sockets[sidx].defaultValue = v;
 				} else if (detail::GraphStrEq(kw, "lien")) {
 					NkLink l;
 					l.id = detail::TokenU32(p);

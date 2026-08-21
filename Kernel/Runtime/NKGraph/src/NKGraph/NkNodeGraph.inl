@@ -332,6 +332,219 @@ namespace nkentseu {
 			return !TopoSort(tmp);
 		}
 
+		// ── VALEURS ─────────────────────────────────────────────────────────────
+		inline bool NkGraphValue::Equals(const NkGraphValue &o) const {
+			if (type != o.type)
+				return false;
+			if (numbers.Size() != o.numbers.Size())
+				return false;
+			for (uint32 i = 0; i < (uint32)numbers.Size(); ++i)
+				if (numbers[i] != o.numbers[i])
+					return false;
+			return text == o.text;
+		}
+
+		inline NkGraphValue NkValueReal(NkTypeId t, float32 v) {
+			NkGraphValue g;
+			g.type = t;
+			g.numbers.PushBack(v);
+			return g;
+		}
+
+		inline NkGraphValue NkValueVec(NkTypeId t, const float32 *v, uint32 n) {
+			NkGraphValue g;
+			g.type = t;
+			for (uint32 i = 0; i < n && v; ++i)
+				g.numbers.PushBack(v[i]);
+			return g;
+		}
+
+		inline NkGraphValue NkValueText(NkTypeId t, const char *s) {
+			NkGraphValue g;
+			g.type = t;
+			g.text = NkString(s ? s : "");
+			return g;
+		}
+
+		inline bool NkNodeGraph::SetSocketDefault(NkNodeId id, const char *socket, NkSocketDir dir,
+												  const NkGraphValue &v) {
+			NkNode *n = Find(id);
+			if (!n)
+				return false;
+			const int32 i = n->FindSocket(socket, dir);
+			if (i < 0)
+				return false;
+			n->sockets[(uint32)i].defaultValue = v;
+			return true;
+		}
+
+		inline const NkGraphValue *NkNodeGraph::SocketDefault(NkNodeId id, const char *socket,
+															  NkSocketDir dir) const {
+			const NkNode *n = Find(id);
+			if (!n)
+				return nullptr;
+			const int32 i = n->FindSocket(socket, dir);
+			if (i < 0)
+				return nullptr;
+			return &n->sockets[(uint32)i].defaultValue;
+		}
+
+		inline bool NkNodeGraph::SetProp(NkNodeId id, const char *name, const NkGraphValue &v) {
+			NkNode *n = Find(id);
+			if (!n || !name || !*name)
+				return false;
+			for (uint32 i = 0; i < (uint32)n->props.Size(); ++i)
+				if (detail::GraphStrEq(n->props[i].name, name)) {
+					n->props[i].value = v; // remplace, comme une entree remplace sa source
+					return true;
+				}
+			NkGraphProp pr;
+			pr.name = NkString(name);
+			pr.value = v;
+			n->props.PushBack(pr);
+			return true;
+		}
+
+		inline const NkGraphValue *NkNodeGraph::FindProp(NkNodeId id, const char *name) const {
+			const NkNode *n = Find(id);
+			if (!n)
+				return nullptr;
+			for (uint32 i = 0; i < (uint32)n->props.Size(); ++i)
+				if (detail::GraphStrEq(n->props[i].name, name))
+					return &n->props[i].value;
+			return nullptr;
+		}
+
+		inline bool NkNodeGraph::RemoveProp(NkNodeId id, const char *name) {
+			NkNode *n = Find(id);
+			if (!n)
+				return false;
+			for (uint32 i = 0; i < (uint32)n->props.Size(); ++i)
+				if (detail::GraphStrEq(n->props[i].name, name)) {
+					// Retrait par decalage : l'ORDRE des proprietes est ce qui rend
+					// l'aller-retour de fichier reproductible. Un retrait par
+					// permutation avec la derniere ferait varier le texte ecrit
+					// sans que rien n'ait change pour l'utilisateur.
+					for (uint32 k = i + 1; k < (uint32)n->props.Size(); ++k)
+						n->props[k - 1] = n->props[k];
+					n->props.PopBack();
+					return true;
+				}
+			return false;
+		}
+
+		inline uint32 NkNodeGraph::PropCount(NkNodeId id) const {
+			const NkNode *n = Find(id);
+			return n ? (uint32)n->props.Size() : 0u;
+		}
+
+		// ── VALIDATION ──────────────────────────────────────────────────────────
+		inline const char *NkGraphIssueName(NkGraphIssue i) {
+			switch (i) {
+				case NkGraphIssue::Ok:
+					return "ok";
+				case NkGraphIssue::LinkUnknownNode:
+					return "lien-noeud-inconnu";
+				case NkGraphIssue::LinkSocketOutOfRange:
+					return "lien-socket-hors-bornes";
+				case NkGraphIssue::LinkDirection:
+					return "lien-sens-invalide";
+				case NkGraphIssue::LinkTypeMismatch:
+					return "lien-type-incompatible";
+				case NkGraphIssue::LinkDuplicateTarget:
+					return "lien-entree-doublee";
+				case NkGraphIssue::Cycle:
+					return "cycle";
+				case NkGraphIssue::SocketUnknownType:
+					return "socket-type-inconnu";
+				case NkGraphIssue::DefaultTypeMismatch:
+					return "defaut-type-different";
+				case NkGraphIssue::PropUnknownType:
+					return "propriete-type-inconnu";
+			}
+			return "?";
+		}
+
+		inline uint32 NkNodeGraph::Validate(NkVector<NkGraphDiag> &out) const {
+			out.Clear();
+			auto add = [&](NkGraphIssue is, NkNodeId n, NkLinkId l, const NkString &d) {
+				NkGraphDiag g;
+				g.issue = is;
+				g.node = n;
+				g.link = l;
+				g.detail = d;
+				out.PushBack(g);
+			};
+			auto typeKnown = [&](NkTypeId t) -> bool {
+				// L'index 0 est reserve « invalide » : un type a 0 n'est pas
+				// « inconnu », il est ABSENT, et c'est un autre defaut. On borne
+				// donc par le haut ET par le bas.
+				return t != NK_TYPE_INVALID && t < (NkTypeId)mTypeNames.Size();
+			};
+
+			// ── les prises, leurs types, leurs defauts ──────────────────────
+			for (uint32 i = 0; i < (uint32)mNodes.Size(); ++i) {
+				const NkNode &n = mNodes[i];
+				if (!n.alive)
+					continue;
+				for (uint32 k = 0; k < (uint32)n.sockets.Size(); ++k) {
+					const NkSocket &sk = n.sockets[k];
+					if (!typeKnown(sk.type))
+						add(NkGraphIssue::SocketUnknownType, n.id, 0, sk.name);
+					// ⚠️ Le defaut porte SON type, et il doit etre celui de la
+					// prise. Sans ce controle, un fichier peut poser un defaut de
+					// type « shader » sur une prise « couleur » : le compilateur
+					// lirait une valeur du mauvais genre et rendrait quelque chose
+					// de plausible, ce qui est pire qu'une erreur.
+					if (sk.defaultValue.IsSet() && sk.defaultValue.type != sk.type)
+						add(NkGraphIssue::DefaultTypeMismatch, n.id, 0, sk.name);
+				}
+				for (uint32 k = 0; k < (uint32)n.props.Size(); ++k)
+					if (n.props[k].value.IsSet() && !typeKnown(n.props[k].value.type))
+						add(NkGraphIssue::PropUnknownType, n.id, 0, n.props[k].name);
+			}
+
+			// ── les liens ───────────────────────────────────────────────────
+			for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i) {
+				const NkLink &l = mLinks[i];
+				if (!l.alive)
+					continue;
+				const NkNode *a = Find(l.fromNode);
+				const NkNode *b = Find(l.toNode);
+				if (!a || !b) {
+					add(NkGraphIssue::LinkUnknownNode, !a ? l.fromNode : l.toNode, l.id, NkString(""));
+					continue;
+				}
+				if (l.fromSocket < 0 || (uint32)l.fromSocket >= (uint32)a->sockets.Size() || l.toSocket < 0 ||
+					(uint32)l.toSocket >= (uint32)b->sockets.Size()) {
+					add(NkGraphIssue::LinkSocketOutOfRange, l.toNode, l.id, NkString(""));
+					continue;
+				}
+				const NkSocket &sa = a->sockets[(uint32)l.fromSocket];
+				const NkSocket &sb = b->sockets[(uint32)l.toSocket];
+				if (sa.dir != NkSocketDir::Output || sb.dir != NkSocketDir::Input) {
+					add(NkGraphIssue::LinkDirection, l.toNode, l.id, NkString(""));
+					continue;
+				}
+				if (!Accepts(sb.type, sa.type))
+					add(NkGraphIssue::LinkTypeMismatch, l.toNode, l.id, sb.name);
+
+				// Une entree n'accepte qu'UNE source. `Connect` le garantit ; un
+				// fichier, non. Sans ce controle le graphe s'evaluerait avec celle
+				// des deux que l'ordre d'iteration a rencontree en premier.
+				for (uint32 k = i + 1; k < (uint32)mLinks.Size(); ++k)
+					if (mLinks[k].alive && mLinks[k].toNode == l.toNode && mLinks[k].toSocket == l.toSocket) {
+						add(NkGraphIssue::LinkDuplicateTarget, l.toNode, mLinks[k].id, sb.name);
+						break;
+					}
+			}
+
+			if (HasCycle())
+				add(NkGraphIssue::Cycle, NK_NODE_INVALID, 0, NkString(""));
+
+			return (uint32)out.Size();
+		}
+
 		inline void NkNodeGraph::Clear() {
 			mNodes.Clear();
 			mLinks.Clear();

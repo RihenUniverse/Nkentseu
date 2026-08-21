@@ -63,10 +63,79 @@ namespace nkentseu {
 
 		enum class NkSocketDir : uint8 { Input = 0, Output = 1 };
 
+		// ── UNE VALEUR PORTEE PAR LE GRAPHE ──────────────────────────────────
+		// Le coeur doit pouvoir la LIRE, l'ECRIRE, la COMPARER et la SERIALISER
+		// sans jamais savoir ce qu'elle SIGNIFIE. C'est ce qui protege le
+		// garde-fou n°1 par la porte de derriere : le type d'une valeur est un
+		// `NkTypeId` du MEME registre que les prises, enregistre par le
+		// consommateur. Le coeur ne fait que le transporter et le comparer — il
+		// n'a nulle part ou ecrire `if (type == couleur)`.
+		//
+		// La charge utile est volontairement PAUVRE : N reels et un texte. Tout
+		// ce qu'un editeur de noeuds manipule y entre — un scalaire, un vecteur
+		// (3 reels), une couleur (4), une matrice (16), un chemin de fichier,
+		// une cle d'enumeration. Un variant riche obligerait le coeur a
+		// connaitre des cas, donc a en oublier un.
+		//
+		// ⚠️ « JAMAIS RENSEIGNE » ET « RENSEIGNE A VIDE » SONT DEUX ETATS
+		// DIFFERENTS. C'est le piege paye par l'agent NkUIDesign dans la nuit du
+		// 21 au 22/08 : un ecrivain qui reemet une forme memorisee ecrit du VIDE
+		// quand la valeur n'a jamais ete renseignee, **et sans erreur**. Ici
+		// l'etat « jamais renseigne » a UNE SEULE representation,
+		// `type == NK_TYPE_INVALID`, et il ne s'ecrit pas du tout dans le
+		// fichier : ce qui n'existe pas ne produit aucune ligne, donc ne peut
+		// pas revenir en valeur par defaut silencieuse.
+		struct NkGraphValue {
+				NkTypeId type = NK_TYPE_INVALID;
+				NkVector<float32> numbers;
+				NkString text;
+
+				bool IsSet() const {
+					return type != NK_TYPE_INVALID;
+				}
+				void Clear() {
+					type = NK_TYPE_INVALID;
+					numbers.Clear();
+					text = NkString("");
+				}
+				// Comparaison EXACTE, bit a bit sur les reels. Ce n'est pas de la
+				// negligence numerique : cette egalite sert a l'aller-retour de
+				// fichier et a l'annulation, ou une tolerance ferait passer pour
+				// identiques deux etats que l'utilisateur distingue.
+				bool Equals(const NkGraphValue &o) const;
+		};
+
+		// Fabriques courtes. Elles existent pour que l'appelant n'ait jamais a
+		// remplir `numbers` a la main : un tableau rempli de travers produit une
+		// valeur plausible, et c'est le genre d'erreur qui se voit au rendu.
+		inline NkGraphValue NkValueReal(NkTypeId t, float32 v);
+		inline NkGraphValue NkValueVec(NkTypeId t, const float32 *v, uint32 n);
+		inline NkGraphValue NkValueText(NkTypeId t, const char *s);
+
+		// Une PROPRIETE de noeud : ce qui n'est pas une entree. L'operation d'un
+		// noeud Math, les arrets d'un ColorRamp, le chemin d'une image, l'espace
+		// colorimetrique. Le nom est une CLE stable, jamais un libelle.
+		struct NkGraphProp {
+				NkString name;
+				NkGraphValue value;
+		};
+
 		struct NkSocket {
 				NkString name;					  ///< CLE stable, jamais un libelle
 				NkTypeId type = NK_TYPE_INVALID;
 				NkSocketDir dir = NkSocketDir::Input;
+				// VALEUR D'UNE ENTREE NON CONNECTEE — Base Color, Roughness. Le
+				// compilateur en a besoin exactement quand un lien manque.
+				//
+				// ⚠️ POURQUOI ELLE N'EST PAS DANS `NkNode::props`, alors qu'un seul
+				// sac aurait suffi : un defaut de prise range dans un sac de noeud
+				// ne se retrouve plus que par CONVENTION DE NOMMAGE
+				// (« defaut_base_color »), et une convention de nommage finit
+				// toujours par etre violee — par un consommateur, par un import,
+				// par un renommage. Ici le lien entre la prise et sa valeur est
+				// STRUCTUREL : il ne peut pas se defaire. Blender fait exactement
+				// cette separation, et pas par hasard.
+				NkGraphValue defaultValue;
 		};
 
 		struct NkNode {
@@ -79,6 +148,12 @@ namespace nkentseu {
 				NkString subgraph;
 				float32 x = 0.f, y = 0.f; ///< position dans le canevas (couche 2)
 				NkVector<NkSocket> sockets;
+				// CE QUI N'EST PAS UNE ENTREE : operation d'un Math, arrets d'un
+				// ColorRamp, chemin d'une image. Meme raison d'etre ici que `x, y` —
+				// « si le modele ne la porte pas, elle finira dans un fichier a
+				// cote, donc desynchronisee ». Le coeur ne lit jamais le CONTENU
+				// d'une propriete ; il la transporte.
+				NkVector<NkGraphProp> props;
 				bool alive = true;
 
 				int32 FindSocket(const char *name, NkSocketDir dir) const;
@@ -109,6 +184,47 @@ namespace nkentseu {
 
 		const char *NkLinkErrorName(NkLinkError e);
 
+		// ── CE QU'UNE PASSE DE VALIDATION PEUT TROUVER ───────────────────────
+		// ⚠️ POURQUOI CETTE PASSE EXISTE, ecrit ici parce que c'est le point ou on
+		// se trompe. Jusqu'au 2026-08-22 le module avait DEUX portes qui ne
+		// disaient pas la meme chose :
+		//   `Connect()`      refusait cycle, type et sens — l'invalide etait
+		//                    IMPOSSIBLE A CONSTRUIRE par l'API ;
+		//   `Deserialize()`  faisait `mLinks.PushBack` sans le moindre controle —
+		//                    l'invalide entrait librement par le FICHIER.
+		// C'est l'inverse exact de ce qu'il faut. Un editeur passe son temps dans
+		// des etats intermediaires : un modele qui rend l'invalide impossible ne
+		// peut pas etre edite, seulement charge. Et un fichier qui entre sans
+		// controle produit un graphe d'apparence saine qui echoue plus tard,
+		// ailleurs, sans rien designer.
+		//
+		// Le sens vise est donc : **l'invalide REPRESENTABLE et DETECTE**. La
+		// validation rend un DIAGNOSTIC, jamais un refus de structure.
+		enum class NkGraphIssue : uint8 {
+			Ok = 0,
+			LinkUnknownNode,	 ///< un lien designe un noeud absent ou mort
+			LinkSocketOutOfRange, ///< index de socket hors des bornes du noeud
+			LinkDirection,		 ///< la source n'est pas une sortie, ou la cible pas une entree
+			LinkTypeMismatch,	 ///< les types ne s'accordent pas, conversions comprises
+			LinkDuplicateTarget, ///< deux liens vivants sur la MEME entree
+			Cycle,
+			SocketUnknownType,	 ///< le type d'une prise n'est pas dans le registre
+			DefaultTypeMismatch, ///< un defaut de prise n'a pas le type de sa prise
+			PropUnknownType,	 ///< une propriete porte un type absent du registre
+		};
+
+		const char *NkGraphIssueName(NkGraphIssue i);
+
+		// Un diagnostic DESIGNE. Un code d'erreur seul obligerait a chercher dans
+		// un graphe qui peut compter des centaines de noeuds — meme regle que le
+		// chemin d'instanciation de NkGraphDocument.
+		struct NkGraphDiag {
+				NkGraphIssue issue = NkGraphIssue::Ok;
+				NkNodeId node = NK_NODE_INVALID;
+				NkLinkId link = 0;
+				NkString detail;
+		};
+
 		class NkNodeGraph {
 			public:
 				// ── TYPES ────────────────────────────────────────────────────────
@@ -134,6 +250,24 @@ namespace nkentseu {
 				NkNode *Find(NkNodeId n);
 				const NkNode *Find(NkNodeId n) const;
 				uint32 NodeCount() const; ///< noeuds VIVANTS
+
+				// ── VALEURS : DEFAUT DE PRISE ────────────────────────────────
+				// La prise se designe par son NOM et son SENS, jamais par son
+				// index : un index se decale au premier remaniement, un nom non.
+				bool SetSocketDefault(NkNodeId n, const char *socket, NkSocketDir dir, const NkGraphValue &v);
+				// nullptr si le noeud ou la prise n'existe pas ; une valeur dont
+				// `IsSet()` est faux si la prise existe sans defaut. Les deux cas
+				// sont distincts et l'appelant doit pouvoir les distinguer.
+				const NkGraphValue *SocketDefault(NkNodeId n, const char *socket, NkSocketDir dir) const;
+
+				// ── VALEURS : PROPRIETE DE NOEUD ─────────────────────────────
+				// Poser deux fois la meme cle REMPLACE — comme une entree qui
+				// n'accepte qu'une source. Deux proprietes homonymes rendraient
+				// la lecture dependante de l'ordre d'insertion.
+				bool SetProp(NkNodeId n, const char *name, const NkGraphValue &v);
+				const NkGraphValue *FindProp(NkNodeId n, const char *name) const;
+				bool RemoveProp(NkNodeId n, const char *name);
+				uint32 PropCount(NkNodeId n) const;
 
 				// Parcours BRUT, noeuds morts compris. Reserve aux traitements qui
 				// doivent voir toute la table (validation, outillage). Le nom dit
@@ -164,6 +298,13 @@ namespace nkentseu {
 				// resultat qui depend de l'ordre d'insertion.
 				bool TopoSort(NkVector<NkNodeId> &out) const;
 				bool HasCycle() const;
+
+				// ── VALIDATION : UNE PASSE, JAMAIS UNE PRECONDITION ──────────
+				// Rend le NOMBRE de problemes trouves (0 = sain) et les decrit
+				// tous — pas seulement le premier : reparer un fichier en le
+				// rechargeant dix fois pour decouvrir dix defauts est un supplice
+				// qu'aucun format ne merite.
+				uint32 Validate(NkVector<NkGraphDiag> &out) const;
 
 				// ── SERIALISATION `.nkgraph` ─────────────────────────────────────
 				// Format TEXTE, une directive par ligne (cf. NkNodeGraphIO.inl). Un
