@@ -1404,6 +1404,39 @@ optionnelle.
 - ❌ Bake thickness/SSS (peau, tissus translucides)
 - ❌ Pipeline de bake batché (tous les assets d'une scène)
 
+### ⚠️ FAIT MESURÉ (2026-08-22) — 33 types de matériau déclarés, **17 gabarits enregistrés**
+
+`NkMaterialType` compte **33** valeurs ; `NkMaterialSystem::RegisterBuiltins()`
+n'en enregistre que **17**. Les 16 autres n'ont **aucun gabarit** : `Create()`
+retombe sur PBR, et les types sont indiscernables à l'œil. Le code le dit
+lui-même pour la famille réaliste, corrigée le 11 août — *« leurs shaders
+existaient depuis toujours mais aucun gabarit ne les nommait »*.
+
+```
+NK_CUSTOM  NK_DEBUG_AO  NK_DEBUG_DEPTH  NK_DEBUG_NORMALS  NK_DEBUG_UV
+NK_FLAT  NK_GLOW_2D  NK_PBR_SPECULAR  NK_PIXEL_ART  NK_SKETCH  NK_SPRITE_2D
+NK_TERRAIN  NK_UPBGE_EEVEE  NK_VOLUME  NK_WATER  NK_WATERCOLOR
+```
+
+**C'est consigné, pas corrigé** — les corriger est un autre chantier. Deux
+conséquences immédiates :
+
+1. Toute garantie de non-régression sur « les archetypes » porte sur **17**, pas
+   sur « une trentaine ». Le dire évite de croire plus tard qu'on a cassé
+   quelque chose qui n'existait pas.
+2. ⚠️ **`NK_UPBGE_EEVEE` est dans la liste.** Il a été cité comme preuve que le
+   moteur était « déjà du bon côté de la barrière » EEVEE/Cycles pour le mélange
+   de BSDF. Le raisonnement reste juste — un rasteriseur mélange les paramètres
+   ou les résultats, jamais les closures — mais **l'argument par cet archétype ne
+   vaut rien** : il ne rend pas ce qu'il annonce.
+
+C'est la **quatrième occurrence de la même forme** repérée ce jour-là (un `bool
+ssr` activé par deux presets et jamais implémenté ; un en-tête annonçant une
+capacité absente qui existait ; `outlineWidth`/`outlineColor` transmis et ignorés
+par le shader toon). **Ce n'est plus une série de coïncidences, c'est un motif du
+dépôt** : la déclaration et l'implémentation vivent dans deux fichiers que rien
+ne force à s'accorder.
+
 ### T.2 — Graphe de matériaux (extension des templates existants)
 - ❌ Les templates matériaux actuels deviennent des graphes pré-câblés
   navigables/éditables — **compatibilité ascendante garantie** (les `.nkasset`

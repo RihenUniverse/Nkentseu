@@ -66,7 +66,92 @@ les types » ; chaque domaine fournit « ses nodes et ce qu'il en fait ».
 
 Légende : ✅ Livré · 🔶 Partiel · ⏳ En cours · ❌ TODO · 🚫 Abandonné
 
-## ⚠️ Deux dettes du cœur, trouvées par le PREMIER consommateur réel (2026-08-21)
+## ✅ Les deux dettes du cœur sont PAYéES (2026-08-22) — valeurs + validation à la relecture
+
+Trouvées par le premier consommateur réel le 21/08, arbitrées dans la nuit,
+livrées le 22/08. Preuve : `Applications/NkMatGraphCheck`, **26 cas**, **11
+mutations vérifiées rouges** ; les **169 cas** de `NKEditMeshHarness` (dont ses
+19 cas `graphe/`) sont **inchangés**, et son `io-aller-retour` pèse toujours
+**246 octets** — preuve directe qu'une valeur jamais renseignée n'écrit **rien**.
+
+### 1. Un nœud porte des valeurs — et il y en a **deux sortes**
+
+| | où | ce que c'est |
+|---|---|---|
+| `NkSocket::defaultValue` | sur la **prise** | la valeur d'une entrée **non connectée** — Base Color, Roughness. Le compilateur en a besoin exactement quand un lien manque |
+| `NkNode::props` | sur le **nœud** | ce qui n'est **pas** une entrée — l'opération d'un Math, les arrêts d'un ColorRamp, le chemin d'une image |
+
+**Pourquoi deux et pas un seul sac** : un défaut de prise rangé dans un sac de
+nœud ne se retrouve plus que par **convention de nommage**
+(« defaut_base_color »), et une convention de nommage finit toujours par être
+violée. Ici le lien entre la prise et sa valeur est **structurel**. Blender fait
+exactement cette séparation.
+
+**Le garde-fou n°1 tient** : une valeur est un triplet `(nom, NkTypeId, charge
+utile)` où le `NkTypeId` vient **du registre de types de prises** que les
+consommateurs enregistrent déjà. La charge utile est volontairement pauvre — N
+réels et un texte — pour que le cœur puisse lire, écrire, comparer et sérialiser
+**sans jamais savoir ce que la valeur signifie**.
+
+⚠️ **« Jamais renseigné » et « renseigné à vide » sont deux états distincts**, et
+c'est le piège que l'agent NkUIDesign a payé la même nuit : un écrivain qui
+réémet une forme mémorisée écrit du vide quand la valeur n'a jamais été
+renseignée, **et sans erreur**. Ici « jamais renseigné » a **une seule**
+représentation (`type == NK_TYPE_INVALID`) et **n'écrit aucune ligne**.
+
+⚠️ **Les réels des valeurs s'écrivent en `%.9g`, pas en `%.6f`.** `%.6f` rend
+0.333333 pour un tiers — un **autre** flottant : l'égalité exacte échouerait sur
+un aller-retour pourtant correct. Les positions `x, y` gardent `%.6f` : dette
+antérieure, sans conséquence mesurée (un pixel de canevas ne se compare pas au
+bit près).
+
+### 2. La validation était une précondition d'un côté et **rien du tout** de l'autre
+
+`Connect()` refusait cycle, type et sens — l'invalide était **impossible à
+construire par l'API**, ce dont un éditeur a pourtant besoin. `Deserialize()`
+faisait `mLinks.PushBack` **sans aucun contrôle** — l'invalide entrait librement
+par le **fichier**, et l'échec ne sortait qu'à `TopoSort`, plus tard et ailleurs.
+
+`NkNodeGraph::Validate()` est désormais une **passe** qui rend un **diagnostic
+désigné** (nœud, lien, nom de prise) et les liste **tous** — réparer un fichier
+en le rechargeant dix fois pour découvrir dix défauts n'est pas un format, c'est
+un supplice. Neuf genres : lien vers un nœud absent · index de prise hors bornes
+· sens invalide · type incompatible · **deux sources sur une même entrée** · cycle
+· type de prise inconnu · **défaut dont le type diffère de sa prise** · propriété
+au type inconnu.
+
+**Le sens visé est tenu : l'invalide est REPRÉSENTABLE *et* DÉTECTÉ.** Un fichier
+cyclique se charge **avec ses deux liens** — un `Deserialize` qui « réparerait »
+en refusant le second perdrait silencieusement une donnée de l'utilisateur.
+
+⚠️ **Deux décisions de lecture qui ne se devinent pas**, chacune avec son cas :
+- un `def` dont l'index de prise est **hors bornes est ABANDONNÉ, jamais rabattu**
+  sur la dernière prise ni sur zéro. Rabattre poserait la valeur sur une prise
+  **qui n'est pas la sienne** : le graphe paraîtrait sain et calculerait autre
+  chose. Une valeur perdue finit par se voir ; une valeur **déplacée**, non.
+- le **compte de réels est borné à la lecture** (4096), pas après. Il vient du
+  fichier : un fichier corrompu annonçant quatre milliards de réels tuerait le
+  processus **avant** que la validation n'ait la parole.
+
+### 3. ⚠️ `.nkgraph` est un format de plus — la question se posera, elle n'est pas traitée
+
+L'agent NkUIDesign refait en ce moment la fondation de sérialisation sur
+**NKReflection + NKSerialization**, sur consigne de Rodolf. `.nkgraph` reste
+délibérément à côté pour l'instant — coupler les deux chantiers maintenant
+coûterait plus qu'il ne rapporte. **Mais la question devra être posée**, et c'est
+écrit ici pour que personne ne découvre le troisième format dans trois mois. Ce
+qui plaide pour le maintien du texte : un graphe se relit, se compare avec
+`git diff` et se répare à la main. Ce qui plaide pour la bascule : un seul
+lecteur à maintenir, et les valeurs typées que NKReflection sait déjà décrire.
+
+### 4. Ce que le premier consommateur a aussi appris, et qui reste vrai
+
+**Un seul harnais ne suffit pas à prouver un cœur.** Les deux défauts ci-dessus
+vivaient sous 19 cas verts. Ils sont sortis au **premier usage réel**, pas à la
+relecture. Le corollaire vaut pour les consommateurs suivants (VFX, Blueprint,
+rig) : attendez-vous à en trouver, et **rapportez plutôt que de contourner**.
+
+## ⚠️ Les deux dettes, telles qu'elles ont été trouvées le 2026-08-21 (archive)
 
 Le cœur était prouvé par un seul harnais. Le premier usage véritable en a sorti
 deux choses qu'un harnais unique ne pouvait pas révéler. Elles sont **posées ici,
