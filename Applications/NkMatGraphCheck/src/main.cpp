@@ -18,8 +18,15 @@
 // pas une mesure.
 // =============================================================================
 #include "NKRenderer/Materials/Graph/NkMatGraphTypes.h"
+// Les numeros de binding du set materiau. En-tete SANS DEPENDANCE, fait pour
+// etre lisible par un banc qui ne lie ni NKRenderer ni NKRHI.
+#include "NKRenderer/Materials/NkMaterialBindings.h"
+// Le VRAI compilateur NkSL : c est lui qui dit si le shader traverse les
+// quatre backends, et il n a besoin d aucun device (cf. NkSLCheck).
+#include "NKSL/Compiler/NkSLCompiler.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 
 using namespace nkentseu;
 using namespace nkentseu::graph;
@@ -771,6 +778,272 @@ static void CasCompteRenduBorne() {
 	Cas("validation/compte-de-reels-borne", lu && taille <= 4096u, d);
 }
 
+// ── phase 0 : le masque par TEXTURE ──────────────────────────────────────────
+// Ces cas ne testent pas une structure de donnees : ils tiennent ensemble DEUX
+// fichiers que rien d'autre ne force a s'accorder — le C++ qui construit le set
+// de descripteurs, et le shader qui lit ce set.
+//
+// ⚠️ POURQUOI ILS EXISTENT, ET C'EST UNE MESURE, PAS UNE PRECAUTION. Le
+// 2026-08-22, pour verifier que le temoin Demo4..Demo8 saurait attraper une
+// erreur de binding, j'ai ecrit VOLONTAIREMENT le descripteur du masque sur le
+// binding 10, absent du layout. Resultat : aucune erreur, aucun avertissement,
+// aucune ligne de journal, et les CINQ signatures identiques. Le moteur ecrit
+// sans broncher un descripteur que son propre layout ne declare pas ; la texture
+// n'arrive jamais au shader et rien ne le dit.
+//
+// Le temoin d'images est donc AVEUGLE a cette classe de defaut. La parade est
+// ici : un seul nombre, cite par les deux cotes, et un banc qui va LIRE le
+// shader sur le disque pour le confronter a la constante C++.
+
+// Lit un fichier texte entier. `fopen` et non NKFileSystem : ce banc ne lie que
+// NKSL et la Foundation, et lier tout le systeme de fichiers pour lire un
+// shader lui couterait sa raison d'etre — construire en deux secondes et tourner
+// sans GPU. C'est du C, pas de la STL : la regle zero-STL est tenue.
+static bool LireFichier(const char *chemin, NkString &out) {
+	FILE *f = fopen(chemin, "rb");
+	if (!f)
+		return false;
+	out = NkString("");
+	char buf[4096];
+	size_t n = 0;
+	while ((n = fread(buf, 1, sizeof(buf) - 1, f)) > 0) {
+		buf[n] = 0;
+		out.Append(buf);
+	}
+	fclose(f);
+	return out.Size() > 0;
+}
+
+static const char *const kCheminLayeredV1 = "Resources/NKRenderer/Shaders/LayeredV1/NkSL/layeredv1.frag.nksl";
+
+// Cherche `motif` et rend la position du premier caractere apres, ou -1.
+static int32 Apres(const NkString &s, const char *motif) {
+	const char *p = s.CStr();
+	const char *base = p;
+	while (p && *p) {
+		const char *a = p;
+		const char *b = motif;
+		while (*b && *a == *b) {
+			++a;
+			++b;
+		}
+		if (*b == 0)
+			return (int32)(a - base);
+		++p;
+	}
+	return -1;
+}
+
+// Recherche INSENSIBLE A LA CASSE.
+//
+// Elle existe parce que mon premier controle a mesure le mauvais objet, et le
+// 2026-08-22 : il cherchait « tMask » dans le HLSL genere, ne le trouvait pas, et
+// j'ai failli en conclure que DX repliait la branche de texture. Le generateur
+// HLSL **met les identifiants en minuscules et les suffixe** — le sampler s'y
+// appelle `tmask_tex`, et il est bel et bien la, avec son `.Sample(...)`. Chercher
+// un nom exact a travers un generateur de code, c'est tester le generateur de
+// noms, pas le shader.
+static bool ContientSansCasse(const NkString &s, const char *motif) {
+	auto bas = [](char c) -> char { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; };
+	const char *p = s.CStr();
+	while (p && *p) {
+		const char *a = p;
+		const char *b = motif;
+		while (*b && bas(*a) == bas(*b)) {
+			++a;
+			++b;
+		}
+		if (*b == 0)
+			return true;
+		++p;
+	}
+	return false;
+}
+
+static void CasBindingDeclareDesDeuxCotes() {
+	// LE CAS QUI RATTRAPE L'AVEUGLEMENT DU TEMOIN. Il lit le SHADER REEL sur le
+	// disque et confronte le binding qu'il y trouve a la constante que le C++
+	// utilise pour construire son layout et ecrire ses descripteurs.
+	//
+	// DISCRIMINE : changer UN SEUL des deux cotes met ce cas au rouge. Ni le
+	// compilateur, ni le lieur, ni le temoin d'images ne savent le faire.
+	NkString src;
+	const bool lu = LireFichier(kCheminLayeredV1, src);
+	// ⚠️ Un fichier introuvable doit ECHOUER, jamais etre saute. Un cas qui
+	// s'escamote quand il ne trouve pas sa donnee est un vert qui ne prouve
+	// rien — et il reste vert le jour ou le fichier disparait vraiment.
+	if (!lu) {
+		Cas("phase0/binding-declare-des-deux-cotes", false, "shader INTROUVABLE (lancer le banc depuis la racine du worktree)");
+		return;
+	}
+	// La ligne cherchee : « @binding(set=2, binding=9) uniform sampler2D tMask; »
+	const int32 posSampler = Apres(src, "uniform sampler2D tMask;");
+	int32 bindingLu = -1;
+	int32 setLu = -1;
+	if (posSampler > 0) {
+		// Remonter jusqu'au « @binding( » qui precede immediatement.
+		const char *base = src.CStr();
+		int32 i = posSampler;
+		while (i > 0 && !(base[i] == '@' && base[i + 1] == 'b'))
+			--i;
+		if (base[i] == '@') {
+			const char *p = base + i;
+			// set=<n>
+			const char *s1 = p;
+			while (*s1 && !(s1[0] == 's' && s1[1] == 'e' && s1[2] == 't' && s1[3] == '='))
+				++s1;
+			if (*s1)
+				setLu = atoi(s1 + 4);
+			const char *b1 = p;
+			// « binding= » APRES le « @binding( » lui-meme : on saute le premier.
+			int trouves = 0;
+			while (*b1) {
+				if (b1[0] == 'b' && b1[1] == 'i' && b1[2] == 'n' && b1[3] == 'd' && b1[4] == 'i' && b1[5] == 'n' &&
+					b1[6] == 'g' && b1[7] == '=') {
+					++trouves;
+					bindingLu = atoi(b1 + 8);
+					break;
+				}
+				++b1;
+			}
+			(void)trouves;
+		}
+	}
+	const bool accord = (bindingLu == (int32)renderer::NK_MATBIND_LAYER_MASK) && (setLu == 2);
+	char d[240];
+	snprintf(d, sizeof(d), "shader lu (%u o) | tMask trouve=%d | set=%d binding=%d | constante C++ renderer::NK_MATBIND_LAYER_MASK=%u | accord=%d",
+			 (uint32)src.Size(), posSampler > 0 ? 1 : 0, setLu, bindingLu, (uint32)renderer::NK_MATBIND_LAYER_MASK,
+			 accord ? 1 : 0);
+	Cas("phase0/binding-declare-des-deux-cotes", posSampler > 0 && accord, d);
+}
+
+static void CasQuatreCanauxPresents() {
+	// DISCRIMINE : le C++ declare QUATRE sources de masque par texture
+	// (NK_LAYER_MASK_TEX_R..A = 8..11). Le shader doit traiter les quatre. Un
+	// oubli du canal alpha — le plus facile a oublier, c'est le dernier —
+	// rendrait 0.0 en silence, donc une couche invisible, donc un bogue qu'on
+	// chercherait dans le C++.
+	NkString src;
+	if (!LireFichier(kCheminLayeredV1, src)) {
+		Cas("phase0/quatre-canaux-traites", false, "shader INTROUVABLE");
+		return;
+	}
+	const bool r = Apres(src, "if (source == 8) return clamp(m.r") > 0;
+	const bool g = Apres(src, "if (source == 9) return clamp(m.g") > 0;
+	const bool b = Apres(src, "if (source == 10) return clamp(m.b") > 0;
+	const bool a = Apres(src, "if (source == 11) return clamp(m.a") > 0;
+	char d[192];
+	snprintf(d, sizeof(d), "canaux traites dans le shader : R=%d G=%d B=%d A=%d (les 4 attendus)", r ? 1 : 0,
+			 g ? 1 : 0, b ? 1 : 0, a ? 1 : 0);
+	Cas("phase0/quatre-canaux-traites", r && g && b && a, d);
+}
+
+static void CasMasqueCompileSurLesBackends() {
+	// ⚠️ LE CAS QUI COMPTE POUR LA GRILLE D'ACCEPTATION : « le NkSL emis COMPILE
+	// sur les backends, pas seulement ressemble au temoin ».
+	//
+	// Il n'ecrit pas un shader de test : il EXTRAIT le corps reel de PickMask du
+	// fichier sur le disque et le compile. Un shader de test recopie a la main
+	// derive du vrai en une semaine et valide alors autre chose — c'est le piege
+	// « mesurer une reconstruction au lieu de la chose ».
+	//
+	// Le point risque est precis : un `texture(sampler, uv)` DANS un helper, avec
+	// la coordonnee passee en PARAMETRE. Le fichier avertit qu'une varying
+	// referencee dans un helper fait sortir un `input.xxx` hors de l'entree au
+	// generateur HLSL, et que DX refuse alors le shader (X3004).
+	NkString src;
+	if (!LireFichier(kCheminLayeredV1, src)) {
+		Cas("phase0/masque-compile-4-backends", false, "shader INTROUVABLE");
+		return;
+	}
+	// Extraire de « float PickMask( » jusqu'a la ligne qui vaut exactement « } ».
+	const int32 debut = Apres(src, "float PickMask(");
+	if (debut < 0) {
+		Cas("phase0/masque-compile-4-backends", false, "PickMask introuvable dans le shader");
+		return;
+	}
+	const char *base = src.CStr();
+	int32 i = debut;
+	while (i > 0 && base[i] != 'f')
+		--i; // revenir sur le « float »
+	NkString corps;
+	int32 k = i;
+	while (base[k]) {
+		corps.Append(base[k]);
+		if (base[k] == '}' && (base[k + 1] == '\n' || base[k + 1] == '\r') && k > 0 && base[k - 1] == '\n')
+			break;
+		++k;
+	}
+
+	// Enveloppe minimale et AUTONOME : les varyings dont le helper a besoin, le
+	// sampler, et une entree qui APPELLE le helper — sans appel, un backend
+	// pourrait eliminer le code mort et « compiler » sans jamais l'avoir traduit.
+	NkString shader;
+	shader.Append("@location(0) in vec2 vUV;\n@location(1) in vec4 vColor;\n@location(0) out vec4 fragColor;\n");
+	shader.Append("@binding(set=2, binding=9) uniform sampler2D tMask;\n\n");
+	shader.Append(corps);
+	shader.Append("\n\n@stage(fragment)\n@entry\nvoid main() {\n");
+	shader.Append("    float m = PickMask(8, vColor, vUV, 0.5, 1.0);\n");
+	shader.Append("    fragColor = vec4(m, m, m, 1.0);\n}\n");
+
+	NkSLCompiler c;
+	struct {
+			NkSLTarget cible;
+			const char *nom;
+	} cibles[4] = {
+		{NkSLTarget::NK_GLSL, "GL"},
+		{NkSLTarget::NK_GLSL_VULKAN, "VK"},
+		{NkSLTarget::NK_HLSL_DX11, "DX11"},
+		{NkSLTarget::NK_HLSL_DX12, "DX12"},
+	};
+	uint32 ok = 0;
+	char detail[240];
+	int off = 0;
+	bool lectureTexturePartout = true;
+	for (uint32 t = 0; t < 4; ++t) {
+		NkSLCompileResult r = c.Compile(shader, NkSLStage::NK_FRAGMENT, cibles[t].cible);
+		// « ca a compile » ne suffit pas : le code produit doit REELLEMENT
+		// contenir une lecture de texture. Un backend qui replierait la branche
+		// rendrait un succes vide.
+		// TROIS choses a verifier, et « ca a compile » n'est que la premiere :
+		//   1. le sampler a survecu a la traduction (nom insensible a la casse :
+		//      HLSL le rend `tmask_tex`) ;
+		//   2. il est REELLEMENT ECHANTILLONNE — `texture(` en GLSL, `.Sample(`
+		//      en HLSL. Sans cet appel, un backend qui aurait replie la branche
+		//      rendrait un succes vide, et le sampler declare ne prouverait rien ;
+		//   3. cote HLSL seulement : le sampler atterrit sur `register(t9)`. C'est
+		//      une VERIFICATION CROISEE GRATUITE du meme nombre que le C++ ecrit
+		//      dans son layout — trouvee en lisant le code genere, pas prevue.
+		const bool declare = r.success && ContientSansCasse(r.source, "tmask");
+		const bool echantillonne =
+			r.success && (ContientSansCasse(r.source, "texture(") || ContientSansCasse(r.source, ".sample("));
+		const bool hlsl = (cibles[t].cible == NkSLTarget::NK_HLSL_DX11 || cibles[t].cible == NkSLTarget::NK_HLSL_DX12);
+		char reg[24];
+		// PAS de parenthese fermante : DX11 ecrit « register(t9) » et DX12
+		// « register(t9, space0) ». Fermer la parenthese ferait echouer DX12
+		// pour une raison qui n a rien a voir avec le masque — mesure le 22/08.
+		snprintf(reg, sizeof(reg), "register(t%u", (uint32)renderer::NK_MATBIND_LAYER_MASK);
+		const bool bonRegistre = !hlsl || (r.success && ContientSansCasse(r.source, reg));
+		const bool lit = declare && echantillonne && bonRegistre;
+		if (r.success && !lit && getenv("NK_DUMP")) {
+			// Diagnostic PERMANENT, pas un echafaudage : quand ce cas tombe, la
+			// question est toujours « le backend a-t-il replie la branche, ou ai-je
+			// cherche le mauvais nom ? ». Sans le code sous les yeux, on tranche au
+			// hasard. NK_DUMP=1 le montre.
+			printf("\n--- %s : compile mais le masque n a pas traverse ---\n%s\n--- fin ---\n",
+				cibles[t].nom, r.source.CStr());
+		}
+		if (r.success)
+			++ok;
+		if (!lit)
+			lectureTexturePartout = false;
+		off += snprintf(detail + off, sizeof(detail) - (size_t)off, "%s=%s%s%s%s ", cibles[t].nom,
+						r.success ? "ok" : "ECHEC", declare ? "" : "(pas declare!)",
+						echantillonne ? "" : "(pas echantillonne!)", bonRegistre ? "" : "(mauvais registre!)");
+	}
+	Cas("phase0/masque-compile-4-backends", ok == 4 && lectureTexturePartout && corps.Size() > 100, detail);
+}
+
 int main() {
 	printf("== NkMatGraphCheck — graphe de materiaux, couche 3 sur NKGraph ==\n");
 	printf("   regime : structure de donnees pure, aucun GPU, aucune fenetre.\n");
@@ -807,6 +1080,12 @@ int main() {
 	CasFichierTypesInconnus();
 	CasDefautHorsBornesNonRabattu();
 	CasCompteRenduBorne();
+
+	// -- phase 0 : le masque par texture, et les deux fichiers qui doivent
+	//    s accorder sans que rien ne les y force --------------------------
+	CasBindingDeclareDesDeuxCotes();
+	CasQuatreCanauxPresents();
+	CasMasqueCompileSurLesBackends();
 
 	printf("\n-- %u cas, %u echec(s) --\n", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;

@@ -142,6 +142,26 @@ namespace nkentseu {
 			NK_LAYER_MASK_UV_Y = 5,
 			NK_LAYER_MASK_CONSTANT = 6,
 			NK_LAYER_MASK_LAYER_ALPHA = 7,
+			// ── MASQUE PAR TEXTURE (2026-08-22) ──────────────────────────────
+			// C'est le cas le PLUS COURANT chez Blender, et il manquait : les
+			// huit sources ci-dessus sont toutes procedurales ou par sommet.
+			// La carte se pose par `SetLayerV1MaskMap(t)` (alias de
+			// SetTexture("mask", t)) et se lit au binding 9 du set materiau.
+			//
+			// Quatre canaux = quatre masques dans UNE seule texture : c'est
+			// ainsi qu'on empile huit couches sans huit chargements. Une couche
+			// designe son canal, pas sa texture.
+			//
+			// ⚠️ Sans carte posee, le repli est le BLANC 1x1 — donc un masque a
+			// 1.0, donc la couche RECOUVRE tout. Ce n'est pas le neutre qu'on
+			// attendrait, et c'est voulu : le repli d'un slot MULTIPLIE est le
+			// blanc partout ailleurs dans ce fichier, et une couche qu'on a
+			// explicitement reglee sur « masque par texture » sans fournir de
+			// texture est une erreur d'auteur — mieux vaut qu'elle se VOIE.
+			NK_LAYER_MASK_TEX_R = 8,
+			NK_LAYER_MASK_TEX_G = 9,
+			NK_LAYER_MASK_TEX_B = 10,
+			NK_LAYER_MASK_TEX_A = 11,
 		};
 
 		// Total : 8*32 + 4*16 + 16 = 336 bytes. Bien sous 16 KiB UBO limit.
@@ -287,6 +307,9 @@ namespace nkentseu {
 				NkMaterialInstance *SetLayeredV1(const NkLayeredV1Params &l);
 				NkMaterialInstance *SetLayerV1(int32 idx, const NkPBRLayer &layer);
 				NkMaterialInstance *SetLayerV1Mask(int32 idx, NkLayerMaskSource src, float32 k = 0.f);
+				// Carte de masque partagee par toutes les couches qui choisissent
+				// une source NK_LAYER_MASK_TEX_*. Un seul slot, quatre canaux.
+				NkMaterialInstance *SetLayerV1MaskMap(NkTexHandle t);
 				NkMaterialInstance *SetLayerV1Count(int32 n);
 
 				NkMatHandle GetTemplate() const {
