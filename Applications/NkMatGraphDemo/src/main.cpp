@@ -54,7 +54,38 @@
 #include "NKRenderer/Shader/NkShaderLibrary.h"
 #include "NKRenderer/Tools/Offscreen/NkOffscreenTarget.h"
 
-#include <stdio.h>
+// ── POURQUOI CE BANC N'IMPRIME PLUS AVEC printf ─────────────────────────────
+// Rodolf, 2026-08-22 (et c'est la deuxieme fois) : « ne pas utiliser directement
+// printf, le systeme definit des loggers, pourquoi ne pas les utiliser ? »
+//
+// ⚠️ ET PASSER A `Infof` N'AURAIT RIEN CORRIGE. `Infof` prend une chaine de
+// format et des arguments variadiques NON TYPES — la meme mecanique que printf.
+// Le defaut mesure la meme nuit par l'agent NK3DModeler — un printf reclamant
+// sept `%u` pour six arguments, le septieme lisant la pile et affichant
+// « nonmanif=18 » sur un cube parfaitement manifold — se reproduit a l'identique
+// avec `Infof`. Rien ne plante, rien n'avertit, ET LE NOMBRE EST CREDIBLE.
+//
+// Seule la forme POSITIONNELLE change la nature du probleme : `NkFormat("{0}")`
+// capture les arguments PAR LEUR TYPE, jamais reinterpretes. S'il en manque un,
+// on obtient un TROU VISIBLE, pas un entier plausible. Pour un banc dont toute
+// la valeur tient dans les nombres qu'il imprime, c'est la seule propriete qui
+// compte : un trou se voit ; un « 18 » plausible se recopie dans un rapport,
+// puis dans une ROADMAP, puis dans une decision.
+//
+//   `-Werror=format` (pose dans le .jenga) DETECTE le desalignement.
+//   La forme `{0}` le rend IRREPRESENTABLE. On garde les deux : le drapeau est
+//   un filet pour ce qui resterait, la forme est la solution.
+//
+// Le motif de journal est « %v » : le message SEUL, sans horodatage ni fichier.
+// La sortie d'un banc EST son resultat ; une decoration la rendrait illisible et
+// instable d'une execution a l'autre.
+//
+// ⚠️ Et les chaines IMPRIMEES sont en ASCII : le puits console ne transporte pas
+// l'UTF-8 (mesure — « — » sortait « - », les guillemets sortaient « ? »). Mieux
+// vaut ecrire ce qui sera lu que laisser des caracteres se perdre en chemin. Les
+// commentaires, eux, gardent leur typographie : ils ne sont jamais imprimes.
+#include "NKContainers/String/NkFormat.h"
+#include "NKLogger/NkLog.h"
 
 // NkShaderStage existe DEUX FOIS : celui du RHI (bitmask, = NkSLStage) et
 // celui de renderer/NkShaderBackend.h. Sans cet alias, toute mention du nom
@@ -70,12 +101,11 @@ using namespace nkentseu::renderer::matgraph;
 static uint32 gCas = 0;
 static uint32 gEchecs = 0;
 
-static void Cas(const char *nom, bool ok, const char *detail) {
+static void Cas(const char *nom, bool ok, const NkString &detail) {
 	++gCas;
 	if (!ok)
 		++gEchecs;
-	printf("%-32s %s | %s\n", nom, ok ? "OK  " : "ECHEC", detail);
-	fflush(stdout);
+	logger.Info("{0:<32} {1} | {2}", NkString(nom), NkString(ok ? "OK  " : "ECHEC"), detail);
 }
 
 // ── L'UBO camera, tel que le shader engendre le declare ──────────────────────
@@ -162,15 +192,15 @@ bool DemoContexte::Monter() {
 	di.height = 0;
 	device = NkDeviceFactory::Create(di);
 	if (!device || !device->IsValid()) {
-		printf("device DX11 headless : KO\n");
+		logger.Info("device DX11 headless : KO");
 		return false;
 	}
 	if (texLib.Init(device, nullptr) != NkRResult::NK_OK) {
-		printf("NkTextureLibrary : KO\n");
+		logger.Info("NkTextureLibrary : KO");
 		return false;
 	}
 	if (!shaders.Init(device, device->GetApi(), /*useNkSL=*/true)) {
-		printf("NkShaderLibrary : KO\n");
+		logger.Info("NkShaderLibrary : KO");
 		return false;
 	}
 
@@ -189,7 +219,7 @@ bool DemoContexte::Monter() {
 	od.readback = true;
 	od.name = NkString("NkMatGraphDemo");
 	if (!cible.Init(device, &texLib, od)) {
-		printf("NkOffscreenTarget : KO\n");
+		logger.Info("NkOffscreenTarget : KO");
 		return false;
 	}
 
@@ -202,14 +232,14 @@ bool DemoContexte::Monter() {
 	};
 	vbo = device->CreateBuffer(NkBufferDesc::Vertex(sizeof(sommets), sommets));
 	if (!vbo.IsValid()) {
-		printf("vertex buffer : KO\n");
+		logger.Info("vertex buffer : KO");
 		return false;
 	}
 
 	DemoCameraUBO cam;
 	ubo = device->CreateBuffer(NkBufferDesc::Uniform(sizeof(DemoCameraUBO)));
 	if (!ubo.IsValid()) {
-		printf("uniform buffer : KO\n");
+		logger.Info("uniform buffer : KO");
 		return false;
 	}
 	device->WriteBuffer(ubo, &cam, sizeof(cam));
@@ -344,14 +374,21 @@ static bool GrapheMelange(float32 fac, NkString &out) {
 }
 
 int main() {
-	printf("== NkMatGraphDemo — le graphe REND, et l'attendu est calculable ==\n");
-	printf("   DX11 headless, 64x64 hors-ecran, RGBA8 UNORM (lineaire).\n");
-	printf("   On ne compare AUCUNE image : on mesure des ecarts entre canaux,\n");
-	printf("   que le modele d'eclairage ne peut ni creer ni masquer.\n\n");
+	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
+	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
+	// ligne — sinon chaque composant du moteur qui journalise ensuite herite
+	// silencieusement du motif du banc. Consequence assumee : les lignes du
+	// moteur perdent aussi leur horodatage dans ce processus ; elles restent
+	// reconnaissables a leur crochet ouvrant, et se filtrent par « ^\[ ».
+	logger.Pattern("%v");
+	logger.Info("== NkMatGraphDemo - le graphe REND, et l'attendu est calculable ==");
+	logger.Info("   DX11 headless, 64x64 hors-ecran, RGBA8 UNORM (lineaire).");
+	logger.Info("   On ne compare AUCUNE image : on mesure des ecarts entre canaux,");
+	logger.Info("   que le modele d'eclairage ne peut ni creer ni masquer.\n");
 
 	DemoContexte ctx;
 	if (!ctx.Monter()) {
-		printf("\n-- montage impossible : AUCUN cas n'a tourne. C'est un ECHEC, pas un saut. --\n");
+		logger.Info("\n-- montage impossible : AUCUN cas n'a tourne. C'est un ECHEC, pas un saut. --");
 		return 1;
 	}
 
@@ -366,9 +403,8 @@ int main() {
 		// exactement ce que le graphe a declare. Un defaut de prise perdu
 		// donnerait 0, un canal permute mettrait l'ecart ailleurs.
 		const int32 ecart = (int32)rouge[0] - (int32)rouge[1];
-		char d[192];
-		snprintf(d, sizeof(d), "pixel=(%u,%u,%u) | V==B : %s | ecart R-V=%d (attendu %d, sans tolerance)", rouge[0],
-				 rouge[1], rouge[2], rouge[1] == rouge[2] ? "oui" : "NON", ecart, kEcartAttendu);
+		NkString d;
+		d = NkFormat("pixel=({0},{1},{2}) | V==B : {3} | ecart R-V={4} (attendu {5}, sans tolerance)", rouge[0], rouge[1], rouge[2], rouge[1] == rouge[2] ? "oui" : "NON", ecart, kEcartAttendu);
 		Cas("rendu/emission-rouge", ok && rouge[1] == rouge[2] && ecart == kEcartAttendu, d);
 	}
 
@@ -378,9 +414,8 @@ int main() {
 		// LE TEMOIN DE L'AUTRE CANAL. Sans lui, un shader qui ecrirait toujours
 		// dans le rouge passerait le cas precedent.
 		const int32 ecart = (int32)vert[1] - (int32)vert[0];
-		char d[192];
-		snprintf(d, sizeof(d), "pixel=(%u,%u,%u) | R==B : %s | ecart V-R=%d (attendu %d)", vert[0], vert[1], vert[2],
-				 vert[0] == vert[2] ? "oui" : "NON", ecart, kEcartAttendu);
+		NkString d;
+		d = NkFormat("pixel=({0},{1},{2}) | R==B : {3} | ecart V-R={4} (attendu {5})", vert[0], vert[1], vert[2], vert[0] == vert[2] ? "oui" : "NON", ecart, kEcartAttendu);
 		Cas("rendu/emission-verte", ok && vert[0] == vert[2] && ecart == kEcartAttendu, d);
 	}
 
@@ -390,8 +425,8 @@ int main() {
 		// deux graphes ne different QUE par l'emission ; leur plancher gris doit
 		// donc etre identique au bit. S'il ne l'etait pas, toutes les
 		// comparaisons croisees qui suivent seraient sans valeur.
-		char d[192];
-		snprintf(d, sizeof(d), "plancher gris rouge=%u vert=%u (identiques attendus)", rouge[2], vert[2]);
+		NkString d;
+		d = NkFormat("plancher gris rouge={0} vert={1} (identiques attendus)", rouge[2], vert[2]);
 		Cas("rendu/plancher-achromatique-stable", rouge[2] == vert[2], d);
 	}
 
@@ -403,18 +438,16 @@ int main() {
 		// donnerait un rouge a moitie, ce qu'un simple « R > V » laisserait
 		// passer.
 		const bool identique = mix0[0] == rouge[0] && mix0[1] == rouge[1] && mix0[2] == rouge[2];
-		char d[192];
-		snprintf(d, sizeof(d), "pixel=(%u,%u,%u) | identique au rendu rouge seul : %s", mix0[0], mix0[1], mix0[2],
-				 identique ? "oui" : "NON");
+		NkString d;
+		d = NkFormat("pixel=({0},{1},{2}) | identique au rendu rouge seul : {3}", mix0[0], mix0[1], mix0[2], identique ? "oui" : "NON");
 		Cas("rendu/melange-fac-0-donne-le-premier", ok && identique, d);
 	}
 
 	ok = GrapheMelange(1.f, src) && ctx.RendreEtLire(src, "matgraph_mix1", mix1);
 	{
 		const bool identique = mix1[0] == vert[0] && mix1[1] == vert[1] && mix1[2] == vert[2];
-		char d[192];
-		snprintf(d, sizeof(d), "pixel=(%u,%u,%u) | identique au rendu vert seul : %s", mix1[0], mix1[1], mix1[2],
-				 identique ? "oui" : "NON");
+		NkString d;
+		d = NkFormat("pixel=({0},{1},{2}) | identique au rendu vert seul : {3}", mix1[0], mix1[1], mix1[2], identique ? "oui" : "NON");
 		Cas("rendu/melange-fac-1-donne-le-second", ok && identique, d);
 	}
 
@@ -431,10 +464,8 @@ int main() {
 		const int32 ecartR = (int32)mixMoitie[0] - (int32)mixMoitie[2];
 		const int32 ecartV = (int32)mixMoitie[1] - (int32)mixMoitie[2];
 		const bool plancher = mixMoitie[2] == rouge[2];
-		char d[224];
-		snprintf(d, sizeof(d), "pixel=(%u,%u,%u) | R==V : %s | ecarts R-B=%d V-B=%d (attendu %d) | plancher intact : %s",
-				 mixMoitie[0], mixMoitie[1], mixMoitie[2], mixMoitie[0] == mixMoitie[1] ? "oui" : "NON", ecartR,
-				 ecartV, kEcartAttendu / 2, plancher ? "oui" : "NON");
+		NkString d;
+		d = NkFormat("pixel=({0},{1},{2}) | R==V : {3} | ecarts R-B={4} V-B={5} (attendu {6}) | plancher intact : {7}", mixMoitie[0], mixMoitie[1], mixMoitie[2], mixMoitie[0] == mixMoitie[1] ? "oui" : "NON", ecartR, ecartV, kEcartAttendu / 2, plancher ? "oui" : "NON");
 		Cas("rendu/melange-a-mi-chemin",
 			ok && mixMoitie[0] == mixMoitie[1] && ecartR == kEcartAttendu / 2 && ecartV == kEcartAttendu / 2 &&
 				plancher,
@@ -448,13 +479,12 @@ int main() {
 		// impossible a produire par ces graphes (B vaut le plancher gris, jamais
 		// 255), sa presence signerait un rendu qui n'a pas eu lieu.
 		const bool magenta = rouge[0] == 255 && rouge[1] == 0 && rouge[2] == 255;
-		char d[160];
-		snprintf(d, sizeof(d), "premier pixel=(%u,%u,%u) | magenta d'effacement lu : %s", rouge[0], rouge[1],
-				 rouge[2], magenta ? "OUI -- le trace n'a pas eu lieu" : "non");
+		NkString d;
+		d = NkFormat("premier pixel=({0},{1},{2}) | magenta d'effacement lu : {3}", rouge[0], rouge[1], rouge[2], magenta ? "OUI -- le trace n'a pas eu lieu" : "non");
 		Cas("rendu/le-trace-a-bien-eu-lieu", !magenta, d);
 	}
 
 	ctx.Demonter();
-	printf("\n-- %u cas, %u echec(s) --\n", gCas, gEchecs);
+	logger.Info("\n-- {0} cas, {1} echec(s) --", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;
 }

@@ -26,7 +26,38 @@
 // quatre backends, et il n a besoin d aucun device (cf. NkSLCheck).
 #include "NKSL/Compiler/NkSLCompiler.h"
 
-#include <stdio.h>
+// ── POURQUOI CE BANC N'IMPRIME PLUS AVEC printf ─────────────────────────────
+// Rodolf, 2026-08-22 (et c'est la deuxieme fois) : « ne pas utiliser directement
+// printf, le systeme definit des loggers, pourquoi ne pas les utiliser ? »
+//
+// ⚠️ ET PASSER A `Infof` N'AURAIT RIEN CORRIGE. `Infof` prend une chaine de
+// format et des arguments variadiques NON TYPES — la meme mecanique que printf.
+// Le defaut mesure la meme nuit par l'agent NK3DModeler — un printf reclamant
+// sept `%u` pour six arguments, le septieme lisant la pile et affichant
+// « nonmanif=18 » sur un cube parfaitement manifold — se reproduit a l'identique
+// avec `Infof`. Rien ne plante, rien n'avertit, ET LE NOMBRE EST CREDIBLE.
+//
+// Seule la forme POSITIONNELLE change la nature du probleme : `NkFormat("{0}")`
+// capture les arguments PAR LEUR TYPE, jamais reinterpretes. S'il en manque un,
+// on obtient un TROU VISIBLE, pas un entier plausible. Pour un banc dont toute
+// la valeur tient dans les nombres qu'il imprime, c'est la seule propriete qui
+// compte : un trou se voit ; un « 18 » plausible se recopie dans un rapport,
+// puis dans une ROADMAP, puis dans une decision.
+//
+//   `-Werror=format` (pose dans le .jenga) DETECTE le desalignement.
+//   La forme `{0}` le rend IRREPRESENTABLE. On garde les deux : le drapeau est
+//   un filet pour ce qui resterait, la forme est la solution.
+//
+// Le motif de journal est « %v » : le message SEUL, sans horodatage ni fichier.
+// La sortie d'un banc EST son resultat ; une decoration la rendrait illisible et
+// instable d'une execution a l'autre.
+//
+// ⚠️ Et les chaines IMPRIMEES sont en ASCII : le puits console ne transporte pas
+// l'UTF-8 (mesure — « — » sortait « - », les guillemets sortaient « ? »). Mieux
+// vaut ecrire ce qui sera lu que laisser des caracteres se perdre en chemin. Les
+// commentaires, eux, gardent leur typographie : ils ne sont jamais imprimes.
+#include "NKContainers/String/NkFormat.h"
+#include "NKLogger/NkLog.h"
 #include <stdlib.h>
 #include <string.h> // strlen : du C, pas de la STL
 
@@ -37,11 +68,11 @@ using namespace nkentseu::renderer::matgraph;
 static uint32 gCas = 0;
 static uint32 gEchecs = 0;
 
-static void Cas(const char *nom, bool ok, const char *detail) {
+static void Cas(const char *nom, bool ok, const NkString &detail) {
 	++gCas;
 	if (!ok)
 		++gEchecs;
-	printf("%-34s %s | %s\n", nom, ok ? "OK  " : "ECHEC", detail);
+	logger.Info("{0:<34} {1} | {2}", NkString(nom), NkString(ok ? "OK  " : "ECHEC"), detail);
 }
 
 // ── types/ ───────────────────────────────────────────────────────────────────
@@ -60,9 +91,8 @@ static void CasTypesEnregistrement() {
 	// remplirait pas la table de noms laisserait FindType a zero, et tout
 	// NkMatAddNode ulterieur echouerait sans qu'on sache pourquoi.
 	const bool retrouves = g.FindType(NK_MT_REAL) == t.real && g.FindType(NK_MT_SHADER) == t.shader;
-	char d[160];
-	snprintf(d, sizeof(d), "reel=%u vect=%u coul=%u shader=%u | distincts=%d retrouves-par-nom=%d",
-			 t.real, t.vector, t.color, t.shader, distincts ? 1 : 0, retrouves ? 1 : 0);
+	NkString d;
+	d = NkFormat("reel={0} vect={1} coul={2} shader={3} | distincts={4} retrouves-par-nom={5}", t.real, t.vector, t.color, t.shader, distincts ? 1 : 0, retrouves ? 1 : 0);
 	Cas("types/enregistrement", nonNuls && distincts && retrouves, d);
 }
 
@@ -80,10 +110,8 @@ static void CasConversionDirigee() {
 	// une couleur la ou le moteur attend une surface ombree.
 	const bool couleurVersShader = g.Accepts(t.shader, t.color);
 	const bool shaderVersCouleur = g.Accepts(t.color, t.shader);
-	char d[192];
-	snprintf(d, sizeof(d), "reel>couleur=%s couleur>reel=%s | couleur>shader=%s shader>couleur=%s",
-			 reelVersCouleur ? "ok" : "REFUSE", couleurVersReel ? "ACCEPTE" : "refuse",
-			 couleurVersShader ? "ACCEPTE" : "refuse", shaderVersCouleur ? "ACCEPTE" : "refuse");
+	NkString d;
+	d = NkFormat("reel>couleur={0} couleur>reel={1} | couleur>shader={2} shader>couleur={3}", reelVersCouleur ? "ok" : "REFUSE", couleurVersReel ? "ACCEPTE" : "refuse", couleurVersShader ? "ACCEPTE" : "refuse", shaderVersCouleur ? "ACCEPTE" : "refuse");
 	Cas("types/conversion-dirigee", reelVersCouleur && !couleurVersReel && !couleurVersShader && !shaderVersCouleur, d);
 }
 
@@ -105,9 +133,8 @@ static void CasInstancierPrincipled() {
 	// declaration decalee d'une ligne donnerait le bon nom et le mauvais type,
 	// et le graphe accepterait alors des liens qu'il devrait refuser.
 	const bool bonType = nd && baseColor >= 0 && nd->sockets[(usize)baseColor].type == g.FindType(NK_MT_COLOR);
-	char d[192];
-	snprintf(d, sizeof(d), "noeud=%u prises=%u base_color=%d(type-ok=%d) bsdf-sortie=%d bsdf-entree=%d(-1 attendu)", n,
-			 nd ? (uint32)nd->sockets.Size() : 0u, baseColor, bonType ? 1 : 0, bsdfOut, bsdfIn);
+	NkString d;
+	d = NkFormat("noeud={0} prises={1} base_color={2}(type-ok={3}) bsdf-sortie={4} bsdf-entree={5}(-1 attendu)", n, nd ? (uint32)nd->sockets.Size() : 0u, baseColor, bonType ? 1 : 0, bsdfOut, bsdfIn);
 	Cas("biblio/instancier-principled", n != NK_NODE_INVALID && baseColor >= 0 && bsdfOut >= 0 && bsdfIn < 0 && bonType,
 		d);
 }
@@ -119,8 +146,8 @@ static void CasPrototypeInconnu() {
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
 	const NkNodeId n = NkMatAddNode(g, "mat.noeud_qui_nexiste_pas");
-	char d[128];
-	snprintf(d, sizeof(d), "rendu=%u (0 attendu) noeuds-dans-le-graphe=%u (0 attendu)", n, g.NodeCount());
+	NkString d;
+	d = NkFormat("rendu={0} (0 attendu) noeuds-dans-le-graphe={1} (0 attendu)", n, g.NodeCount());
 	Cas("biblio/prototype-inconnu", n == NK_NODE_INVALID && g.NodeCount() == 0, d);
 }
 
@@ -132,8 +159,8 @@ static void CasTypesNonEnregistres() {
 	// bons, tres loin de la cause. Le refus doit etre net.
 	NkNodeGraph g; // volontairement SANS NkMatRegisterTypes
 	const NkNodeId n = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	char d[128];
-	snprintf(d, sizeof(d), "rendu=%u (0 attendu) noeuds=%u (0 attendu)", n, g.NodeCount());
+	NkString d;
+	d = NkFormat("rendu={0} (0 attendu) noeuds={1} (0 attendu)", n, g.NodeCount());
 	Cas("biblio/types-non-enregistres", n == NK_NODE_INVALID && g.NodeCount() == 0, d);
 }
 
@@ -153,10 +180,8 @@ static void CasPrincipledVersSortie() {
 	const bool bonOrdre = trie && ordre.Size() == 2 && ordre[0] == bsdf && ordre[1] == out;
 	NkNodeId trouve = NK_NODE_INVALID;
 	const NkMatGraphError v = NkMatValidate(g, &trouve);
-	char d[192];
-	snprintf(d, sizeof(d), "lien=%s ordre=%s (bsdf avant sortie) validation=%s sortie-trouvee=%d",
-			 NkLinkErrorName(e), bonOrdre ? "bsdf>sortie" : "MAUVAIS", NkMatGraphErrorName(v),
-			 trouve == out ? 1 : 0);
+	NkString d;
+	d = NkFormat("lien={0} ordre={1} (bsdf avant sortie) validation={2} sortie-trouvee={3}", NkLinkErrorName(e), bonOrdre ? "bsdf>sortie" : "MAUVAIS", NkMatGraphErrorName(v), trouve == out ? 1 : 0);
 	Cas("graphe/principled-vers-sortie", e == NkLinkError::Ok && bonOrdre && v == NkMatGraphError::Ok && trouve == out,
 		d);
 }
@@ -175,9 +200,8 @@ static void CasCouleurDansShaderRefuse() {
 	const NkLinkError typeFaux = g.Connect(emis, "emission", out, "surface"); // valide, temoin positif
 	const NkLinkError sensFaux = g.Connect(out, "surface", emis, "color");	 // entree -> entree
 	const uint32 liens = g.LinkCount();
-	char d[192];
-	snprintf(d, sizeof(d), "temoin-positif(emission>surface)=%s | entree>entree=%s | liens=%u (1 attendu)",
-			 NkLinkErrorName(typeFaux), NkLinkErrorName(sensFaux), liens);
+	NkString d;
+	d = NkFormat("temoin-positif(emission>surface)={0} | entree>entree={1} | liens={2} (1 attendu)", NkLinkErrorName(typeFaux), NkLinkErrorName(sensFaux), liens);
 	Cas("graphe/sens-et-types-refuses",
 		typeFaux == NkLinkError::Ok && sensFaux == NkLinkError::DirectionMismatch && liens == 1, d);
 }
@@ -203,10 +227,8 @@ static void CasDeuxSortiesRefusees() {
 	// « plusieurs sorties » apres la suppression.
 	g.RemoveNode(out2);
 	const NkMatGraphError apresRetrait = NkMatValidate(g);
-	char d[224];
-	snprintf(d, sizeof(d), "1 sortie=%s | 2 sorties=%s (coeur triable=%d, il ne voit rien) | apres retrait=%s",
-			 NkMatGraphErrorName(avant), NkMatGraphErrorName(apres), coeurContent ? 1 : 0,
-			 NkMatGraphErrorName(apresRetrait));
+	NkString d;
+	d = NkFormat("1 sortie={0} | 2 sorties={1} (coeur triable={2}, il ne voit rien) | apres retrait={3}", NkMatGraphErrorName(avant), NkMatGraphErrorName(apres), coeurContent ? 1 : 0, NkMatGraphErrorName(apresRetrait));
 	Cas("graphe/deux-sorties-refusees",
 		avant == NkMatGraphError::Ok && apres == NkMatGraphError::MultipleOutput && coeurContent &&
 			apresRetrait == NkMatGraphError::Ok,
@@ -234,9 +256,8 @@ static void CasSortieNonReliee() {
 	const NkMatGraphError v = NkMatValidate(g);
 	const NkNode *nd = g.Find(out);
 	const int32 idx = nd ? nd->FindSocket("surface", NkSocketDir::Input) : -1;
-	char d[160];
-	snprintf(d, sizeof(d), "validation=%s | index du socket surface=%d (0 : la sentinelle a zero serait un BUG)",
-			 NkMatGraphErrorName(v), idx);
+	NkString d;
+	d = NkFormat("validation={0} | index du socket surface={1} (0 : la sentinelle a zero serait un BUG)", NkMatGraphErrorName(v), idx);
 	Cas("graphe/sortie-non-reliee", v == NkMatGraphError::OutputUnlinked && idx == 0, d);
 }
 
@@ -247,8 +268,8 @@ static void CasAucuneSortie() {
 	NkMatRegisterTypes(g);
 	NkMatAddNode(g, NK_MN_PRINCIPLED);
 	const NkMatGraphError v = NkMatValidate(g);
-	char d[128];
-	snprintf(d, sizeof(d), "validation=%s", NkMatGraphErrorName(v));
+	NkString d;
+	d = NkFormat("validation={0}", NkMatGraphErrorName(v));
 	Cas("graphe/aucune-sortie", v == NkMatGraphError::NoOutput, d);
 }
 
@@ -281,10 +302,8 @@ static void CasMelangeShader() {
 	}
 	const bool bonOrdre = trie && pDiff < pMix && pEmis < pMix && pMix < pOut;
 	const NkMatGraphError v = NkMatValidate(g);
-	char d[224];
-	snprintf(d, sizeof(d), "liens=%s/%s/%s | positions diff=%d emis=%d mix=%d sortie=%d | validation=%s",
-			 NkLinkErrorName(e1), NkLinkErrorName(e2), NkLinkErrorName(e3), pDiff, pEmis, pMix, pOut,
-			 NkMatGraphErrorName(v));
+	NkString d;
+	d = NkFormat("liens={0}/{1}/{2} | positions diff={3} emis={4} mix={5} sortie={6} | validation={7}", NkLinkErrorName(e1), NkLinkErrorName(e2), NkLinkErrorName(e3), pDiff, pEmis, pMix, pOut, NkMatGraphErrorName(v));
 	Cas("graphe/melange-deux-bsdf",
 		e1 == NkLinkError::Ok && e2 == NkLinkError::Ok && e3 == NkLinkError::Ok && bonOrdre &&
 			v == NkMatGraphError::Ok,
@@ -314,9 +333,8 @@ static void CasAllerRetourFichier() {
 	// La semantique : reel->couleur accepte, couleur->reel refuse, APRES relecture.
 	const NkTypeId r2 = g2.FindType(NK_MT_REAL), c2 = g2.FindType(NK_MT_COLOR);
 	const bool semantique = r2 && c2 && g2.Accepts(c2, r2) && !g2.Accepts(r2, c2);
-	char d[224];
-	snprintf(d, sizeof(d), "lu=%d texte-identique=%d octets=%u validation=%s | semantique-survit=%d (types %u/%u)",
-			 lu ? 1 : 0, identique ? 1 : 0, (uint32)a.Size(), NkMatGraphErrorName(v), semantique ? 1 : 0, r2, c2);
+	NkString d;
+	d = NkFormat("lu={0} texte-identique={1} octets={2} validation={3} | semantique-survit={4} (types {5}/{6})", lu ? 1 : 0, identique ? 1 : 0, (uint32)a.Size(), NkMatGraphErrorName(v), semantique ? 1 : 0, r2, c2);
 	Cas("graphe/aller-retour-fichier", lu && identique && v == NkMatGraphError::Ok && semantique, d);
 	(void)t;
 }
@@ -380,10 +398,8 @@ static void CasDefautDePrise() {
 
 	// Poser un defaut sur une prise absente doit ECHOUER, jamais en creer une.
 	const bool refuse = !g.SetSocketDefault(n, "prise_qui_nexiste_pas", NkSocketDir::Input, NkValueReal(t.real, 1.f));
-	char d[240];
-	snprintf(d, sizeof(d), "absente=%s | vierge non-renseignee=%d | pose=%d relu-exact=%d | pose sur absente refusee=%d",
-			 absente ? "POINTEUR (nullptr attendu)" : "nullptr", viergeNonRenseignee ? 1 : 0, pose ? 1 : 0,
-			 bonne ? 1 : 0, refuse ? 1 : 0);
+	NkString d;
+	d = NkFormat("absente={0} | vierge non-renseignee={1} | pose={2} relu-exact={3} | pose sur absente refusee={4}", absente ? "POINTEUR (nullptr attendu)" : "nullptr", viergeNonRenseignee ? 1 : 0, pose ? 1 : 0, bonne ? 1 : 0, refuse ? 1 : 0);
 	Cas("valeur/defaut-de-prise", !absente && viergeNonRenseignee && pose && bonne && refuse, d);
 }
 
@@ -443,11 +459,8 @@ static void CasJamaisRenseigneContreVide() {
 	const bool survit = relu && relu->IsSet() && relu->numbers.Size() == 0 && relu->text.Size() == 0;
 	const bool uneSeuleLigne = ContientLigne(avec, "prop ");
 
-	char d[256];
-	snprintf(d, sizeof(d),
-			 "proprietes posees=%u | aucune ligne def=%d aucune ligne prop=%d | absente apres relecture=%d | temoin vide-mais-posee : ligne ecrite=%d survit=%d",
-			 posees, aucunDef ? 1 : 0, aucunProp ? 1 : 0, absenteApres ? 1 : 0, uneSeuleLigne ? 1 : 0,
-			 survit ? 1 : 0);
+	NkString d;
+	d = NkFormat("proprietes posees={0} | aucune ligne def={1} aucune ligne prop={2} | absente apres relecture={3} | temoin vide-mais-posee : ligne ecrite={4} survit={5}", posees, aucunDef ? 1 : 0, aucunProp ? 1 : 0, absenteApres ? 1 : 0, uneSeuleLigne ? 1 : 0, survit ? 1 : 0);
 	Cas("valeur/jamais-renseigne-vs-vide",
 		posees == 1 && aucunDef && aucunProp && absenteApres && uneSeuleLigne && survit, d);
 }
@@ -475,10 +488,8 @@ static void CasProprieteDeNoeud() {
 	const bool retraitInconnu = !g.RemoveProp(n, "jamais_posee");
 	const NkGraphValue *reste = g.FindProp(n, "seconde");
 	const bool resteIntacte = reste && reste->numbers.Size() == 1 && reste->numbers[0] == 2.f;
-	char d[240];
-	snprintf(d, sizeof(d), "1 pose=%u | 2 poses meme cle=%u (1 attendu) remplacee=%d | inconnue nullptr=%d | retiree=%d retrait-inconnu-refuse=%d voisine-intacte=%d",
-			 apres1, apres2, remplacee ? 1 : 0, inconnueNulle ? 1 : 0, retiree ? 1 : 0, retraitInconnu ? 1 : 0,
-			 resteIntacte ? 1 : 0);
+	NkString d;
+	d = NkFormat("1 pose={0} | 2 poses meme cle={1} (1 attendu) remplacee={2} | inconnue nullptr={3} | retiree={4} retrait-inconnu-refuse={5} voisine-intacte={6}", apres1, apres2, remplacee ? 1 : 0, inconnueNulle ? 1 : 0, retiree ? 1 : 0, retraitInconnu ? 1 : 0, resteIntacte ? 1 : 0);
 	Cas("valeur/propriete-de-noeud",
 		apres1 == 1 && apres2 == 1 && remplacee && inconnueNulle && retiree && retraitInconnu && resteIntacte, d);
 }
@@ -518,9 +529,8 @@ static void CasAllerRetourConstruitEnMemoire() {
 	// Un texte a ESPACES est ce qui casse en premier quand on lit un jeton au
 	// lieu du reste de la ligne.
 	const bool texteAEspaces = p2 && p2->text == NkString("GGX multi diffusion");
-	char d[240];
-	snprintf(d, sizeof(d), "lu=%d texte-identique=%d octets=%u | valeurs egales au bit=%d | texte a espaces preserve=%d",
-			 lu ? 1 : 0, (a == b) ? 1 : 0, (uint32)a.Size(), valeursEgales ? 1 : 0, texteAEspaces ? 1 : 0);
+	NkString d;
+	d = NkFormat("lu={0} texte-identique={1} octets={2} | valeurs egales au bit={3} | texte a espaces preserve={4}", lu ? 1 : 0, (a == b) ? 1 : 0, (uint32)a.Size(), valeursEgales ? 1 : 0, texteAEspaces ? 1 : 0);
 	Cas("valeur/aller-retour-construit-en-memoire", lu && (a == b) && valeursEgales && texteAEspaces, d);
 }
 
@@ -541,9 +551,8 @@ static void CasPrecisionExacte() {
 	g2.Deserialize(s.CStr());
 	const NkGraphValue *v = g2.SocketDefault(n, "roughness", NkSocketDir::Input);
 	const bool exact = v && v->IsSet() && v->numbers.Size() == 1 && v->numbers[0] == tiers;
-	char d[192];
-	snprintf(d, sizeof(d), "1/3 ecrit puis relu | egal au bit=%d (%.9g vs %.9g)", exact ? 1 : 0, (double)tiers,
-			 (v && v->numbers.Size() == 1) ? (double)v->numbers[0] : 0.0);
+	NkString d;
+	d = NkFormat("1/3 ecrit puis relu | egal au bit={0} ({1:.9g} vs {2:.9g})", exact ? 1 : 0, (double)tiers, (v && v->numbers.Size() == 1) ? (double)v->numbers[0] : 0.0);
 	Cas("valeur/precision-traverse-le-texte", exact, d);
 }
 
@@ -571,9 +580,8 @@ static void CasFichierSainZeroDiagnostic() {
 	const bool lu = g.Deserialize(kFichierSain);
 	NkVector<NkGraphDiag> diags;
 	const uint32 n = g.Validate(diags);
-	char d[192];
-	snprintf(d, sizeof(d), "lu=%d diagnostics=%u (0 attendu) noeuds=%u liens=%u", lu ? 1 : 0, n, g.NodeCount(),
-			 g.LinkCount());
+	NkString d;
+	d = NkFormat("lu={0} diagnostics={1} (0 attendu) noeuds={2} liens={3}", lu ? 1 : 0, n, g.NodeCount(), g.LinkCount());
 	Cas("validation/fichier-sain-zero-diag", lu && n == 0 && g.NodeCount() == 2 && g.LinkCount() == 1, d);
 }
 
@@ -600,9 +608,8 @@ static void CasFichierCycle() {
 	NkNodeGraph g;
 	const bool lu = g.Deserialize(kCycle);
 	const uint32 cycles = CompteDiag(g, NkGraphIssue::Cycle);
-	char d[192];
-	snprintf(d, sizeof(d), "lu=%d liens charges=%u (2 attendus : l invalide doit etre REPRESENTABLE) | diag cycle=%u",
-			 lu ? 1 : 0, g.LinkCount(), cycles);
+	NkString d;
+	d = NkFormat("lu={0} liens charges={1} (2 attendus : l invalide doit etre REPRESENTABLE) | diag cycle={2}", lu ? 1 : 0, g.LinkCount(), cycles);
 	Cas("validation/cycle-par-le-fichier", lu && g.LinkCount() == 2 && cycles == 1, d);
 }
 
@@ -625,9 +632,8 @@ static void CasFichierTypeIncompatible() {
 	g.Deserialize(kMauvaisType);
 	NkString quel;
 	const uint32 n = CompteDiag(g, NkGraphIssue::LinkTypeMismatch, &quel);
-	char d[192];
-	snprintf(d, sizeof(d), "diag type-incompatible=%u sur la prise « %s » | liens charges=%u", n, quel.CStr(),
-			 g.LinkCount());
+	NkString d;
+	d = NkFormat("diag type-incompatible={0} sur la prise '{1}' | liens charges={2}", n, quel.CStr(), g.LinkCount());
 	Cas("validation/type-incompatible-par-fichier", n == 1 && quel == NkString("entree") && g.LinkCount() == 1, d);
 }
 
@@ -645,8 +651,8 @@ static void CasFichierSensInverse() {
 	NkNodeGraph g;
 	g.Deserialize(kSens);
 	const uint32 n = CompteDiag(g, NkGraphIssue::LinkDirection);
-	char d[160];
-	snprintf(d, sizeof(d), "diag sens-invalide=%u | liens charges=%u", n, g.LinkCount());
+	NkString d;
+	d = NkFormat("diag sens-invalide={0} | liens charges={1}", n, g.LinkCount());
 	Cas("validation/sens-inverse-par-fichier", n == 1 && g.LinkCount() == 1, d);
 }
 
@@ -669,8 +675,8 @@ static void CasFichierNoeudEtSocketAbsents() {
 	g.Deserialize(kAbsents);
 	const uint32 noeud = CompteDiag(g, NkGraphIssue::LinkUnknownNode);
 	const uint32 borne = CompteDiag(g, NkGraphIssue::LinkSocketOutOfRange);
-	char d[192];
-	snprintf(d, sizeof(d), "diag noeud-inconnu=%u | diag socket-hors-bornes=%u (deux codes DISTINCTS)", noeud, borne);
+	NkString d;
+	d = NkFormat("diag noeud-inconnu={0} | diag socket-hors-bornes={1} (deux codes DISTINCTS)", noeud, borne);
 	Cas("validation/noeud-et-socket-absents", noeud == 1 && borne == 1, d);
 }
 
@@ -696,9 +702,8 @@ static void CasFichierEntreeDoublee() {
 	const uint32 n = CompteDiag(g, NkGraphIssue::LinkDuplicateTarget);
 	NkVector<NkNodeId> ordre;
 	const bool triable = g.TopoSort(ordre);
-	char d[192];
-	snprintf(d, sizeof(d), "diag entree-doublee=%u | liens=%u | triable=%d (le tri ne voit RIEN)", n, g.LinkCount(),
-			 triable ? 1 : 0);
+	NkString d;
+	d = NkFormat("diag entree-doublee={0} | liens={1} | triable={2} (le tri ne voit RIEN)", n, g.LinkCount(), triable ? 1 : 0);
 	Cas("validation/entree-doublee-par-fichier", n == 1 && g.LinkCount() == 2 && triable, d);
 }
 
@@ -721,9 +726,8 @@ static void CasFichierTypesInconnus() {
 	const uint32 sock = CompteDiag(g, NkGraphIssue::SocketUnknownType, &quelleprise);
 	const uint32 def = CompteDiag(g, NkGraphIssue::DefaultTypeMismatch, &quelledefaut);
 	const uint32 prop = CompteDiag(g, NkGraphIssue::PropUnknownType, &quelleprop);
-	char d[240];
-	snprintf(d, sizeof(d), "prise type-inconnu=%u (%s) | defaut type-different=%u (%s) | propriete type-inconnu=%u (%s)",
-			 sock, quelleprise.CStr(), def, quelledefaut.CStr(), prop, quelleprop.CStr());
+	NkString d;
+	d = NkFormat("prise type-inconnu={0} ({1}) | defaut type-different={2} ({3}) | propriete type-inconnu={4} ({5})", sock, quelleprise.CStr(), def, quelledefaut.CStr(), prop, quelleprop.CStr());
 	Cas("validation/types-inconnus-par-fichier",
 		sock == 1 && quelleprise == NkString("prise_type_fantome") && def == 1 &&
 			quelledefaut == NkString("prise_saine") && prop == 1 && quelleprop == NkString("cle_fantome"),
@@ -754,9 +758,8 @@ static void CasDefautHorsBornesNonRabattu() {
 	const bool aucunRabattement = p0 && !p0->IsSet() && p1 && !p1->IsSet();
 	NkVector<NkGraphDiag> diags;
 	const uint32 n = g.Validate(diags);
-	char d[224];
-	snprintf(d, sizeof(d), "premiere renseignee=%d seconde renseignee=%d (0/0 attendu : AUCUN rabattement) | diagnostics=%u",
-			 (p0 && p0->IsSet()) ? 1 : 0, (p1 && p1->IsSet()) ? 1 : 0, n);
+	NkString d;
+	d = NkFormat("premiere renseignee={0} seconde renseignee={1} (0/0 attendu : AUCUN rabattement) | diagnostics={2}", (p0 && p0->IsSet()) ? 1 : 0, (p1 && p1->IsSet()) ? 1 : 0, n);
 	Cas("validation/defaut-hors-bornes-non-rabattu", aucunRabattement && n == 0, d);
 }
 
@@ -775,8 +778,8 @@ static void CasCompteRenduBorne() {
 	const bool lu = g.Deserialize(kEnorme);
 	const NkGraphValue *v = g.SocketDefault(1, "prise", NkSocketDir::Input);
 	const uint32 taille = v ? (uint32)v->numbers.Size() : 0u;
-	char d[192];
-	snprintf(d, sizeof(d), "lu=%d sans mourir | reels retenus=%u (borne a 4096, pas 4 milliards)", lu ? 1 : 0, taille);
+	NkString d;
+	d = NkFormat("lu={0} sans mourir | reels retenus={1} (borne a 4096, pas 4 milliards)", lu ? 1 : 0, taille);
 	Cas("validation/compte-de-reels-borne", lu && taille <= 4096u, d);
 }
 
@@ -912,10 +915,8 @@ static void CasBindingDeclareDesDeuxCotes() {
 		}
 	}
 	const bool accord = (bindingLu == (int32)renderer::NK_MATBIND_LAYER_MASK) && (setLu == 2);
-	char d[240];
-	snprintf(d, sizeof(d), "shader lu (%u o) | tMask trouve=%d | set=%d binding=%d | constante C++ renderer::NK_MATBIND_LAYER_MASK=%u | accord=%d",
-			 (uint32)src.Size(), posSampler > 0 ? 1 : 0, setLu, bindingLu, (uint32)renderer::NK_MATBIND_LAYER_MASK,
-			 accord ? 1 : 0);
+	NkString d;
+	d = NkFormat("shader lu ({0} o) | tMask trouve={1} | set={2} binding={3} | constante C++ renderer::NK_MATBIND_LAYER_MASK={4} | accord={5}", (uint32)src.Size(), posSampler > 0 ? 1 : 0, setLu, bindingLu, (uint32)renderer::NK_MATBIND_LAYER_MASK, accord ? 1 : 0);
 	Cas("phase0/binding-declare-des-deux-cotes", posSampler > 0 && accord, d);
 }
 
@@ -934,9 +935,8 @@ static void CasQuatreCanauxPresents() {
 	const bool g = Apres(src, "if (source == 9) return clamp(m.g") > 0;
 	const bool b = Apres(src, "if (source == 10) return clamp(m.b") > 0;
 	const bool a = Apres(src, "if (source == 11) return clamp(m.a") > 0;
-	char d[192];
-	snprintf(d, sizeof(d), "canaux traites dans le shader : R=%d G=%d B=%d A=%d (les 4 attendus)", r ? 1 : 0,
-			 g ? 1 : 0, b ? 1 : 0, a ? 1 : 0);
+	NkString d;
+	d = NkFormat("canaux traites dans le shader : R={0} G={1} B={2} A={3} (les 4 attendus)", r ? 1 : 0, g ? 1 : 0, b ? 1 : 0, a ? 1 : 0);
 	Cas("phase0/quatre-canaux-traites", r && g && b && a, d);
 }
 
@@ -999,8 +999,7 @@ static void CasMasqueCompileSurLesBackends() {
 		{NkSLTarget::NK_HLSL_DX12, "DX12"},
 	};
 	uint32 ok = 0;
-	char detail[240];
-	int off = 0;
+	NkString detail;
 	bool lectureTexturePartout = true;
 	for (uint32 t = 0; t < 4; ++t) {
 		NkSLCompileResult r = c.Compile(shader, NkSLStage::NK_FRAGMENT, cibles[t].cible);
@@ -1020,28 +1019,27 @@ static void CasMasqueCompileSurLesBackends() {
 		const bool echantillonne =
 			r.success && (ContientSansCasse(r.source, "texture(") || ContientSansCasse(r.source, ".sample("));
 		const bool hlsl = (cibles[t].cible == NkSLTarget::NK_HLSL_DX11 || cibles[t].cible == NkSLTarget::NK_HLSL_DX12);
-		char reg[24];
-		// PAS de parenthese fermante : DX11 ecrit « register(t9) » et DX12
+			// PAS de parenthese fermante : DX11 ecrit « register(t9) » et DX12
 		// « register(t9, space0) ». Fermer la parenthese ferait echouer DX12
 		// pour une raison qui n a rien a voir avec le masque — mesure le 22/08.
-		snprintf(reg, sizeof(reg), "register(t%u", (uint32)renderer::NK_MATBIND_LAYER_MASK);
-		const bool bonRegistre = !hlsl || (r.success && ContientSansCasse(r.source, reg));
+		const NkString reg = NkFormat("register(t{0}", (uint32)renderer::NK_MATBIND_LAYER_MASK);
+		const bool bonRegistre = !hlsl || (r.success && ContientSansCasse(r.source, reg.CStr()));
 		const bool lit = declare && echantillonne && bonRegistre;
 		if (r.success && !lit && getenv("NK_DUMP")) {
 			// Diagnostic PERMANENT, pas un echafaudage : quand ce cas tombe, la
 			// question est toujours « le backend a-t-il replie la branche, ou ai-je
 			// cherche le mauvais nom ? ». Sans le code sous les yeux, on tranche au
 			// hasard. NK_DUMP=1 le montre.
-			printf("\n--- %s : compile mais le masque n a pas traverse ---\n%s\n--- fin ---\n",
-				cibles[t].nom, r.source.CStr());
+			logger.Info("\n--- {0} : compile mais le masque n a pas traverse ---\n{1}\n--- fin ---", cibles[t].nom, r.source.CStr());
 		}
 		if (r.success)
 			++ok;
 		if (!lit)
 			lectureTexturePartout = false;
-		off += snprintf(detail + off, sizeof(detail) - (size_t)off, "%s=%s%s%s%s ", cibles[t].nom,
-						r.success ? "ok" : "ECHEC", declare ? "" : "(pas declare!)",
-						echantillonne ? "" : "(pas echantillonne!)", bonRegistre ? "" : "(mauvais registre!)");
+		detail.Append(NkFormat("{0}={1}{2}{3}{4} ", NkString(cibles[t].nom),
+							   NkString(r.success ? "ok" : "ECHEC"), NkString(declare ? "" : "(pas declare!)"),
+							   NkString(echantillonne ? "" : "(pas echantillonne!)"),
+							   NkString(bonRegistre ? "" : "(mauvais registre!)")));
 	}
 	Cas("phase0/masque-compile-4-backends", ok == 4 && lectureTexturePartout && corps.Size() > 100, detail);
 }
@@ -1050,7 +1048,7 @@ static void CasMasqueCompileSurLesBackends() {
 
 // Compile un shader NkSL sur les quatre backends et rend combien passent. Le
 // vrai NkSLCompiler, sans device : c'est ce que NkSLCheck prouve deja faisable.
-static uint32 CompileSurLesBackends(const NkString &nksl, char *detail, size_t taille, NkString *premiereErreur) {
+static uint32 CompileSurLesBackends(const NkString &nksl, NkString &detail, NkString *premiereErreur) {
 	NkSLCompiler c;
 	struct {
 			NkSLTarget cible;
@@ -1062,16 +1060,14 @@ static uint32 CompileSurLesBackends(const NkString &nksl, char *detail, size_t t
 		{NkSLTarget::NK_HLSL_DX12, "DX12"},
 	};
 	uint32 ok = 0;
-	int off = 0;
-	if (taille)
-		detail[0] = 0;
+	detail = NkString("");
 	for (uint32 t = 0; t < 4; ++t) {
 		NkSLCompileResult r = c.Compile(nksl, NkSLStage::NK_FRAGMENT, cibles[t].cible);
 		if (r.success)
 			++ok;
 		else if (premiereErreur && premiereErreur->Size() == 0 && r.errors.Size() > 0)
 			*premiereErreur = r.errors[0].message;
-		off += snprintf(detail + off, taille - (size_t)off, "%s=%s ", cibles[t].nom, r.success ? "ok" : "ECHEC");
+		detail.Append(NkFormat("{0}={1} ", NkString(cibles[t].nom), NkString(r.success ? "ok" : "ECHEC")));
 	}
 	return ok;
 }
@@ -1102,20 +1098,18 @@ static void CasCompilePrincipled() {
 	const NkMatTypes t = NkMatRegisterTypes(g);
 	MonteUnPrincipled(g, t, nullptr);
 	NkMatCompileResult r = NkMatCompileToNkSL(g);
-	char be[128];
+	NkString be;
 	NkString err;
-	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, sizeof(be), &err) : 0u;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 	// Et la valeur du defaut doit se retrouver DANS le code emis : un compilateur
 	// qui oublierait de lire les defauts produirait un shader qui compile
 	// parfaitement et rendrait du noir.
 	const bool porteLeRouge = r.ok && ContientSansCasse(r.source, "0.800000012");
-	char d[256];
-	snprintf(d, sizeof(d), "emis=%d (%u o) | %s| defaut de base_color present=%d %s", r.ok ? 1 : 0,
-			 (uint32)r.source.Size(), be, porteLeRouge ? 1 : 0,
-			 r.ok ? "" : (r.error.Size() ? r.error.CStr() : ""));
+	NkString d;
+	d = NkFormat("emis={0} ({1} o) | {2}| defaut de base_color present={3} {4}", r.ok ? 1 : 0, (uint32)r.source.Size(), be, porteLeRouge ? 1 : 0, r.ok ? "" : (r.error.Size() ? r.error.CStr() : ""));
 	Cas("compile/principled-4-backends", r.ok && ok == 4 && porteLeRouge, d);
 	if (ok != 4 && err.Size() > 0)
-		printf("      premiere erreur du backend : %s\n", err.CStr());
+		logger.Info("      premiere erreur du backend : {0}", err.CStr());
 }
 
 static void CasCompileMixShader() {
@@ -1156,37 +1150,35 @@ static void CasCompileMixShader() {
 	// 1 declaration + 4 usages, un par composante. Un melangeur qui n'emettrait
 	// que la couleur — la plus visible — en donnerait 2, et perdrait en silence
 	// la rugosite et le metallique du second BSDF.
-	char nomFac[32];
-	snprintf(nomFac, sizeof(nomFac), "n%u_fac", (uint32)mix);
+	const NkString nomFac = NkFormat("n{0}_fac", (uint32)mix);
 	uint32 nbFac = 0;
 	if (r.ok) {
 		const char *p = r.source.CStr();
-		const size_t L = strlen(nomFac);
+		const size_t L = (size_t)nomFac.Size();
 		while (*p) {
 			size_t k = 0;
-			while (k < L && p[k] == nomFac[k])
+			while (k < L && p[k] == nomFac.CStr()[k])
 				++k;
 			if (k == L)
 				++nbFac;
 			++p;
 		}
 	}
-	char be[128];
+	NkString be;
 	NkString err;
-	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, sizeof(be), &err) : 0u;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 	// Le puits emet lui aussi un `mix` (specColor) : on en attend donc 4 + 1.
-	char d[256];
-	snprintf(d, sizeof(d), "emis=%d (%u o) | %s| %s cite %u fois (1 declaration + 4 composantes = 5) %s",
-			 r.ok ? 1 : 0, (uint32)r.source.Size(), be, nomFac, nbFac, r.ok ? "" : r.error.CStr());
+	NkString d;
+	d = NkFormat("emis={0} ({1} o) | {2}| {3} cite {4} fois (1 declaration + 4 composantes = 5) {5}", r.ok ? 1 : 0, (uint32)r.source.Size(), be, nomFac, nbFac, r.ok ? "" : r.error.CStr());
 	Cas("compile/melange-deux-bsdf-4-backends", r.ok && ok == 4 && nbFac == 5, d);
 	// NK_DUMP=1 imprime le NkSL engendre. Ce n est pas un echafaudage oublie :
 	// quand un cas de compilation tombe, la question est toujours « qu a-t-il
 	// donc ecrit ? », et un banc qui ne sait pas le montrer oblige a rajouter
 	// un printf puis a le retirer, a chaque fois.
 	if (getenv("NK_DUMP") && r.ok)
-		printf("%s", r.source.CStr());
+		logger.Info("{0}", r.source.CStr());
 	if (ok != 4 && err.Size() > 0)
-		printf("      premiere erreur du backend : %s\n", err.CStr());
+		logger.Info("      premiere erreur du backend : {0}", err.CStr());
 }
 
 static void CasCompileOrdreRespecte() {
@@ -1205,16 +1197,14 @@ static void CasCompileOrdreRespecte() {
 	const NkNodeId bsdf = MonteUnPrincipled(g, t, &out);
 	NkMatCompileResult r = NkMatCompileToNkSL(g);
 	// La declaration du bsdf doit apparaitre AVANT sa lecture par le puits.
-	char nomAlbedo[32];
-	snprintf(nomAlbedo, sizeof(nomAlbedo), "n%u_albedo", (uint32)bsdf);
-	const int32 premiere = r.ok ? Apres(r.source, nomAlbedo) : -1;
+	const NkString nomAlbedo = NkFormat("n{0}_albedo", (uint32)bsdf);
+	const int32 premiere = r.ok ? Apres(r.source, nomAlbedo.CStr()) : -1;
 	const int32 lecture = r.ok ? Apres(r.source, "surfAlbedo = ") : -1;
-	char be[128];
+	NkString be;
 	NkString err;
-	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, sizeof(be), &err) : 0u;
-	char d[256];
-	snprintf(d, sizeof(d), "declaration de %s a %d, lecture du puits a %d (declaration AVANT attendue) | %s",
-			 nomAlbedo, premiere, lecture, be);
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	NkString d;
+	d = NkFormat("declaration de {0} a {1}, lecture du puits a {2} (declaration AVANT attendue) | {3}", nomAlbedo, premiere, lecture, be);
 	Cas("compile/ordre-topologique-respecte", r.ok && ok == 4 && premiere > 0 && lecture > premiere, d);
 }
 
@@ -1271,9 +1261,8 @@ static void CasCompileRefuseAvantDeGenerer() {
 	}
 	const bool troisDistincts = e1 && e2 && e3 && rienEmis3 && m1.Size() > 0 && m2.Size() > 0 && m3.Size() > 0 &&
 								!(m1 == m2) && !(m2 == m3) && !(m1 == m3);
-	char d[256];
-	snprintf(d, sizeof(d), "[%s] [%s] [%s] | trois ECHECS=%d%d%d rien emis=%d distincts=%d", m1.CStr(), m2.CStr(),
-			 m3.CStr(), e1 ? 1 : 0, e2 ? 1 : 0, e3 ? 1 : 0, rienEmis3 ? 1 : 0, troisDistincts ? 1 : 0);
+	NkString d;
+	d = NkFormat("[{0}] [{1}] [{2}] | trois ECHECS={3}{4}{5} rien emis={6} distincts={7}", m1.CStr(), m2.CStr(), m3.CStr(), e1 ? 1 : 0, e2 ? 1 : 0, e3 ? 1 : 0, rienEmis3 ? 1 : 0, troisDistincts ? 1 : 0);
 	Cas("compile/refuse-avant-de-generer", troisDistincts, d);
 }
 
@@ -1294,13 +1283,12 @@ static void CasCompileEntreeNiCableeNiRenseignee() {
 	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED); // AUCUN defaut pose
 	g.Connect(bsdf, "bsdf", out, "surface");
 	NkMatCompileResult r = NkMatCompileToNkSL(g);
-	char be[128];
+	NkString be;
 	NkString err;
-	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, sizeof(be), &err) : 0u;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 	const bool neutreNoir = r.ok && ContientSansCasse(r.source, "vec3(0.0)");
-	char d[256];
-	snprintf(d, sizeof(d), "emis=%d | %s| neutre noir present=%d (le blanc flatterait un materiau non fini)",
-			 r.ok ? 1 : 0, be, neutreNoir ? 1 : 0);
+	NkString d;
+	d = NkFormat("emis={0} | {1}| neutre noir present={2} (le blanc flatterait un materiau non fini)", r.ok ? 1 : 0, be, neutreNoir ? 1 : 0);
 	Cas("compile/entree-vide-donne-le-neutre", r.ok && ok == 4 && neutreNoir, d);
 }
 
@@ -1325,21 +1313,27 @@ static void CasCompileGrapheVenuDunFichier() {
 	NkMatCompileResult apres = NkMatCompileToNkSL(g2);
 
 	const bool memeShader = direct.ok && apres.ok && (direct.source == apres.source);
-	char be[128];
+	NkString be;
 	NkString err;
-	const uint32 ok = apres.ok ? CompileSurLesBackends(apres.source, be, sizeof(be), &err) : 0u;
-	char d[256];
-	snprintf(d, sizeof(d), "relu=%d | shader identique apres aller-retour=%d (%u vs %u o) | %s", relu ? 1 : 0,
-			 memeShader ? 1 : 0, (uint32)direct.source.Size(), (uint32)apres.source.Size(), be);
+	const uint32 ok = apres.ok ? CompileSurLesBackends(apres.source, be, &err) : 0u;
+	NkString d;
+	d = NkFormat("relu={0} | shader identique apres aller-retour={1} ({2} vs {3} o) | {4}", relu ? 1 : 0, memeShader ? 1 : 0, (uint32)direct.source.Size(), (uint32)apres.source.Size(), be);
 	Cas("compile/graphe-venu-d-un-fichier", relu && memeShader && ok == 4, d);
 }
 
 int main() {
-	printf("== NkMatGraphCheck — graphe de materiaux, couche 3 sur NKGraph ==\n");
-	printf("   regime : structure de donnees pure, aucun GPU, aucune fenetre.\n");
-	printf("   COUVRE aussi, depuis le 22/08 : les defauts de prise, les\n");
-	printf("   proprietes, la validation d un fichier, et le compilateur vers NkSL.\n");
-	printf("   NE couvre PAS : le RENDU (aucun GPU ici) -- seulement le fait que\n\n");
+	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
+	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
+	// ligne — sinon chaque composant du moteur qui journalise ensuite herite
+	// silencieusement du motif du banc. Consequence assumee : les lignes du
+	// moteur perdent aussi leur horodatage dans ce processus ; elles restent
+	// reconnaissables a leur crochet ouvrant, et se filtrent par « ^\[ ».
+	logger.Pattern("%v");
+	logger.Info("== NkMatGraphCheck - graphe de materiaux, couche 3 sur NKGraph ==");
+	logger.Info("   regime : structure de donnees pure, aucun GPU, aucune fenetre.");
+	logger.Info("   COUVRE aussi, depuis le 22/08 : les defauts de prise, les");
+	logger.Info("   proprietes, la validation d un fichier, et le compilateur vers NkSL.");
+	logger.Info("   NE couvre PAS : le RENDU (aucun GPU ici) -- seulement le fait que\n");
 	CasTypesEnregistrement();
 	CasConversionDirigee();
 	CasInstancierPrincipled();
@@ -1385,6 +1379,6 @@ int main() {
 	CasCompileEntreeNiCableeNiRenseignee();
 	CasCompileGrapheVenuDunFichier();
 
-	printf("\n-- %u cas, %u echec(s) --\n", gCas, gEchecs);
+	logger.Info("\n-- {0} cas, {1} echec(s) --", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;
 }

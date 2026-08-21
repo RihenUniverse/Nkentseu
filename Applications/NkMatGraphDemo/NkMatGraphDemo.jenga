@@ -47,6 +47,24 @@ with project("NkMatGraphDemo"):
     location(".")
     files(["src/main.cpp"])
 
+    # ⚠️ LE FORMATAGE EST UNE ERREUR, PAS UN AVERTISSEMENT (2026-08-22).
+    #
+    # Fait mesure par l agent NK3DModeler : un printf reclamait sept %u et n en
+    # recevait que six. Le septieme lisait de la memoire indeterminee et
+    # affichait « nonmanif=18 » sur un cube parfaitement manifold. Rien ne
+    # plante, rien n arrete la construction -- et LE NOMBRE EST CREDIBLE.
+    #
+    # C est la seule forme de defaut connue de ce depot qui FABRIQUE DU FAUX
+    # SAVOIR au lieu d en cacher : un chiffre faux entre dans un rapport, puis
+    # dans une decision. Un banc dont toute la valeur tient dans les nombres
+    # qu il imprime ne peut pas se permettre un avertissement qui defile.
+    #
+    # Controle positif effectue avant d ajouter ce drapeau : un « %u » de trop
+    # injecte volontairement remonte bien « more '%' conversions than data
+    # arguments ». La chaine de construction VOIT le defaut ; ce drapeau lui
+    # fait ARRETER dessus.
+    cxxflags(["-Werror=format", "-Werror=format-insufficient-args", "-Werror=format-extra-args"])
+
     # NKRenderer (systeme de materiaux + Tools/Offscreen) + NKRHI + NKSL + le noyau.
     nkentseudependson(
         # NkEditMesh est du CPU pur, mais il vit dans NKRenderer : on tire donc la
