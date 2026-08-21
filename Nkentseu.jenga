@@ -1490,6 +1490,12 @@ with workspace("Nkentseu", location="."):
 
 
 
+    with include("Applications/NkMatGraphDemo/NkMatGraphDemo.jenga"):
+
+        pass
+
+
+
     with include("Applications/NKPA/NKPA.jenga"):
 
         pass
