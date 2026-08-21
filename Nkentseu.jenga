@@ -1481,6 +1481,15 @@ with workspace("Nkentseu", location="."):
 
 
 
+    # Banc du graphe de materiaux (couche 3 sur NKGraph). Voisin de NkSLCheck
+    # parce qu il partage exactement ses dependances : NKSL + Foundation, sans
+    # GPU ni fenetre.
+    with include("Applications/NkMatGraphCheck/NkMatGraphCheck.jenga"):
+
+        pass
+
+
+
     with include("Applications/NKPA/NKPA.jenga"):
 
         pass
