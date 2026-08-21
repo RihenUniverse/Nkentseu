@@ -1437,7 +1437,58 @@ par le shader toon). **Ce n'est plus une série de coïncidences, c'est un motif
 dépôt** : la déclaration et l'implémentation vivent dans deux fichiers que rien
 ne force à s'accorder.
 
-### T.2 — Graphe de matériaux (extension des templates existants)
+### T.2 — Graphe de matériaux — ⏳ **DÉMARRÉ ET PROUVÉ EN CONSOLE (2026-08-22)**
+
+Preuve : `Applications/NkMatGraphCheck` — **application** console, **35 cas, 0
+échec**, sans GPU ni fenêtre (dépendances de `NkSLCheck` : NKSL + Foundation).
+**21 mutations vérifiées rouges** au total sur les trois couches livrées.
+
+| brique | état | où |
+|---|---|---|
+| substrat de graphe | ✅ réutilisé, pas réécrit | `Kernel/Runtime/NKGraph` (couche 1) |
+| types de prises matériau + conversions dirigées | ✅ | `Materials/Graph/NkMatGraphTypes.h` |
+| prototypes de nœuds | ✅ 5 | Principled · Diffuse · Emission · **Mix Shader** · Material Output |
+| validation de domaine | ✅ | zéro sortie · sorties multiples · sortie non reliée · cycle |
+| **compilateur → NkSL** | ✅ v1 | `Materials/Graph/NkMatGraphCompile.h` |
+| masque de couche par **texture** | ✅ | 4 canaux, binding 9, `SetLayerV1MaskMap()` |
+| nœuds Texture / ColorRamp / Math / Mapping | ❌ | débloqués : le cœur porte enfin des paramètres |
+| canevas d'édition | ❌ | couche 2, `NKEditorKit`, partagé — pas ce chantier |
+
+**Le NkSL émis COMPILE sur les quatre backends** (GL, Vulkan, DX11, DX12), vérifié
+par le vrai `NkSLCompiler` — pas comparé à un témoin textuel. Un graphe
+sérialisé, relu, puis recompilé rend le **même shader au caractère près**.
+
+#### Les trois décisions qui structurent le générateur
+
+**1. Un « shader » est quatre locales, pas une struct.** NkSL n'accepte pas de
+variable locale de type struct utilisateur (contrainte relevée dans
+`layeredv1.frag.nksl`). Un shader est donc émis en `albedo` (vec3), `metallic`
+(float), `roughness` (float), `emission` (vec3) — exactement le motif de
+l'accumulateur de LayeredV1. Ce n'est pas un choix de style.
+
+**2. `Mix Shader` mélange les PARAMÈTRES, pas des closures.** Cycles mélange des
+closures (une lobe tirée au hasard par rayon) ; **EEVEE approxime**, et NKRenderer
+est un rasteriseur. Le mélange est donc composante par composante, facteur borné
+à [0,1]. C'est ce que font EEVEE, Unreal et Unity. La **forme** du graphe est
+celle de Blender ; seule son exécution diffère.
+
+**3. Une entrée ni câblée ni renseignée donne le NOIR.** Le blanc ferait passer un
+matériau non fini pour un matériau clair. Le neutre doit **se voir**.
+
+#### ⚠️ Ce qui reste à savoir avant de continuer
+
+- Le générateur **refuse** un nœud dont il n'a pas d'émetteur, et n'émet **rien**.
+  Un nœud sauté laisserait son consommateur lire une locale jamais déclarée : le
+  shader ne compilerait pas, et l'erreur accuserait le générateur au lieu du
+  graphe.
+- Le modèle d'éclairage émis est **celui de LayeredV1, à l'identique** — pour que
+  deux matériaux côte à côte dans la même scène se ressemblent. Le jour où
+  l'ombrage évolue, les deux doivent évoluer ensemble.
+- Le forçage du point décimal dans les littéraux (`2` → `2.0`) est une
+  **précaution non prouvée** : sa mutation a survécu, les quatre backends
+  acceptent `2`. Elle reste pour Metal et le backend logiciel, non exercés.
+
+### T.2 — détail d'origine (conservé)
 - ❌ Les templates matériaux actuels deviennent des graphes pré-câblés
   navigables/éditables — **compatibilité ascendante garantie** (les `.nkasset`
   existants continuent de fonctionner)
