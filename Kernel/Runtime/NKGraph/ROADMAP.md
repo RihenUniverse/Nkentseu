@@ -61,10 +61,40 @@ les types » ; chaque domaine fournit « ses nodes et ce qu'il en fait ».
 | P2 — Évaluation (tri topologique, sous-graphes, plan aplati) | ✅ | tri topologique + **refus du cycle à la connexion** (avec sa raison) ; **sous-graphes** et **plan aplati** dans `NkGraphDocument.h/.inl`. Un sous-graphe est une brique **nommée**, définie une fois et **instanciée** N fois (groupes de nœuds de Blender, graphes repliés d'Unreal) — corriger le groupe corrige les N instances. Après aplatissement, les nœuds d'instance et de frontière **ont disparu** et chaque entrée pointe sur l'étape réelle, même à trois groupes de distance. Récursion directe **et indirecte** refusée en la nommant. |
 | P3 — Sérialisation `.nkgraph` + undo/redo | ✅ | `NkNodeGraphIO.inl`. Format **texte**, une directive par ligne : un graphe se relit, se compare avec `git diff` et se répare à la main ; le binaire ferait gagner des octets sur des fichiers de quelques Ko. **Écart assumé** : annuler/refaire par **instantanés sérialisés**, pas par commandes inversibles — l'inverse de « supprimer un nœud » doit restaurer le nœud, tous ses liens **et** leurs identifiants, et c'est le genre d'inverse qu'on écrit presque juste, dont l'erreur ne se voit que trois manipulations plus tard. L'instantané est correct par construction. Coût : mémoire ∝ taille × profondeur ; négligeable à cette échelle, et l'API publique ne changera pas si un jour il faut basculer. |
 | P4 — Widget canvas (NKEditorKit) | ❌ | pan/zoom, fils, recherche, groupes, preview |
-| P5 — 1er consommateur : NKCode Phase 4 (Blueprint) OU matériaux T.2 | ❌ | le premier qui démarre construit AVEC le cœur |
+| P5 — 1er consommateur : NKCode Phase 4 (Blueprint) OU matériaux T.2 | ⏳ | **Démarré le 2026-08-21 : c'est le graphe de MATÉRIAUX.** Couche 3 dans `Kernel/Runtime/NKRenderer/src/NKRenderer/Materials/Graph/NkMatGraphTypes.h` (en-tête pur, comme le cœur), preuve dans `Applications/NkMatGraphCheck` — **application console**, 12 cas, **7 mutations vérifiées rouges**. Livré à ce stade : les 4 types de prises (réel/vecteur/couleur/shader) avec conversions **dirigées** (réel→couleur oui, couleur→réel non — luminance ? moyenne ? canal rouge ? trois réponses plausibles, donc aucune par défaut), les prototypes Principled/Diffuse/Emission/Mix Shader/Material Output, et la validation **de domaine** (zéro sortie, sorties multiples, sortie non reliée) — que le cœur ne peut pas faire, et c'est voulu. Reste : le compilateur → NkSL. |
 | P6 — 2e consommateur (l'autre des deux, ou VFX) | ❌ | force la généralisation de l'API |
 
 Légende : ✅ Livré · 🔶 Partiel · ⏳ En cours · ❌ TODO · 🚫 Abandonné
+
+## ⚠️ Deux dettes du cœur, trouvées par le PREMIER consommateur réel (2026-08-21)
+
+Le cœur était prouvé par un seul harnais. Le premier usage véritable en a sorti
+deux choses qu'un harnais unique ne pouvait pas révéler. Elles sont **posées ici,
+pas corrigées** : elles touchent la couche 1, et l'arbitrage est demandé dans
+`echanges/nkrenderer.questions.md` (Q14).
+
+**1. Un nœud n'a AUCUN endroit où ranger un paramètre, et un socket aucune valeur
+par défaut.** `NkNode` porte `id / type / label / subgraph / x / y / sockets /
+alive` ; `NkSocket` porte `name / type / dir` ; et `.nkgraph` n'a que les
+directives `type`, `conv`, `noeud`, `sock`, `lien`. Or c'est **la moitié d'un
+nœud de matériau** : Base Color = blanc et Roughness = 0,5 sur les entrées non
+connectées, les arrêts d'un ColorRamp, l'opération d'un nœud Math, le chemin
+d'une Image Texture. Le raisonnement qui tranche est déjà écrit dans
+`NkNodeGraph.h`, à propos de la position `x, y` : *« si le modèle ne la porte
+pas, elle finira dans un fichier à côté — donc désynchronisée. »* Mot pour mot le
+cas des paramètres. Un sac de propriétés générique n'est **pas** un type métier :
+c'est de la grammaire de graphe, au même titre que `x`, `y` et `label`.
+
+**2. La validation est une précondition d'un côté et rien du tout de l'autre.**
+`Connect()` refuse le cycle, le type incompatible et le mauvais sens — donc
+l'état invalide est **impossible à construire par l'API**. Mais `Deserialize()`
+fait `mLinks.PushBack(l)` **directement** (`NkNodeGraphIO.inl`, branche `lien`) :
+aucun contrôle. Un `.nkgraph` retouché à la main ou corrompu charge donc un
+graphe cyclique sans une plainte, et l'échec ne sort qu'à `TopoSort`, plus tard
+et ailleurs. **Aucun des 16 cas `graphe/` n'exerce ce chemin** : ils testent
+l'aller-retour d'un graphe *valide*. Ce n'est pas forcément un défaut — un
+éditeur a besoin que l'invalide soit représentable — mais les deux portes ne
+disent pas la même chose, et personne ne l'a écrit ni testé.
 
 **Preuve (31/07/2026)** — 17 cas dans `Applications/NKEditMeshHarness` (141 cas au
 total, les 124 antérieurs inchangés). Ils sont choisis pour qu'une implantation
