@@ -41,10 +41,16 @@ namespace nkentseu {
 	namespace renderer {
 		namespace matgraph {
 
+			using graph::NkGraphProp;
+			using graph::NkGraphValue;
+			using graph::NkNode;
 			using graph::NkNodeGraph;
 			using graph::NkNodeId;
+			using graph::NkSocket;
 			using graph::NkSocketDir;
 			using graph::NkTypeId;
+			using graph::NK_NODE_INVALID;
+			using graph::NK_TYPE_INVALID;
 
 			// ── LES TYPES DE PRISES D'UN GRAPHE DE MATERIAU ──────────────────
 			// Ce sont des NOMS que le coeur enregistre et compare sans jamais

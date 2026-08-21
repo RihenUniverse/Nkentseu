@@ -18,6 +18,7 @@
 // pas une mesure.
 // =============================================================================
 #include "NKRenderer/Materials/Graph/NkMatGraphTypes.h"
+#include "NKRenderer/Materials/Graph/NkMatGraphCompile.h"
 // Les numeros de binding du set materiau. En-tete SANS DEPENDANCE, fait pour
 // etre lisible par un banc qui ne lie ni NKRenderer ni NKRHI.
 #include "NKRenderer/Materials/NkMaterialBindings.h"
@@ -27,6 +28,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h> // strlen : du C, pas de la STL
 
 using namespace nkentseu;
 using namespace nkentseu::graph;
@@ -1044,12 +1046,300 @@ static void CasMasqueCompileSurLesBackends() {
 	Cas("phase0/masque-compile-4-backends", ok == 4 && lectureTexturePartout && corps.Size() > 100, detail);
 }
 
+// ── le compilateur : graphe -> NkSL -> quatre backends ───────────────────────
+
+// Compile un shader NkSL sur les quatre backends et rend combien passent. Le
+// vrai NkSLCompiler, sans device : c'est ce que NkSLCheck prouve deja faisable.
+static uint32 CompileSurLesBackends(const NkString &nksl, char *detail, size_t taille, NkString *premiereErreur) {
+	NkSLCompiler c;
+	struct {
+			NkSLTarget cible;
+			const char *nom;
+	} cibles[4] = {
+		{NkSLTarget::NK_GLSL, "GL"},
+		{NkSLTarget::NK_GLSL_VULKAN, "VK"},
+		{NkSLTarget::NK_HLSL_DX11, "DX11"},
+		{NkSLTarget::NK_HLSL_DX12, "DX12"},
+	};
+	uint32 ok = 0;
+	int off = 0;
+	if (taille)
+		detail[0] = 0;
+	for (uint32 t = 0; t < 4; ++t) {
+		NkSLCompileResult r = c.Compile(nksl, NkSLStage::NK_FRAGMENT, cibles[t].cible);
+		if (r.success)
+			++ok;
+		else if (premiereErreur && premiereErreur->Size() == 0 && r.errors.Size() > 0)
+			*premiereErreur = r.errors[0].message;
+		off += snprintf(detail + off, taille - (size_t)off, "%s=%s ", cibles[t].nom, r.success ? "ok" : "ECHEC");
+	}
+	return ok;
+}
+
+// Le graphe minimal REEL : un Principled avec ses defauts, vers la sortie.
+static NkNodeId MonteUnPrincipled(NkNodeGraph &g, const NkMatTypes &t, NkNodeId *outSortie) {
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	const float32 rouge[3] = {0.8f, 0.15f, 0.1f};
+	g.SetSocketDefault(bsdf, "base_color", NkSocketDir::Input, NkValueVec(t.color, rouge, 3));
+	g.SetSocketDefault(bsdf, "metallic", NkSocketDir::Input, NkValueReal(t.real, 0.0f));
+	g.SetSocketDefault(bsdf, "roughness", NkSocketDir::Input, NkValueReal(t.real, 0.35f));
+	if (outSortie)
+		*outSortie = out;
+	return bsdf;
+}
+
+static void CasCompilePrincipled() {
+	// ⚠️ LE CAS CENTRAL DE LA GRILLE D'ACCEPTATION : « le NkSL emis COMPILE sur
+	// les backends, pas seulement ressemble au temoin ».
+	//
+	// DISCRIMINE : on ne compare pas a un texte de reference. On donne le NkSL au
+	// VRAI compilateur, quatre fois. Un emetteur qui produirait du texte
+	// plausible mais invalide passerait n'importe quelle comparaison de chaines
+	// et echouerait ici.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	MonteUnPrincipled(g, t, nullptr);
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	char be[128];
+	NkString err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, sizeof(be), &err) : 0u;
+	// Et la valeur du defaut doit se retrouver DANS le code emis : un compilateur
+	// qui oublierait de lire les defauts produirait un shader qui compile
+	// parfaitement et rendrait du noir.
+	const bool porteLeRouge = r.ok && ContientSansCasse(r.source, "0.800000012");
+	char d[256];
+	snprintf(d, sizeof(d), "emis=%d (%u o) | %s| defaut de base_color present=%d %s", r.ok ? 1 : 0,
+			 (uint32)r.source.Size(), be, porteLeRouge ? 1 : 0,
+			 r.ok ? "" : (r.error.Size() ? r.error.CStr() : ""));
+	Cas("compile/principled-4-backends", r.ok && ok == 4 && porteLeRouge, d);
+	if (ok != 4 && err.Size() > 0)
+		printf("      premiere erreur du backend : %s\n", err.CStr());
+}
+
+static void CasCompileMixShader() {
+	// LE NOEUD PAR LEQUEL TOUT A COMMENCE — « mixer les shader BSDF ». Deux BSDF
+	// melanges vers une sortie, et le resultat doit traverser les quatre backends.
+	//
+	// DISCRIMINE : on verifie qu'il y a QUATRE `mix(` dans le code emis, un par
+	// composante. Un melangeur qui n'en emettrait qu'un — la couleur, la plus
+	// visible — donnerait un shader qui compile et perdrait la rugosite et le
+	// metallique du second BSDF. C'est le genre de defaut qu'on ne voit pas sur
+	// une sphere mate.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_SHADER);
+	const NkNodeId diff = NkMatAddNode(g, NK_MN_DIFFUSE);
+	const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
+	g.Connect(diff, "bsdf", mix, "shader1");
+	g.Connect(emis, "emission", mix, "shader2");
+	g.Connect(mix, "shader", out, "surface");
+	const float32 bleu[3] = {0.1f, 0.3f, 0.9f};
+	g.SetSocketDefault(diff, "color", NkSocketDir::Input, NkValueVec(t.color, bleu, 3));
+	g.SetSocketDefault(diff, "roughness", NkSocketDir::Input, NkValueReal(t.real, 0.6f));
+	const float32 chaud[3] = {1.0f, 0.6f, 0.2f};
+	g.SetSocketDefault(emis, "color", NkSocketDir::Input, NkValueVec(t.color, chaud, 3));
+	g.SetSocketDefault(emis, "strength", NkSocketDir::Input, NkValueReal(t.real, 2.0f));
+	g.SetSocketDefault(mix, "fac", NkSocketDir::Input, NkValueReal(t.real, 0.5f));
+
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	// COMPTER LES « mix( » DU FICHIER ENTIER NE MARCHE PAS, et je l'ai appris en
+	// le mesurant : le puits en emet DEUX pour son propre compte (`specExp` et
+	// `specColor`). Ma premiere version attendait 5 et en a trouve 6 — la
+	// prediction etait fausse, pas le code. Un controle qui vise « tous les mix
+	// du shader » mesure le modele d'eclairage en meme temps que le melangeur,
+	// et cassera au prochain reglage de l'ombrage sans que rien n'ait bouge.
+	//
+	// On compte donc les occurrences de la LOCALE DU FACTEUR de CE noeud :
+	// 1 declaration + 4 usages, un par composante. Un melangeur qui n'emettrait
+	// que la couleur — la plus visible — en donnerait 2, et perdrait en silence
+	// la rugosite et le metallique du second BSDF.
+	char nomFac[32];
+	snprintf(nomFac, sizeof(nomFac), "n%u_fac", (uint32)mix);
+	uint32 nbFac = 0;
+	if (r.ok) {
+		const char *p = r.source.CStr();
+		const size_t L = strlen(nomFac);
+		while (*p) {
+			size_t k = 0;
+			while (k < L && p[k] == nomFac[k])
+				++k;
+			if (k == L)
+				++nbFac;
+			++p;
+		}
+	}
+	char be[128];
+	NkString err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, sizeof(be), &err) : 0u;
+	// Le puits emet lui aussi un `mix` (specColor) : on en attend donc 4 + 1.
+	char d[256];
+	snprintf(d, sizeof(d), "emis=%d (%u o) | %s| %s cite %u fois (1 declaration + 4 composantes = 5) %s",
+			 r.ok ? 1 : 0, (uint32)r.source.Size(), be, nomFac, nbFac, r.ok ? "" : r.error.CStr());
+	Cas("compile/melange-deux-bsdf-4-backends", r.ok && ok == 4 && nbFac == 5, d);
+	// NK_DUMP=1 imprime le NkSL engendre. Ce n est pas un echafaudage oublie :
+	// quand un cas de compilation tombe, la question est toujours « qu a-t-il
+	// donc ecrit ? », et un banc qui ne sait pas le montrer oblige a rajouter
+	// un printf puis a le retirer, a chaque fois.
+	if (getenv("NK_DUMP") && r.ok)
+		printf("%s", r.source.CStr());
+	if (ok != 4 && err.Size() > 0)
+		printf("      premiere erreur du backend : %s\n", err.CStr());
+}
+
+static void CasCompileOrdreRespecte() {
+	// DISCRIMINE : une locale doit etre DECLAREE avant d'etre lue. C'est la seule
+	// chose que l'ordre topologique garantit, et c'est exactement ce qu'un
+	// emetteur qui parcourrait le graphe dans l'ordre d'insertion casserait.
+	//
+	// Les noeuds sont crees dans l'ordre INVERSE de leur dependance : la sortie
+	// d'abord, les sources ensuite. Un emetteur naif ecrirait donc le puits en
+	// premier, lirait `n2_albedo` avant sa declaration, et AUCUN backend ne
+	// l'accepterait. C'est le compilateur NkSL qui tranche, pas une inspection
+	// de texte.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out = NK_NODE_INVALID;
+	const NkNodeId bsdf = MonteUnPrincipled(g, t, &out);
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	// La declaration du bsdf doit apparaitre AVANT sa lecture par le puits.
+	char nomAlbedo[32];
+	snprintf(nomAlbedo, sizeof(nomAlbedo), "n%u_albedo", (uint32)bsdf);
+	const int32 premiere = r.ok ? Apres(r.source, nomAlbedo) : -1;
+	const int32 lecture = r.ok ? Apres(r.source, "surfAlbedo = ") : -1;
+	char be[128];
+	NkString err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, sizeof(be), &err) : 0u;
+	char d[256];
+	snprintf(d, sizeof(d), "declaration de %s a %d, lecture du puits a %d (declaration AVANT attendue) | %s",
+			 nomAlbedo, premiere, lecture, be);
+	Cas("compile/ordre-topologique-respecte", r.ok && ok == 4 && premiere > 0 && lecture > premiere, d);
+}
+
+static void CasCompileRefuseAvantDeGenerer() {
+	// ⚠️ CE QUI SE PASSE QUAND LE GRAPHE EST MAUVAIS, et c'est la moitie du
+	// travail d'un compilateur. Trois graphes fautifs, trois messages DISTINCTS,
+	// et AUCUN shader emis. Un compilateur qui generait quand meme laisserait le
+	// backend accuser une ligne de shader au lieu du noeud coupable.
+	//
+	// DISCRIMINE : les trois messages doivent DIFFERER. Un compilateur qui
+	// rendrait « graphe invalide » pour tout passerait un test qui ne compterait
+	// que les echecs.
+	// CE CAS A SURVECU A SA PROPRE MUTATION, et la faute etait dans le cas. Sa
+	// premiere version notait le message « seulement si !r.ok », puis ajoutait un
+	// garde defensif : « si un shader a quand meme ete emis, message = SHADER
+	// PARTIEL EMIS ». Sous la mutation « un noeud inconnu est SAUTE au lieu
+	// d'etre refuse », la compilation reussissait, le garde defensif remplissait
+	// le troisieme message, les trois restaient distincts, et le cas passait au
+	// vert. **Le garde cense renforcer le cas est ce qui l'a rendu aveugle.**
+	// On exige donc l'ECHEC lui-meme, pas la seule presence d'un message.
+	NkString m1, m2, m3;
+	bool e1 = false, e2 = false, e3 = false;
+	bool rienEmis3 = false;
+	{ // aucune sortie
+		NkNodeGraph g;
+		NkMatRegisterTypes(g);
+		NkMatAddNode(g, NK_MN_PRINCIPLED);
+		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		e1 = !r.ok;
+		m1 = r.error;
+	}
+	{ // sortie non reliee
+		NkNodeGraph g;
+		NkMatRegisterTypes(g);
+		NkMatAddNode(g, NK_MN_OUTPUT);
+		NkMatAddNode(g, NK_MN_PRINCIPLED);
+		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		e2 = !r.ok;
+		m2 = r.error;
+	}
+	{ // un noeud dont le compilateur ne sait rien faire : il existe dans le
+	  // coeur, il porte des prises valides, et pourtant il n'a pas d'emetteur.
+		NkNodeGraph g;
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+		const NkNodeId inconnu = g.AddNode("mat.noeud_futur", "Noeud pas encore compilable");
+		g.AddSocket(inconnu, "bsdf", t.shader, NkSocketDir::Output);
+		g.Connect(inconnu, "bsdf", out, "surface");
+		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		e3 = !r.ok;
+		m3 = r.error;
+		// Et RIEN ne doit avoir ete emis : un shader partiel serait pire qu'aucun.
+		rienEmis3 = (r.source.Size() == 0);
+	}
+	const bool troisDistincts = e1 && e2 && e3 && rienEmis3 && m1.Size() > 0 && m2.Size() > 0 && m3.Size() > 0 &&
+								!(m1 == m2) && !(m2 == m3) && !(m1 == m3);
+	char d[256];
+	snprintf(d, sizeof(d), "[%s] [%s] [%s] | trois ECHECS=%d%d%d rien emis=%d distincts=%d", m1.CStr(), m2.CStr(),
+			 m3.CStr(), e1 ? 1 : 0, e2 ? 1 : 0, e3 ? 1 : 0, rienEmis3 ? 1 : 0, troisDistincts ? 1 : 0);
+	Cas("compile/refuse-avant-de-generer", troisDistincts, d);
+}
+
+static void CasCompileEntreeNiCableeNiRenseignee() {
+	// LE CHOIX QU'IL FAUT DIRE. Une entree ni cablee ni renseignee : que met le
+	// compilateur ? Le blanc ferait passer un materiau non fini pour un materiau
+	// clair. On rend le NOIR, qui se VOIT — meme logique que le repli d'un
+	// shader manquant.
+	//
+	// DISCRIMINE : on verifie que ca compile ET que le code contient bien le
+	// neutre. Un compilateur qui laisserait l'expression VIDE produirait
+	// « vec3 n1_albedo = ; », ce qu'aucun backend n'accepte — donc le seul fait
+	// de compiler prouve deja qu'une decision a ete prise. Le reste verifie
+	// LAQUELLE.
+	NkNodeGraph g;
+	NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED); // AUCUN defaut pose
+	g.Connect(bsdf, "bsdf", out, "surface");
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	char be[128];
+	NkString err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, sizeof(be), &err) : 0u;
+	const bool neutreNoir = r.ok && ContientSansCasse(r.source, "vec3(0.0)");
+	char d[256];
+	snprintf(d, sizeof(d), "emis=%d | %s| neutre noir present=%d (le blanc flatterait un materiau non fini)",
+			 r.ok ? 1 : 0, be, neutreNoir ? 1 : 0);
+	Cas("compile/entree-vide-donne-le-neutre", r.ok && ok == 4 && neutreNoir, d);
+}
+
+static void CasCompileGrapheVenuDunFichier() {
+	// LE CHEMIN COMPLET, celui qui compte en production : on construit, on
+	// SERIALISE, on RELIT, et on compile le graphe RELU. Les deux shaders
+	// doivent etre identiques au caractere pres.
+	//
+	// DISCRIMINE : c'est le seul cas qui prouve que les defauts de prise
+	// traversent le fichier POUR DE VRAI jusqu'au shader. Un aller-retour qui
+	// perdrait les defauts rendrait un shader different — tout noir, et qui
+	// compile parfaitement.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	MonteUnPrincipled(g, t, nullptr);
+	NkMatCompileResult direct = NkMatCompileToNkSL(g);
+
+	NkString fichier;
+	g.Serialize(fichier);
+	NkNodeGraph g2;
+	const bool relu = g2.Deserialize(fichier.CStr());
+	NkMatCompileResult apres = NkMatCompileToNkSL(g2);
+
+	const bool memeShader = direct.ok && apres.ok && (direct.source == apres.source);
+	char be[128];
+	NkString err;
+	const uint32 ok = apres.ok ? CompileSurLesBackends(apres.source, be, sizeof(be), &err) : 0u;
+	char d[256];
+	snprintf(d, sizeof(d), "relu=%d | shader identique apres aller-retour=%d (%u vs %u o) | %s", relu ? 1 : 0,
+			 memeShader ? 1 : 0, (uint32)direct.source.Size(), (uint32)apres.source.Size(), be);
+	Cas("compile/graphe-venu-d-un-fichier", relu && memeShader && ok == 4, d);
+}
+
 int main() {
 	printf("== NkMatGraphCheck — graphe de materiaux, couche 3 sur NKGraph ==\n");
 	printf("   regime : structure de donnees pure, aucun GPU, aucune fenetre.\n");
 	printf("   COUVRE aussi, depuis le 22/08 : les defauts de prise, les\n");
-	printf("   proprietes de noeud, et la validation d un fichier .nkgraph.\n");
-	printf("   NE couvre PAS : la generation de NkSL, pas encore ecrite.\n\n");
+	printf("   proprietes, la validation d un fichier, et le compilateur vers NkSL.\n");
+	printf("   NE couvre PAS : le RENDU (aucun GPU ici) -- seulement le fait que\n\n");
 	CasTypesEnregistrement();
 	CasConversionDirigee();
 	CasInstancierPrincipled();
@@ -1086,6 +1376,14 @@ int main() {
 	CasBindingDeclareDesDeuxCotes();
 	CasQuatreCanauxPresents();
 	CasMasqueCompileSurLesBackends();
+
+	// -- le compilateur : graphe -> NkSL -> quatre backends -------------
+	CasCompilePrincipled();
+	CasCompileMixShader();
+	CasCompileOrdreRespecte();
+	CasCompileRefuseAvantDeGenerer();
+	CasCompileEntreeNiCableeNiRenseignee();
+	CasCompileGrapheVenuDunFichier();
 
 	printf("\n-- %u cas, %u echec(s) --\n", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;
