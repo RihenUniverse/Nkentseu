@@ -856,10 +856,22 @@ namespace nkentseu {
 				// dont on sait qu'il n'a pas de sortie : le message doit venir
 				// d'ici, pas d'une erreur de shader trois etages plus bas.
 				NkNodeId sortie = NK_NODE_INVALID;
-				const NkMatGraphError ve = NkMatValidate(g, &sortie);
+				NkString quoi;
+				const NkMatGraphError ve = NkMatValidate(g, &sortie, &quoi);
 				if (ve != NkMatGraphError::Ok) {
 					r.error = NkString("graphe invalide : ");
 					r.error.Append(NkMatGraphErrorName(ve));
+					// ⚠️ LE COUPABLE, QUAND IL Y EN A UN. Sans lui, la reparation
+					// de `NkMatValidate` aurait DEGRADE le message : avant, un
+					// type inconnu remontait « noeud non compilable : <le type> »
+					// depuis l'emetteur ; la validation le rattrape desormais plus
+					// tot -- donc plus pres de la cause -- et rendrait un
+					// « type-de-noeud-inconnu » qui ne dit pas LEQUEL. Attraper
+					// plus tot ne doit jamais faire perdre le nom.
+					if (quoi.Size() > 0) {
+						r.error.Append(" : ");
+						r.error.Append(quoi);
+					}
 					return r;
 				}
 				// 2. Puis la validation STRUCTURELLE du coeur. Un graphe charge

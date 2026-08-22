@@ -3740,6 +3740,11 @@ static void CasCourbeInterpolation() {
 // repondent pas la meme chose. C'est tout l'interet : « est-ce que ca marche »
 // n'a pas de reponse unique ici.
 
+// Declare ici parce que le graphe d essai du REGROUPEMENT sert aussi au cas
+// du pont, qui le precede dans le fichier. Sa definition est plus bas.
+static void MonteGrapheAGrouper(NkNodeGraph &g, const NkMatTypes &t, NkVector<NkNodeId> &outSel,
+								NkNodeId *outVal, NkNodeId *outMix, NkNodeId *outEmi);
+
 // La cle d'un type de noeud invente PAR L'UTILISATEUR. Elle est composee a
 // l'EXECUTION, chiffre compris, a partir d'une valeur `volatile` : ainsi aucune
 // lecture du banc ne peut objecter que la cle etait connue du compilateur. C'est
@@ -3893,28 +3898,30 @@ static void CasGroupeCatalogueMateriauFerme() {
 }
 
 static void CasGroupeOuVitLeRefusDuTypeInconnu() {
-	// OU, EXACTEMENT, un type de noeud inconnu est-il arrete ? La question n'est
-	// pas rhetorique : `NkMatAddNode` refuse, mais le FICHIER ne passe pas par
-	// lui. C'est la meme « porte de derriere » que le coeur documente deja pour
-	// les liens (l'API refusait, `Deserialize` acceptait).
+	// OU, EXACTEMENT, un type de noeud inconnu est-il arrete ?
 	//
-	// On mesure les trois etages separement, parce qu'ils ne disent pas la meme
-	// chose :
-	//   1. le fichier ACCEPTE le noeud inconnu (c'est voulu : le coeur n'a pas
-	//      de registre de types de noeuds, et il ne doit pas en avoir) ;
-	//   2. `NkMatValidate` -- la validation DE DOMAINE -- le declare `ok`, parce
-	//      qu'elle ne consulte pas le catalogue. C'est le trou, et il est ici ;
-	//   3. seul l'EMETTEUR l'arrete, et il le NOMME.
+	// ⚠️ CE CAS A CHANGE DE VERDICT LE 2026-08-22, ET C'EST LE BUT. Sa premiere
+	// version constatait que `NkMatValidate` rendait `ok` sur un type inconnu --
+	// elle ne frappait a aucune porte -- et que seul l'EMETTEUR l'arretait, tres
+	// loin de la cause. Rodolf a tranche : c'est une REPARATION, pas une
+	// fonctionnalite. Le cas mesure desormais la reparation.
 	//
-	// DISCRIMINE : si l'emetteur se contentait de SAUTER le noeud inconnu, la
-	// compilation reussirait et rendrait un shader qui ne compile pas -- ou,
-	// pire, qui compile en lisant autre chose. On exige donc `ok == 0`, une
-	// source VIDE, et le type coupable ECRIT DANS LE MESSAGE.
+	// Les trois etages, et ils ne disent toujours pas la meme chose :
+	//   1. le FICHIER accepte le noeud inconnu -- c'est voulu, le coeur n'a pas
+	//      de registre de types de noeuds et ne doit pas en avoir ;
+	//   2. `NkMatValidate` le REFUSE maintenant, en NOMMANT le type coupable ;
+	//   3. et le message de compilation porte ce nom.
+	//
+	// ⚠️ DISCRIMINE SUR LE POINT QUI S'EST PRESQUE PERDU : attraper plus tot a
+	// failli faire perdre le nom. Avant la reparation, l'emetteur disait
+	// « noeud non compilable : <le type> ». La validation le rattrape en amont --
+	// donc plus pres de la cause -- mais rendait un « type-de-noeud-inconnu »
+	// muet sur LEQUEL. On exige donc que le type apparaisse dans le message :
+	// un refus qui ne nomme pas est un refus qui fait fouiller cent noeuds.
 	char cle[32];
 	FabriqueCleDeGroupe(cle);
+	NkMatRegistre().Vide(); // le registre est global : on part d'un etat connu
 
-	// Un fichier qui porte le noeud inconnu, comme le ferait une sauvegarde
-	// venue d'une version ou le groupe existait.
 	NkString texte;
 	{
 		NkNodeGraph g;
@@ -3931,86 +3938,349 @@ static void CasGroupeOuVitLeRefusDuTypeInconnu() {
 	NkNodeGraph g2;
 	NkMatRegisterTypes(g2);
 	const bool relu = g2.Deserialize(texte.CStr());
-	// 1. le noeud inconnu est bien entre par le fichier
 	bool present = false;
 	for (uint32 i = 0; i < g2.RawNodeCount(); ++i) {
 		const NkNode *n = g2.RawNodeAt(i);
 		if (n && n->alive && n->type == NkString(cle))
 			present = true;
 	}
-	// 2. la validation de domaine ne le voit pas
-	const NkMatGraphError v = NkMatValidate(g2);
-	// 3. l'emetteur l'arrete et le nomme
+	NkString quoi;
+	NkNodeId coupable = NK_NODE_INVALID;
+	const NkMatGraphError v = NkMatValidate(g2, &coupable, &quoi);
 	const NkMatCompileResult r = NkMatCompileToNkSL(g2);
 	const bool cleDansLeMessage = ContientLaCle(r.error, cle);
 	const bool sourceVide = r.source.Size() == 0;
 
 	NkString d;
-	d = NkFormat("relu={0} noeud inconnu ENTRE par le fichier={1} | validation de domaine dit '{2}' | compile ok={3} "
-				 "(0 attendu) source vide={4} | type coupable nomme={5}",
-				 relu ? 1 : 0, present ? 1 : 0, NkString(NkMatGraphErrorName(v)), r.ok ? 1 : 0, sourceVide ? 1 : 0,
-				 cleDansLeMessage ? 1 : 0);
+	d = NkFormat("relu={0} noeud inconnu ENTRE par le fichier={1} | validation dit '{2}' et nomme '{3}' | compile "
+				 "ok={4} (0 attendu) source vide={5} | type coupable dans le message={6}",
+				 relu ? 1 : 0, present ? 1 : 0, NkString(NkMatGraphErrorName(v)), quoi, r.ok ? 1 : 0,
+				 sourceVide ? 1 : 0, cleDansLeMessage ? 1 : 0);
 	Cas("groupe/refus-du-type-inconnu-situe",
-		relu && present && v == NkMatGraphError::Ok && !r.ok && sourceVide && cleDansLeMessage, d);
+		relu && present && v == NkMatGraphError::UnknownNodeType && quoi == NkString(cle) &&
+			coupable != NK_NODE_INVALID && !r.ok && sourceVide && cleDansLeMessage,
+		d);
+}
+
+// ── LE CATALOGUE OUVERT : arbitrage de Rodolf du 2026-08-22 ──────────────────
+
+// Une interface de groupe minimale, pour les cas qui n'ont pas besoin d'un vrai
+// sous-graphe.
+static const NkMatSocketDecl kPrisesDuGroupeEssai[] = {
+	{"entree", NK_MT_REAL, NkSocketDir::Input, false},
+	{"sortie", NK_MT_COLOR, NkSocketDir::Output, false},
+};
+
+static void CasCatalogueOuvertALExecution() {
+	// LA MESURE DE L'ARBITRAGE : une clef inventee a l'execution devient un
+	// prototype de plein droit, et TOUT ce qui lit la porte le voit.
+	//
+	// DISCRIMINE par la propriete qui a rendu la decision bon marche : le menu
+	// « que puis-je brancher ici ? » interroge le MEME registre. On ne verifie
+	// donc pas seulement que le groupe est trouvable -- on exige qu'il APPARAISSE
+	// dans le menu d'une prise couleur (sa sortie en est une) et qu'il soit
+	// ABSENT du menu d'une prise shader (il n'en produit pas). Un registre
+	// branche a la porte mais pas au menu passerait la premiere moitie.
+	char cle[32];
+	FabriqueCleDeGroupe(cle);
+	NkMatRegistre().Vide();
+
+	const uint32 avant = NkMatProtoCount();
+	const NkMatRegistreErreur e =
+		NkMatRegistre().Enregistre(cle, "Mon groupe", kPrisesDuGroupeEssai, 2, false);
+	const uint32 apres = NkMatProtoCount();
+
+	const NkMatNodeProto *p = NkMatFindProto(cle);
+	// et il s'instancie comme n'importe quel autre : c'est `NkMatAddNode`, la
+	// meme fonction, sans une ligne de plus.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId n = NkMatAddNode(g, cle);
+	const NkNode *nd = g.Find(n);
+	const bool prises = nd && nd->FindSocket("entree", NkSocketDir::Input) >= 0 &&
+						nd->FindSocket("sortie", NkSocketDir::Output) >= 0;
+
+	const NkMatNodeProto *menu[96];
+	uint32 mc = NkMatNoeudsPourPrise(g, t.color, menu, 96);
+	if (mc > 96)
+		mc = 96;
+	const bool dansMenuCouleur = DansLeMenu(menu, mc, cle);
+	uint32 ms = NkMatNoeudsPourPrise(g, t.shader, menu, 96);
+	if (ms > 96)
+		ms = 96;
+	const bool dansMenuShader = DansLeMenu(menu, ms, cle);
+
+	NkString d;
+	d = NkFormat("enregistrement='{0}' | protos {1} -> {2} | trouve par la porte={3} | instancie avec ses prises={4} | "
+				 "dans le menu COULEUR={5} (1 attendu) dans le menu SHADER={6} (0 attendu)",
+				 NkString(NkMatRegistreErreurNom(e)), avant, apres, p ? 1 : 0, prises ? 1 : 0,
+				 dansMenuCouleur ? 1 : 0, dansMenuShader ? 1 : 0);
+	Cas("groupe/catalogue-ouvert-a-l-execution",
+		e == NkMatRegistreErreur::Ok && apres == avant + 1u && p != nullptr && n != NK_NODE_INVALID && prises &&
+			dansMenuCouleur && !dansMenuShader,
+		d);
+	NkMatRegistre().Vide();
+}
+
+static void CasCatalogueRefusDEclipse() {
+	// LA CONDITION POSEE PAR RODOLF : « un type d'execution qui porte le nom d'un
+	// proto statique doit etre REFUSE en se nommant, jamais l'eclipser en
+	// silence. Un catalogue ou le dernier inscrit gagne est un catalogue dont on
+	// ne peut plus predire le contenu. »
+	//
+	// DISCRIMINE par ce qu'on lit APRES le refus, et pas seulement par le code
+	// rendu : on exige que `NkMatFindProto` rende toujours LE PROTO COMPILE --
+	// reconnaissable a son libelle et a son nombre de prises. Un registre qui
+	// accepterait l'inscription tout en la classant derriere la table statique
+	// rendrait le bon prototype aujourd'hui et le mauvais le jour ou l'ordre de
+	// consultation changerait. Le refus doit etre a l'ENREGISTREMENT.
+	NkMatRegistre().Vide();
+	const NkMatNodeProto *avant = NkMatFindProto(NK_MN_PRINCIPLED);
+	const uint32 prisesAvant = avant ? avant->socketCount : 0;
+
+	const NkMatRegistreErreur e =
+		NkMatRegistre().Enregistre(NK_MN_PRINCIPLED, "Faux Principled", kPrisesDuGroupeEssai, 2, false);
+
+	const NkMatNodeProto *apres = NkMatFindProto(NK_MN_PRINCIPLED);
+	const bool intact = apres != nullptr && apres == avant && apres->socketCount == prisesAvant;
+	const bool rienEntre = NkMatRegistre().Count() == 0;
+
+	// et les autres refus se nomment aussi
+	const NkMatRegistreErreur vide = NkMatRegistre().Enregistre("", "x", kPrisesDuGroupeEssai, 2, false);
+	const NkMatRegistreErreur sans = NkMatRegistre().Enregistre("grp.sans", "x", kPrisesDuGroupeEssai, 0, false);
+	NkMatRegistre().Enregistre("grp.double", "x", kPrisesDuGroupeEssai, 2, false);
+	const NkMatRegistreErreur deux = NkMatRegistre().Enregistre("grp.double", "y", kPrisesDuGroupeEssai, 2, false);
+
+	NkString d;
+	d = NkFormat("eclipse='{0}' | proto compile intact={1} ({2} prises) | rien n est entre={3} | nom vide='{4}' sans "
+				 "prise='{5}' doublon='{6}'",
+				 NkString(NkMatRegistreErreurNom(e)), intact ? 1 : 0, prisesAvant, rienEntre ? 1 : 0,
+				 NkString(NkMatRegistreErreurNom(vide)), NkString(NkMatRegistreErreurNom(sans)),
+				 NkString(NkMatRegistreErreurNom(deux)));
+	Cas("groupe/refus-d-eclipse-nomme",
+		e == NkMatRegistreErreur::DejaStatique && intact && rienEntre &&
+			vide == NkMatRegistreErreur::NomVide && sans == NkMatRegistreErreur::SansPrise &&
+			deux == NkMatRegistreErreur::DejaEnregistre,
+		d);
+	NkMatRegistre().Vide();
+}
+
+static void CasPontInterfaceDeduiteDuSousGraphe() {
+	// LE PONT COMPLET, de bout en bout : on GROUPE de vrais noeuds, puis on
+	// ENREGISTRE le sous-graphe obtenu, et le groupe devient un prototype
+	// instanciable dont l'interface a ete DEDUITE de sa frontiere.
+	//
+	// DISCRIMINE sur le sens des prises, qui est le piege du pont : le noeud
+	// `graph.entree` porte des prises de SORTIE (il alimente l'interieur), et
+	// elles doivent devenir des ENTREES sur le prototype. Une implantation qui
+	// recopierait le sens tel quel produirait un prototype dont toutes les
+	// prises sont a l'envers -- parfaitement plausible, et qui ne se brancherait
+	// jamais.
+	//
+	// ⚠️ ET `parPixel` : le graphe groupe ne contient aucune source intrinseque,
+	// donc le prototype doit etre FAUX. Un pont qui rendrait `true` par prudence
+	// aveugle refuserait toutes les sorties « par materiau » d'un groupe sain.
+	NkMatRegistre().Vide();
+	NkGraphDocument doc;
+	const uint32 racine = doc.AddGraph("racine");
+	doc.SetRoot(racine);
+	NkVector<NkNodeId> sel;
+	{
+		NkNodeGraph &g = doc.GraphAt(racine);
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		MonteGrapheAGrouper(g, t, sel, nullptr, nullptr, nullptr);
+	}
+	NkGrouper(doc, racine, sel.Data(), (uint32)sel.Size(), "mon groupe", nullptr);
+	const int32 ci = doc.FindGraph("mon groupe");
+
+	NkMatRegistreErreur e = NkMatRegistreErreur::NomVide;
+	if (ci >= 0)
+		e = NkMatEnregistreGroupe(doc.GraphAt((uint32)ci), "grp.mon_groupe", "Mon groupe");
+
+	const NkMatNodeProto *p = NkMatFindProto("grp.mon_groupe");
+	uint32 nIn = 0, nOut = 0;
+	bool typesNommes = true;
+	if (p)
+		for (uint32 i = 0; i < p->socketCount; ++i) {
+			(p->sockets[i].dir == NkSocketDir::Input ? nIn : nOut) += 1u;
+			if (!p->sockets[i].type || !p->sockets[i].type[0])
+				typesNommes = false;
+		}
+
+	// et il s'instancie pour de vrai, prises comprises
+	NkNodeGraph h;
+	NkMatRegisterTypes(h);
+	const NkNodeId inst = NkMatAddNode(h, "grp.mon_groupe");
+
+	NkString d;
+	d = NkFormat("enregistrement='{0}' | prises deduites : {1} entree(s) {2} sortie(s) (1 et 1 attendues) | types "
+				 "nommes={3} | parPixel={4} (0 attendu) | s instancie={5}",
+				 NkString(NkMatRegistreErreurNom(e)), nIn, nOut, typesNommes ? 1 : 0, (p && p->parPixel) ? 1 : 0,
+				 inst != NK_NODE_INVALID ? 1 : 0);
+	Cas("groupe/pont-interface-deduite-du-sous-graphe",
+		e == NkMatRegistreErreur::Ok && p != nullptr && nIn == 1 && nOut == 1 && typesNommes && !p->parPixel &&
+			inst != NK_NODE_INVALID,
+		d);
+	NkMatRegistre().Vide();
+}
+
+static void CasPontParPixelEstConservateur() {
+	// ⚠️ LE CHOIX QUI COMPTE, ET IL EST ASYMETRIQUE. Un groupe qui contient une
+	// source intrinseque (ici un Noise) EST par pixel. Et quand on ne peut pas
+	// trancher -- un groupe IMBRIQUE apparait comme un `graph.instance` dont on
+	// ne peut pas resoudre le sous-graphe sans le document -- on prend le cote
+	// SUR, parce que les deux erreurs ne coutent pas pareil :
+	//   parPixel=true a tort  -> une sortie « par materiau » est REFUSEE alors
+	//     qu'elle etait licite. Faux, mais BRUYANT.
+	//   parPixel=false a tort -> elle ACCEPTE une valeur qui change a chaque
+	//     pixel et rend celle d'un pixel arbitraire comme si c'etait celle du
+	//     materiau. Faux, PLAUSIBLE, jamais signale.
+	//
+	// DISCRIMINE avec un TEMOIN : le cas precedent prouve qu'un groupe sain rend
+	// `false`. Sans lui, un pont qui rendrait TOUJOURS `true` passerait ici.
+	NkMatRegistre().Vide();
+	// (a) un groupe qui contient une source par pixel
+	bool aParPixel = false;
+	{
+		NkNodeGraph sg;
+		const NkMatTypes t = NkMatRegisterTypes(sg);
+		const NkNodeId bord = sg.AddNode(NK_NODE_GROUP_OUT, "Sorties du groupe");
+		sg.AddSocket(bord, "fac", t.real, NkSocketDir::Input);
+		const NkNodeId bruit = NkMatAddNode(sg, NK_MN_NOISE);
+		sg.Connect(bruit, "fac", bord, "fac");
+		const NkMatRegistreErreur e = NkMatEnregistreGroupe(sg, "grp.avec_bruit", "Avec bruit");
+		const NkMatNodeProto *p = NkMatFindProto("grp.avec_bruit");
+		aParPixel = (e == NkMatRegistreErreur::Ok) && p && p->parPixel;
+	}
+	// (b) un groupe qui contient une INSTANCE non resolue
+	bool bParPixel = false;
+	{
+		NkNodeGraph sg;
+		const NkMatTypes t = NkMatRegisterTypes(sg);
+		const NkNodeId bord = sg.AddNode(NK_NODE_GROUP_OUT, "Sorties du groupe");
+		sg.AddSocket(bord, "value", t.real, NkSocketDir::Input);
+		const NkNodeId imbrique = sg.AddNode(NK_NODE_INSTANCE, "un groupe imbrique");
+		sg.AddSocket(imbrique, "value", t.real, NkSocketDir::Output);
+		sg.Connect(imbrique, "value", bord, "value");
+		const NkMatRegistreErreur e = NkMatEnregistreGroupe(sg, "grp.imbrique", "Imbrique");
+		const NkMatNodeProto *p = NkMatFindProto("grp.imbrique");
+		bParPixel = (e == NkMatRegistreErreur::Ok) && p && p->parPixel;
+	}
+	NkString d;
+	d = NkFormat("groupe contenant un Noise : parPixel={0} (1 attendu) | groupe contenant une instance non resolue : "
+				 "parPixel={1} (1 attendu, cote sur)",
+				 aParPixel ? 1 : 0, bParPixel ? 1 : 0);
+	Cas("groupe/pont-par-pixel-conservateur", aParPixel && bParPixel, d);
+	NkMatRegistre().Vide();
 }
 
 static void CasGroupeRecursionRefuseeMaisOu() {
-	// LA RECURSION. Rodolf demande « un controle de cycle A L'INSERTION, avec un
-	// refus qui se nomme ». On mesure ou le refus se trouve REELLEMENT.
+	// LA RECURSION, ET SES DEUX FILETS. Rodolf a tranche le 2026-08-22 : le refus
+	// passe A L'INSERTION -- « a ce moment-la l'utilisateur sait ce qu'il vient de
+	// faire ; a l'aplatissement, l'erreur sort loin de sa cause » -- ET le
+	// controle a l'aplatissement RESTE, parce qu'un graphe peut arriver par un
+	// FICHIER sans jamais passer par une insertion.
 	//
-	// DISCRIMINE dans les deux sens, et c'est le coeur du cas : on exige a la
-	// fois que la construction REUSSISSE (il n'y a donc AUCUN controle a
-	// l'insertion -- si l'on en ajoutait un, ce cas tomberait et il faudrait le
-	// relire, ce qui est exactement ce qu'on veut) et que l'aplatissement REFUSE
-	// en nommant. Un cas qui ne mesurerait que le refus laisserait croire que la
-	// demande de Rodolf est deja satisfaite.
+	// ⚠️ CE CAS MESURE LES DEUX FILETS SEPAREMENT, et c'est tout son interet. Un
+	// cas qui ne mesurerait que le premier laisserait retirer le second sans
+	// rien dire -- et c'est justement ce que Rodolf a demande de ne pas faire.
 	//
-	// Deux formes : le groupe qui s'appelle lui-meme, et la boucle a deux
-	// maillons -- celle qu'un controle naif, qui ne regarderait que le voisin
-	// immediat, laisserait passer.
-	NkGraphDocument direct;
+	// DISCRIMINE aussi sur ce qu'il reste APRES le refus a l'insertion : le
+	// graphe doit etre INCHANGE. Un refus qui aurait deja cree le noeud
+	// laisserait une instance orpheline, et le code de retour seul ne le dirait
+	// pas -- meme piege que « prototype-inconnu ».
+
+	// ── FILET 1 : a l'insertion ──────────────────────────────────────────
+	// (a) le groupe qui s'appelle lui-meme
+	NkGraphDocument d1;
+	const uint32 a1 = d1.AddGraph("moi");
+	d1.SetRoot(a1);
+	const NkGroupError soi = NkPoseInstance(d1, a1, "moi", nullptr);
+	const bool rienPose1 = d1.GraphAt(a1).NodeCount() == 0;
+
+	// (b) la boucle a DEUX maillons -- celle qu'un controle regardant le voisin
+	//     immediat laisserait passer. A instancie B (licite) ; B instancie A
+	//     doit etre refuse.
+	NkGraphDocument d2;
+	const uint32 ga = d2.AddGraph("A");
+	const uint32 gb = d2.AddGraph("B");
+	d2.SetRoot(ga);
+	const NkGroupError licite = NkPoseInstance(d2, ga, "B", nullptr);
+	const NkGroupError boucle = NkPoseInstance(d2, gb, "A", nullptr);
+	const bool rienPose2 = d2.GraphAt(gb).NodeCount() == 0;
+
+	// (c) TEMOIN : une instance parfaitement licite doit passer. Sans lui, un
+	//     controle qui refuserait TOUT rendrait ce cas vert pour la pire des
+	//     raisons.
+	const bool temoin = licite == NkGroupError::Ok && d2.GraphAt(ga).NodeCount() == 1;
+
+	// ── FILET 2 : a l'aplatissement, pour ce qui vient d'un FICHIER ──────
+	// On contourne volontairement la porte -- `NkNode::subgraph` est public, donc
+	// c'est exactement ce qu'un chargement de fichier produit.
+	NkGraphDocument d3;
 	{
-		const uint32 a = direct.AddGraph("moi");
-		direct.SetRoot(a);
-		NkNodeGraph &g = direct.GraphAt(a);
-		const NkNodeId i = g.AddNode(NK_NODE_INSTANCE, "appel de moi-meme");
-		NkNode *n = g.Find(i);
+		const uint32 x = d3.AddGraph("moi");
+		d3.SetRoot(x);
+		const NkNodeId i = d3.GraphAt(x).AddNode(NK_NODE_INSTANCE, "moi-meme");
+		NkNode *n = d3.GraphAt(x).Find(i);
 		if (n)
 			n->subgraph = NkString("moi");
 	}
-	NkEvalPlan p1;
-	const NkPlanError e1 = direct.BuildPlan(p1);
-
-	NkGraphDocument indirect;
-	{
-		const uint32 a = indirect.AddGraph("A");
-		const uint32 b = indirect.AddGraph("B");
-		indirect.SetRoot(a);
-		const NkNodeId ia = indirect.GraphAt(a).AddNode(NK_NODE_INSTANCE, "A appelle B");
-		NkNode *na = indirect.GraphAt(a).Find(ia);
-		if (na)
-			na->subgraph = NkString("B");
-		const NkNodeId ib = indirect.GraphAt(b).AddNode(NK_NODE_INSTANCE, "B rappelle A");
-		NkNode *nb = indirect.GraphAt(b).Find(ib);
-		if (nb)
-			nb->subgraph = NkString("A");
-	}
-	NkEvalPlan p2;
-	const NkPlanError e2 = indirect.BuildPlan(p2);
-
-	// La construction n'a rien refuse : les deux documents EXISTENT, avec leurs
-	// noeuds d'instance en place. C'est la mesure du trou.
-	const bool construitSansRefus = direct.GraphAt(0).NodeCount() == 1 && indirect.GraphAt(0).NodeCount() == 1 &&
-									indirect.GraphAt(1).NodeCount() == 1;
-	const bool refuseALaFin = e1 == NkPlanError::RecursiveSubgraph && e2 == NkPlanError::RecursiveSubgraph;
-	const bool planVide = p1.Size() == 0 && p2.Size() == 0;
+	NkEvalPlan p3;
+	const NkPlanError e3 = d3.BuildPlan(p3);
 
 	NkString d;
-	d = NkFormat("construction ACCEPTEE (aucun controle a l insertion)={0} | aplatissement direct='{1}' indirect='{2}' "
-				 "| plans vides={3}",
-				 construitSansRefus ? 1 : 0, NkString(NkPlanErrorName(e1)), NkString(NkPlanErrorName(e2)),
-				 planVide ? 1 : 0);
-	Cas("groupe/recursion-refusee-a-l-aplatissement", construitSansRefus && refuseALaFin && planVide, d);
+	d = NkFormat("INSERTION : soi-meme='{0}' boucle a deux maillons='{1}' | rien pose apres refus={2}/{3} | temoin "
+				 "instance licite={4} || APLATISSEMENT (chemin du fichier) : '{5}' plan vide={6}",
+				 NkString(NkGroupErrorName(soi)), NkString(NkGroupErrorName(boucle)), rienPose1 ? 1 : 0,
+				 rienPose2 ? 1 : 0, temoin ? 1 : 0, NkString(NkPlanErrorName(e3)), p3.Size() == 0 ? 1 : 0);
+	Cas("groupe/recursion-refusee-aux-deux-portes",
+		soi == NkGroupError::Recursive && boucle == NkGroupError::Recursive && rienPose1 && rienPose2 && temoin &&
+			e3 == NkPlanError::RecursiveSubgraph && p3.Size() == 0,
+		d);
+}
+
+static void CasInstancePoseeInterfaceDeduite() {
+	// La porte d'insertion ne fait pas que refuser : elle DEDUIT l'interface de
+	// l'instance depuis la frontiere du sous-graphe, et elle transporte les types.
+	//
+	// DISCRIMINE par le SENS des prises -- le piege du pont. Le noeud
+	// `graph.entree` porte des prises de SORTIE (il alimente l'interieur) qui
+	// doivent devenir des ENTREES sur l'instance. Les recopier telles quelles
+	// donnerait une instance dont toutes les prises sont a l'envers : plausible,
+	// et qui ne se brancherait jamais.
+	//
+	// Et la preuve qui vaut mieux que la mienne : `BuildPlan` fait passer son
+	// propre controle d'interface, qui compare NOMS ET TYPES des deux cotes.
+	NkGraphDocument doc;
+	const uint32 racine = doc.AddGraph("racine");
+	doc.SetRoot(racine);
+	NkVector<NkNodeId> sel;
+	{
+		NkNodeGraph &g = doc.GraphAt(racine);
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		MonteGrapheAGrouper(g, t, sel, nullptr, nullptr, nullptr);
+	}
+	NkGrouper(doc, racine, sel.Data(), (uint32)sel.Size(), "mon groupe", nullptr);
+
+	// une SECONDE instance du meme groupe, posee par la porte : c'est le
+	// « reutiliser a volonte » de R8.
+	NkNodeId deuxieme = NK_NODE_INVALID;
+	const NkGroupError e = NkPoseInstance(doc, racine, "mon groupe", &deuxieme);
+	uint32 nIn = 0, nOut = 0;
+	const NkNode *nd = doc.GraphAt(racine).Find(deuxieme);
+	if (nd)
+		for (uint32 i = 0; i < (uint32)nd->sockets.Size(); ++i)
+			(nd->sockets[i].dir == NkSocketDir::Input ? nIn : nOut) += 1u;
+	NkEvalPlan plan;
+	const NkPlanError ep = doc.BuildPlan(plan);
+
+	NkString d;
+	d = NkFormat("pose='{0}' | prises deduites : {1} entree(s) {2} sortie(s) (1 et 1 attendues) | aplatissement des "
+				 "DEUX instances='{3}' etapes={4}",
+				 NkString(NkGroupErrorName(e)), nIn, nOut, NkString(NkPlanErrorName(ep)), plan.Size());
+	Cas("groupe/instance-posee-interface-deduite",
+		e == NkGroupError::Ok && deuxieme != NK_NODE_INVALID && nIn == 1 && nOut == 1 && ep == NkPlanError::Ok, d);
 }
 
 // ── regroupement/ : LE CONTROLE, ECRIT AVANT L'OPERATION ────────────────────
@@ -4677,6 +4947,14 @@ int main() {
 	CasGroupeCatalogueMateriauFerme();
 	CasGroupeOuVitLeRefusDuTypeInconnu();
 	CasGroupeRecursionRefuseeMaisOu();
+	CasInstancePoseeInterfaceDeduite();
+
+	// -- le catalogue OUVERT (arbitrage Rodolf du 22/08) : deux sources,
+	//    une seule porte, et le refus d eclipse.
+	CasCatalogueOuvertALExecution();
+	CasCatalogueRefusDEclipse();
+	CasPontInterfaceDeduiteDuSousGraphe();
+	CasPontParPixelEstConservateur();
 
 	// -- regroupement/ : le critere d acceptation de R9, ecrit AVANT
 	//    l operation, et l operation ecrite pour le satisfaire.

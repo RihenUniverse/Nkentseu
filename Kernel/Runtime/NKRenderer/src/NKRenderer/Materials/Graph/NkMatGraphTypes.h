@@ -36,6 +36,10 @@
 // -----------------------------------------------------------------------------
 
 #include "NKGraph/NkNodeGraph.h"
+// La GRAMMAIRE des groupes (graph.entree / graph.sortie / graph.instance).
+// La couche 3 en a legitimement besoin : c'est elle qui derive un
+// prototype de la frontiere d'un sous-graphe.
+#include "NKGraph/NkGraphDocument.h"
 
 namespace nkentseu {
 	namespace renderer {
@@ -1220,17 +1224,186 @@ namespace nkentseu {
 
 			} // namespace detail
 
+			// ── LE CATALOGUE A DEUX SOURCES, DERRIERE UNE SEULE PORTE ────────
+			//
+			// Arbitrage de Rodolf (2026-08-22) : « kProtos s'ouvre. Une seule
+			// porte (NkMatFindProto), deux sources : la table statique et un
+			// registre d'execution. »
+			//
+			// POURQUOI CA MARCHE SANS TOUCHER AU RESTE : `NkMatAddNode` et
+			// `NkMatNoeudsPourPrise` lisent DEJA cette porte (et `NkMatProtoCount`
+			// / `NkMatProtoAt`, que le menu parcourt). Ouvrir la porte ouvre donc
+			// le menu SANS UNE LIGNE DE PLUS. C'est la propriete qui a ete mesuree
+			// avant de demander l'arbitrage, et c'est elle qui rend la decision
+			// bon marche.
+			//
+			// ⚠️ LA CONDITION POSEE PAR RODOLF, ET ELLE EST STRUCTURELLE :
+			// « un type d'execution qui porte le nom d'un proto statique doit
+			// etre REFUSE en se nommant, jamais l'eclipser en silence. Un
+			// catalogue ou le dernier inscrit gagne est un catalogue dont on ne
+			// peut plus predire le contenu. » Le refus est donc pose a
+			// l'ENREGISTREMENT, pas a la lecture : une fois la collision
+			// impossible, l'ordre dans lequel la porte consulte ses deux sources
+			// n'a plus d'importance pour la correction. On consulte quand meme la
+			// table statique d'abord, pour que cet invariant se lise dans le code.
+			//
+			// ⚠️ POURQUOI UN STOCKAGE A CAPACITE FIXE, ET PAS UN NkVector.
+			// Un prototype est lu a travers `const NkMatNodeProto*`, et ce
+			// prototype pointe lui-meme sur un tableau de `NkMatSocketDecl`, qui
+			// pointent eux-memes sur des chaines. Range dans un NkVector, tout ce
+			// petit monde CHANGE D'ADRESSE a la premiere reallocation -- et le
+			// pointeur deja rendu a un appelant continue de pointer sur de la
+			// memoire liberee. Il ne planterait pas : il lirait des noms de prises
+			// plausibles. C'est precisement la forme de defaut la plus couteuse de
+			// ce depot. Un tableau de capacite fixe rend les adresses STABLES par
+			// construction, et le plafond se refuse EN SE NOMMANT.
+			static const uint32 NK_MAT_GROUPES_MAX = 32;	   ///< groupes vivants simultanement
+			static const uint32 NK_MAT_GROUPE_PRISES_MAX = 16; ///< prises par groupe
+			static const uint32 NK_MAT_NOM_MAX = 48;		   ///< octets d'un nom, zero final compris
+
+			namespace detail {
+
+				inline void MatCopieNom(char *dst, const char *src) {
+					uint32 i = 0;
+					if (src)
+						while (src[i] && i + 1u < NK_MAT_NOM_MAX) {
+							dst[i] = src[i];
+							++i;
+						}
+					dst[i] = 0;
+				}
+
+				inline uint32 MatLongueur(const char *s) {
+					uint32 n = 0;
+					if (s)
+						while (s[n])
+							++n;
+					return n;
+				}
+
+				// Un prototype ne du regroupement. Il POSSEDE toutes ses chaines :
+				// rien ici ne pointe vers l'exterieur, donc rien ne peut se
+				// perimer sous lui quand le graphe d'origine est modifie ou detruit.
+				struct MatProtoDyn {
+						char key[NK_MAT_NOM_MAX];
+						char label[NK_MAT_NOM_MAX];
+						char noms[NK_MAT_GROUPE_PRISES_MAX][NK_MAT_NOM_MAX];
+						char types[NK_MAT_GROUPE_PRISES_MAX][NK_MAT_NOM_MAX];
+						NkMatSocketDecl decls[NK_MAT_GROUPE_PRISES_MAX];
+						NkMatNodeProto proto;
+				};
+
+			} // namespace detail
+
+			// Les refus se NOMMENT, comme partout ailleurs dans ce module.
+			enum class NkMatRegistreErreur : uint8 {
+				Ok = 0,
+				NomVide,
+				NomTropLong,	 ///< la cle, le libelle ou un nom de prise depasse NK_MAT_NOM_MAX
+				DejaStatique,	 ///< la condition de Rodolf : ne JAMAIS eclipser un proto compile
+				DejaEnregistre,	 ///< deux groupes du meme nom
+				Plein,			 ///< NK_MAT_GROUPES_MAX atteint
+				TropDePrises,	 ///< NK_MAT_GROUPE_PRISES_MAX atteint
+				SansPrise,		 ///< un prototype sans aucune prise ne sert a rien
+			};
+
+			inline const char *NkMatRegistreErreurNom(NkMatRegistreErreur e) {
+				switch (e) {
+					case NkMatRegistreErreur::Ok:
+						return "ok";
+					case NkMatRegistreErreur::NomVide:
+						return "nom-vide";
+					case NkMatRegistreErreur::NomTropLong:
+						return "nom-trop-long";
+					case NkMatRegistreErreur::DejaStatique:
+						return "eclipserait-un-proto-compile";
+					case NkMatRegistreErreur::DejaEnregistre:
+						return "deja-enregistre";
+					case NkMatRegistreErreur::Plein:
+						return "registre-plein";
+					case NkMatRegistreErreur::TropDePrises:
+						return "trop-de-prises";
+					case NkMatRegistreErreur::SansPrise:
+						return "aucune-prise";
+				}
+				return "?";
+			}
+
+			inline bool NkMatCleEgale(const char *a, const char *b) {
+				if (!a || !b)
+					return false;
+				while (*a && *a == *b) {
+					++a;
+					++b;
+				}
+				return *a == 0 && *b == 0;
+			}
+
+			// La source d'execution. Voir plus haut pourquoi elle est a capacite
+			// fixe et pourquoi la collision de noms est refusee ICI.
+			class NkMatRegistreProtos {
+				public:
+					NkMatRegistreErreur Enregistre(const char *key, const char *label, const NkMatSocketDecl *sockets,
+												   uint32 n, bool parPixel);
+
+					const NkMatNodeProto *Trouve(const char *key) const {
+						for (uint32 i = 0; i < mN; ++i)
+							if (NkMatCleEgale(mEntrees[i].key, key))
+								return &mEntrees[i].proto;
+						return nullptr;
+					}
+
+					uint32 Count() const {
+						return mN;
+					}
+
+					const NkMatNodeProto *At(uint32 i) const {
+						return i < mN ? &mEntrees[i].proto : nullptr;
+					}
+
+					// ⚠️ EXISTE POUR LES BANCS, ET C'EST UN AVEU. Le registre est
+					// unique pour tout le processus : deux documents ouverts en
+					// meme temps PARTAGENT leurs groupes, et un cas qui enregistre
+					// un groupe le laisse visible au cas suivant. C'est une limite
+					// connue, pas un oubli -- la porte `NkMatFindProto(cle)` ne
+					// transporte aucun contexte, et lui en donner un toucherait
+					// tous ses appelants. Le jour ou deux documents doivent
+					// vraiment s'ignorer, c'est cette signature qu'il faudra
+					// changer, pas ce stockage.
+					void Vide() {
+						mN = 0;
+					}
+
+				private:
+					detail::MatProtoDyn mEntrees[NK_MAT_GROUPES_MAX];
+					uint32 mN = 0;
+			};
+
+			// Une seule instance pour le processus. `inline` + statique de
+			// fonction : une seule copie meme si dix unites de compilation
+			// incluent cet en-tete.
+			inline NkMatRegistreProtos &NkMatRegistre() {
+				static NkMatRegistreProtos r;
+				return r;
+			}
+
 			inline uint32 NkMatProtoCount() {
-				return detail::kProtoCount;
+				return detail::kProtoCount + NkMatRegistre().Count();
 			}
 
 			inline const NkMatNodeProto *NkMatProtoAt(uint32 i) {
-				return i < detail::kProtoCount ? &detail::kProtos[i] : nullptr;
+				if (i < detail::kProtoCount)
+					return &detail::kProtos[i];
+				return NkMatRegistre().At(i - detail::kProtoCount);
 			}
 
 			inline const NkMatNodeProto *NkMatFindProto(const char *key) {
 				if (!key)
 					return nullptr;
+				// SOURCE 1 : la table compilee. Consultee d'abord pour que
+				// l'invariant « rien ne peut l'eclipser » se lise ici meme ;
+				// la collision etant refusee a l'enregistrement, l'ordre
+				// n'a de toute facon aucune consequence.
 				for (uint32 i = 0; i < detail::kProtoCount; ++i) {
 					const char *a = detail::kProtos[i].key;
 					const char *b = key;
@@ -1241,7 +1414,145 @@ namespace nkentseu {
 					if (*a == 0 && *b == 0)
 						return &detail::kProtos[i];
 				}
-				return nullptr;
+				// SOURCE 2 : les prototypes nes du regroupement, a l'execution.
+				return NkMatRegistre().Trouve(key);
+			}
+
+			// ⚠️ DEFINIE ICI, APRES LA PORTE, et pas dans la classe : c'est
+			// `NkMatFindProto` qui sait ce que contient la table statique, et
+			// c'est par elle que passe le refus d'eclipse. Enregistrer sans
+			// frapper a la porte laisserait entrer exactement ce que Rodolf a
+			// demande de refuser.
+			inline NkMatRegistreErreur NkMatRegistreProtos::Enregistre(const char *key, const char *label,
+																	   const NkMatSocketDecl *sockets, uint32 n,
+																	   bool parPixel) {
+				if (!key || !key[0])
+					return NkMatRegistreErreur::NomVide;
+				if (detail::MatLongueur(key) + 1u > NK_MAT_NOM_MAX || detail::MatLongueur(label) + 1u > NK_MAT_NOM_MAX)
+					return NkMatRegistreErreur::NomTropLong;
+				if (!sockets || n == 0)
+					return NkMatRegistreErreur::SansPrise;
+				if (n > NK_MAT_GROUPE_PRISES_MAX)
+					return NkMatRegistreErreur::TropDePrises;
+				// LA CONDITION DE RODOLF. On distingue les deux collisions : un
+				// proto compile et un groupe deja enregistre ne se corrigent pas
+				// de la meme facon, donc ils ne portent pas le meme nom.
+				for (uint32 i = 0; i < detail::kProtoCount; ++i)
+					if (NkMatCleEgale(detail::kProtos[i].key, key))
+						return NkMatRegistreErreur::DejaStatique;
+				if (Trouve(key))
+					return NkMatRegistreErreur::DejaEnregistre;
+				for (uint32 k = 0; k < n; ++k)
+					if (detail::MatLongueur(sockets[k].name) + 1u > NK_MAT_NOM_MAX ||
+						detail::MatLongueur(sockets[k].type) + 1u > NK_MAT_NOM_MAX)
+						return NkMatRegistreErreur::NomTropLong;
+				if (mN >= NK_MAT_GROUPES_MAX)
+					return NkMatRegistreErreur::Plein;
+
+				detail::MatProtoDyn &e = mEntrees[mN];
+				detail::MatCopieNom(e.key, key);
+				detail::MatCopieNom(e.label, label && label[0] ? label : key);
+				for (uint32 k = 0; k < n; ++k) {
+					detail::MatCopieNom(e.noms[k], sockets[k].name);
+					detail::MatCopieNom(e.types[k], sockets[k].type);
+					// Les declarations pointent sur les COPIES, jamais sur ce que
+					// l'appelant nous a passe : son tableau peut disparaitre a la
+					// ligne suivante.
+					e.decls[k].name = e.noms[k];
+					e.decls[k].type = e.types[k];
+					e.decls[k].dir = sockets[k].dir;
+					e.decls[k].constanteSeulement = sockets[k].constanteSeulement;
+				}
+				e.proto.key = e.key;
+				e.proto.label = e.label;
+				e.proto.sockets = e.decls;
+				e.proto.socketCount = n;
+				// ⚠️ `parPixel` NE SE DEDUIT PAS du contenu du groupe ici : le
+				// registre ne voit que l'interface. C'est l'appelant qui le sait,
+				// parce qu'il a le sous-graphe sous les yeux -- et un groupe qui
+				// contient un Noise EST par pixel. Le lui faire deviner ici
+				// rendrait « faux » sur tous les groupes, silencieusement.
+				e.proto.parPixel = parPixel;
+				++mN;
+				return NkMatRegistreErreur::Ok;
+			}
+
+			// ── LE PONT : UN SOUS-GRAPHE DEVIENT UN PROTOTYPE ───────────────
+			//
+			// L'interface du groupe SE DEDUIT de ses noeuds frontiere -- elle ne
+			// se declare pas (R9). Le noeud `graph.entree` porte des prises de
+			// SORTIE (il alimente l'interieur) : ce sont les ENTREES du groupe vu
+			// du dehors. Symetriquement pour `graph.sortie`.
+			//
+			// LES TYPES SONT PRIS PAR LEUR NOM, jamais par leur identifiant :
+			// chaque graphe tient son propre registre, et le numero 3 peut
+			// designer « couleur » ici et « vecteur » la. C'est la meme regle que
+			// le controle d'interface de NkGraphDocument, et pour la meme raison.
+			inline NkMatRegistreErreur NkMatEnregistreGroupe(const graph::NkNodeGraph &sousGraphe, const char *key,
+															 const char *label = nullptr) {
+				NkMatSocketDecl decls[NK_MAT_GROUPE_PRISES_MAX];
+				uint32 n = 0;
+				bool tropDePrises = false;
+
+				// ⚠️ `parPixel` D'UN GROUPE : vrai des qu'UN SEUL de ses noeuds
+				// internes est une source intrinseque. Un groupe qui contient un
+				// Noise EST par pixel, quoi qu'on branche dessus.
+				//
+				// ET LE CAS QU'ON NE SAIT PAS TRANCHER : un groupe IMBRIQUE
+				// apparait ici comme un `graph.instance`, dont on ne peut pas
+				// resoudre le sous-graphe sans le document. On ne devine pas -- on
+				// prend le cote SUR. Les deux erreurs ne coutent pas pareil :
+				//   parPixel=true a tort  -> une sortie « par materiau » est
+				//     REFUSEE alors qu'elle etait licite. Faux, mais BRUYANT.
+				//   parPixel=false a tort -> une sortie « par materiau » ACCEPTE
+				//     une valeur qui change a chaque pixel, et rend celle d'un
+				//     pixel arbitraire en la faisant passer pour celle du
+				//     materiau. Faux, PLAUSIBLE, et jamais signale.
+				// Le refus bruyant est toujours preferable a la valeur plausible.
+				bool parPixel = false;
+
+				for (uint32 i = 0; i < sousGraphe.RawNodeCount(); ++i) {
+					const graph::NkNode *nd = sousGraphe.RawNodeAt(i);
+					if (!nd || !nd->alive)
+						continue;
+					const bool estEntree = nd->type == NkString(graph::NK_NODE_GROUP_IN);
+					const bool estSortie = nd->type == NkString(graph::NK_NODE_GROUP_OUT);
+					if (!estEntree && !estSortie) {
+						if (nd->type == NkString(graph::NK_NODE_INSTANCE)) {
+							parPixel = true; // indecidable ici : on prend le cote sur
+							continue;
+						}
+						const NkMatNodeProto *pr = NkMatFindProto(nd->type.CStr());
+						if (pr && pr->parPixel)
+							parPixel = true;
+						continue;
+					}
+					for (uint32 k = 0; k < (uint32)nd->sockets.Size(); ++k) {
+						const graph::NkSocket &sk = nd->sockets[k];
+						// Le noeud d'entree ne contribue que par ses SORTIES, et
+						// reciproquement. Une prise du mauvais sens sur un noeud
+						// frontiere n'est pas de l'interface.
+						if (estEntree && sk.dir != NkSocketDir::Output)
+							continue;
+						if (estSortie && sk.dir != NkSocketDir::Input)
+							continue;
+						if (n >= NK_MAT_GROUPE_PRISES_MAX) {
+							tropDePrises = true;
+							break;
+						}
+						const NkString *tn = sousGraphe.TypeName(sk.type);
+						decls[n].name = sk.name.CStr();
+						decls[n].type = tn ? tn->CStr() : "";
+						decls[n].dir = estEntree ? NkSocketDir::Input : NkSocketDir::Output;
+						decls[n].constanteSeulement = false;
+						++n;
+					}
+				}
+				if (tropDePrises)
+					return NkMatRegistreErreur::TropDePrises;
+				// `Enregistre` RECOPIE tout : les `CStr()` ci-dessus pointent dans
+				// le sous-graphe, qui peut disparaitre juste apres.
+				return NkMatRegistre().Enregistre(key, label && label[0] ? label : key, decls, n, parPixel);
 			}
 
 			// Instancie un prototype DANS le graphe : cree le noeud puis ajoute
@@ -1370,6 +1681,13 @@ namespace nkentseu {
 				MultipleOutput, ///< plusieurs Material Output
 				OutputUnlinked, ///< la sortie existe mais rien n'y entre
 				Cycle,
+				// ⚠️ CORRECTION du 2026-08-22, demandee par Rodolf, et c'est une
+				// REPARATION et non une fonctionnalite. La validation de domaine
+				// rendait `ok` sur un graphe portant un type de noeud absent du
+				// catalogue : elle n'y frappait pas. Seul l'emetteur l'arretait,
+				// tres loin de la cause. Maintenant qu'il existe UNE PORTE
+				// (NkMatFindProto, deux sources), elle y frappe comme les autres.
+				UnknownNodeType,
 			};
 
 			inline const char *NkMatGraphErrorName(NkMatGraphError e) {
@@ -1384,14 +1702,46 @@ namespace nkentseu {
 						return "sortie-non-reliee";
 					case NkMatGraphError::Cycle:
 						return "cycle";
+					case NkMatGraphError::UnknownNodeType:
+						return "type-de-noeud-inconnu";
 				}
 				return "?";
 			}
 
 			// `outOutput` recoit le noeud de sortie quand il y en a exactement un.
-			inline NkMatGraphError NkMatValidate(const NkNodeGraph &g, NkNodeId *outOutput = nullptr) {
+			// `outDetail`, quand il est fourni, recoit le TYPE coupable pour les
+			// diagnostics qui en designent un -- « type-de-noeud-inconnu » sans
+			// dire lequel obligerait a fouiller un graphe de cent noeuds.
+			inline NkMatGraphError NkMatValidate(const NkNodeGraph &g, NkNodeId *outOutput = nullptr,
+												 NkString *outDetail = nullptr) {
 				NkNodeId found = graph::NK_NODE_INVALID;
 				uint32 count = 0;
+
+				// ⚠️ EN PREMIER, ET DELIBEREMENT. Un graphe dont on ne connait pas
+				// les noeuds ne se valide pas « par ailleurs » : compter ses
+				// sorties ou chercher son cycle donnerait un verdict sur une
+				// structure qu'on ne comprend pas. Et le diagnostic serait pire
+				// qu'inutile -- il nommerait un defaut secondaire pendant que la
+				// vraie cause passe.
+				//
+				// ⚠️ Consequence assumee : les noeuds de GRAMMAIRE de groupe
+				// (graph.instance, graph.entree, graph.sortie) sont refuses ici.
+				// C'est correct AUJOURD'HUI -- l'emetteur ne sait pas les
+				// compiler non plus -- et ce n'est pas un obstacle demain : ce
+				// qu'on compile est le PLAN APLATI, d'ou les instances et les
+				// frontieres ont deja disparu.
+				for (uint32 i = 0; i < g.RawNodeCount(); ++i) {
+					const graph::NkNode *n = g.RawNodeAt(i);
+					if (!n || !n->alive)
+						continue;
+					if (!NkMatFindProto(n->type.CStr())) {
+						if (outDetail)
+							*outDetail = n->type;
+						if (outOutput)
+							*outOutput = n->id;
+						return NkMatGraphError::UnknownNodeType;
+					}
+				}
 				// Parcours BRUT : il faut voir toute la table. Un noeud supprime
 				// reste dans le tableau avec alive=false, et le compter ferait
 				// dire « plusieurs sorties » a un graphe qui n'en a qu'une.

@@ -35,6 +35,108 @@ namespace nkentseu {
 
 		} // namespace detail
 
+		// ── POSER UNE INSTANCE, EN REFUSANT LA RECURSION TOUT DE SUITE ───────
+		//
+		// C'est LA PORTE par laquelle une instance doit entrer. Le champ
+		// `NkNode::subgraph` reste public -- on peut donc toujours fabriquer une
+		// instance a la main et contourner ce controle. ⚠️ C'EST EXACTEMENT
+		// POURQUOI LE CONTROLE A L'APLATISSEMENT RESTE EN PLACE, et il ne doit
+		// pas etre retire sous pretexte que celui-ci existe : un graphe peut
+		// arriver par un FICHIER sans jamais passer par une insertion. Deux
+		// filets a deux endroits, pour deux chemins differents.
+
+		namespace detail {
+
+			// Existe-t-il une chaine d'instances de `depart` jusqu'a `cible` ?
+			// C'est la question qui distingue la boucle a deux maillons -- A
+			// instancie B, B instancie A -- de la simple auto-instanciation. Un
+			// controle qui ne regarderait que le voisin immediat laisserait
+			// passer la premiere.
+			inline bool GroupAtteint(const NkGraphDocument &doc, uint32 depart, uint32 cible, NkVector<uint32> &vus) {
+				if (depart == cible)
+					return true;
+				for (uint32 i = 0; i < (uint32)vus.Size(); ++i)
+					if (vus[i] == depart)
+						return false; // deja explore : pas de boucle infinie ICI non plus
+				vus.PushBack(depart);
+				if (depart >= doc.GraphCount())
+					return false;
+				const NkNodeGraph &g = doc.GraphAt(depart);
+				for (uint32 i = 0; i < g.RawNodeCount(); ++i) {
+					const NkNode *n = g.RawNodeAt(i);
+					if (!n || !n->alive || !(n->type == NkString(NK_NODE_INSTANCE)))
+						continue;
+					const int32 suivant = doc.FindGraph(n->subgraph.CStr());
+					if (suivant < 0)
+						continue; // sous-graphe absent : c'est un AUTRE defaut, pas le notre
+					if (GroupAtteint(doc, (uint32)suivant, cible, vus))
+						return true;
+				}
+				return false;
+			}
+
+		} // namespace detail
+
+		inline NkGroupError NkPoseInstance(NkGraphDocument &doc, uint32 graphIdx, const char *nomDuSousGraphe,
+										   NkNodeId *outInstance = nullptr) {
+			if (outInstance)
+				*outInstance = NK_NODE_INVALID;
+			if (graphIdx >= doc.GraphCount())
+				return NkGroupError::UnknownGraph;
+			const int32 ci = doc.FindGraph(nomDuSousGraphe);
+			if (ci < 0)
+				return NkGroupError::UnknownSubgraph;
+			const uint32 childIdx = (uint32)ci;
+
+			// LE CONTROLE, ET IL EST POSE AVANT TOUTE MODIFICATION. Un refus qui
+			// aurait deja cree le noeud laisserait une instance orpheline
+			// derriere lui -- meme piege que « prototype-inconnu », ou le code de
+			// retour seul ne suffisait pas.
+			{
+				NkVector<uint32> vus;
+				if (detail::GroupAtteint(doc, childIdx, graphIdx, vus))
+					return NkGroupError::Recursive;
+			}
+
+			// Les types du sous-graphe doivent exister chez le parent, sinon les
+			// prises de l'instance naitraient invalides -- et le controle
+			// d'interface de `BuildPlan` les refuserait plus tard, loin d'ici.
+			detail::GroupCopieRegistre(doc.GraphAt(childIdx), doc.GraphAt(graphIdx));
+
+			const NkNodeId inst = doc.GraphAt(graphIdx).AddNode(NK_NODE_INSTANCE, nomDuSousGraphe);
+			if (NkNode *p = doc.GraphAt(graphIdx).Find(inst))
+				p->subgraph = NkString(nomDuSousGraphe);
+
+			// L'interface se DEDUIT de la frontiere du sous-graphe (R9) : le
+			// noeud d'entree porte des prises de SORTIE, qui deviennent les
+			// ENTREES de l'instance. Recopier le sens tel quel mettrait toutes
+			// les prises a l'envers.
+			for (uint32 i = 0; i < doc.GraphAt(childIdx).RawNodeCount(); ++i) {
+				const NkNode *nd = doc.GraphAt(childIdx).RawNodeAt(i);
+				if (!nd || !nd->alive)
+					continue;
+				const bool estIn = nd->type == NkString(NK_NODE_GROUP_IN);
+				const bool estOut = nd->type == NkString(NK_NODE_GROUP_OUT);
+				if (!estIn && !estOut)
+					continue;
+				for (uint32 k = 0; k < (uint32)nd->sockets.Size(); ++k) {
+					const NkSocket &sk = nd->sockets[k];
+					if (estIn && sk.dir != NkSocketDir::Output)
+						continue;
+					if (estOut && sk.dir != NkSocketDir::Input)
+						continue;
+					const NkTypeId t =
+						detail::GroupTraduitType(doc.GraphAt(childIdx), doc.GraphAt(graphIdx), sk.type);
+					doc.GraphAt(graphIdx).AddSocket(inst, sk.name.CStr(), t,
+													estIn ? NkSocketDir::Input : NkSocketDir::Output);
+				}
+			}
+
+			if (outInstance)
+				*outInstance = inst;
+			return NkGroupError::Ok;
+		}
+
 		// ── REGROUPER ────────────────────────────────────────────────────────
 		//
 		// L'ordre des etapes n'est pas negociable, et chacune depend de la

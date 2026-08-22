@@ -48,6 +48,14 @@ namespace nkentseu {
 			NameTaken,		///< un graphe porte deja ce nom
 			NotAnInstance,	///< Degrouper appele sur un noeud qui n'en est pas une
 			UnknownSubgraph, ///< l'instance nomme un graphe absent
+			// ⚠️ REFUS A L'INSERTION, decide par Rodolf le 2026-08-22. Le refus
+			// existait deja a l'APLATISSEMENT, et il suffisait a empecher la
+			// boucle -- mais il sortait loin de sa cause. La mesure qui a
+			// tranche : sans le controle de recursion, la borne de profondeur
+			// arrete quand meme, et rend « trop-profond ». Ca s'arrete, donc ca a
+			// l'air de marcher, ET CA ACCUSE LE MAUVAIS COUPABLE. Ici,
+			// l'utilisateur vient de poser l'instance : il sait de quoi on parle.
+			Recursive,
 		};
 
 		inline const char *NkGroupErrorName(NkGroupError e) {
@@ -66,6 +74,8 @@ namespace nkentseu {
 					return "pas-une-instance";
 				case NkGroupError::UnknownSubgraph:
 					return "sousgraphe-inconnu";
+				case NkGroupError::Recursive:
+					return "recursion-refusee";
 			}
 			return "?";
 		}
