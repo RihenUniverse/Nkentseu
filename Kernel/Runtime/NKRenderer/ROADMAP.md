@@ -1454,7 +1454,9 @@ Preuve : `Applications/NkMatGraphCheck` — **application** console, **35 cas, 0
 | masque de couche par **texture** | ✅ | 4 canaux, binding 9, `SetLayerV1MaskMap()` |
 | nœuds `Value` · `RGB` · `Math` (7 op.) · `Mix Color` (6 modes) | ✅ 2026-08-22 | une propriété de nœud porte une **décision**, pas seulement une valeur |
 | nœud `ColorRamp` | ✅ 2026-08-22 | la première propriété à **charge utile variable** |
-| nœuds `Image Texture` / `Mapping` / `Texture Coordinate` | ❌ | **décision prise**, voir ci-dessous : plafond fixe, source unique, refus nommé |
+| nœuds `Image Texture` · `Texture Coordinate` · `Mapping` | ✅ 2026-08-22 | **aucun binding neuf** — voir ci-dessous, la mesure a changé la réponse |
+| **variables exposées** (paramètres pilotables depuis le code) | ❌ | **le prochain**, et le point où le chantier devient une API publique |
+| `Normal Map` · `Bump` (fin du rang 1) | ❌ | demandent une convention d'axes à poser une fois |
 | canevas d'édition | ❌ | couche 2, `NKEditorKit`, partagé — pas ce chantier |
 
 **Le NkSL émis COMPILE sur les quatre backends** (GL, Vulkan, DX11, DX12), vérifié
@@ -1521,7 +1523,7 @@ interpolé avec du rouge. **Les deux résultats sont des couleurs plausibles ;
 seul le canal où tombe l'écart les distingue.** Mesuré : `(52, 180, 52)`, écart
 sur le vert = 128, exactement l'arrêt du milieu.
 
-#### 🖼️ `Image Texture` — la décision est prise, le code ne l'est pas encore
+#### 🖼️ `Image Texture` — livré, et **sans toucher au layout partagé**
 
 **Plafond fixe de textures, refus nommé, source unique.** Les deux autres voies
 tombent, et pour des raisons écrites :
@@ -1544,13 +1546,59 @@ backends *garantissent* et non sur ce qui semble raisonnable : GL 3.3 garantit 1
 unités de texture en fragment, DX11 en garantit 128 — **c'est le plancher qui
 commande**, moins ce que le moteur consomme déjà (bindings 3 à 7 et 9).
 
-**Le cas qui tranchera** : un graphe à `plafond` textures compile et rend ; un
-graphe à `plafond + 1` est refusé **en nommant le compte**. Et le contrôle qui
-protège la condition — plus important que les autres : **le banc lit
-`NkMaterialBindings.h` ET le shader émis, et vérifie que le dernier binding
-utilisé est déclaré**. C'est le prolongement direct de la phase 0, la comparaison
-du code à une **vérité externe**. ⚠️ En **comptant les bindings**, jamais en
-cherchant des noms : le générateur HLSL minuscule et suffixe les identifiants.
+⚠️ **LA MESURE A CHANGÉ LA RÉPONSE, et en mieux : il n'y a AUCUN binding neuf.**
+
+Deux faits mesurés le 2026-08-22, avant d'écrire une ligne :
+
+1. **Le shader PBR déclare déjà 27 samplers en fragment** — 5 dans le set
+   matériau, 22 dans le set global (IBL, atlas d'ombres, 12 lumières, voxels,
+   LTC, matcap). La spécification OpenGL n'en garantit que **16** par étage : le
+   moteur dépasse donc déjà le minimum garanti et s'appuie sur les 32 que
+   donnent les pilotes réels. ⚠️ **C'est une dette ANTÉRIEURE à ce chantier** —
+   elle est nommée ici, elle n'est pas aggravée. Et elle invalide le calcul
+   qu'on avait prévu : un budget « 16 moins ce qui est pris » serait déjà
+   **négatif**.
+2. **Le dépôt réutilise déjà le même binding pour des usages différents selon le
+   shader** : le binding 3 porte `tAlbedo` en PBR et `tReflection` en sol
+   miroir ; le binding 4 porte `tNormal`, `tMatcap`, `tReflectionBack` ou
+   `tShadowRamp` selon l'archétype. **Le sens d'un binding est donc LOCAL AU
+   SHADER**, et c'est une propriété établie du dépôt, pas une invention.
+
+**Conséquence** : un matériau **engendré** n'a que faire de `tAlbedo` ou de
+`tHeight` — ces slots sont morts pour lui. Il réutilise donc **les six
+emplacements que le layout déclare déjà**, dans l'ordre topologique. Le plafond
+n'est pas un chiffre choisi : **c'est le nombre de slots existants**, et il vaut
+**6**.
+
+Ce que ça évite est exactement le risque qui inquiétait : **aucun binding neuf,
+donc aucune nouvelle occasion d'écrire sur un binding que le layout ne déclare
+pas** — la panne silencieuse mesurée le 22/08, qui ne produit ni erreur, ni
+journal, ni différence d'image.
+
+**Le contrôle qui protège la condition, et c'est le plus important des trois** :
+le banc lit `NkMaterialBindings.h` **et** le shader émis, et vérifie que chaque
+binding déclaré appartient à la table, qu'ils sont tous distincts, et qu'aucun ne
+dépasse le plus grand de la table. ⚠️ **En comptant des NOMBRES** — chercher le
+nom du sampler testerait le générateur de noms, pas le shader (`tMask` devient
+`tmask_tex` en HLSL).
+
+**Le refus dit le compte** : *« ce graphe demande 7 textures, le plafond est
+6 »*. Et le bord exact est testé : 6 compile, 7 refuse — un `>=` au lieu d'un `>`
+refuserait le cas parfaitement légitime.
+
+⚠️ **`Image Texture` est le premier nœud à DEUX sorties** (`color` et `alpha`), et
+c'est lui qui a imposé de nommer les locales engendrées **d'après le nom de la
+prise** et non par un `val` unique : un nœud à deux sorties n'a pas « une »
+valeur, et l'entrée qui lirait « la » valeur en prendrait une au hasard.
+
+⚠️ **Un cas de banc a survécu à sa mutation, et la faute était dans le cas** :
+il cherchait le **nom** de la locale du `Mapping` n'importe où dans le shader.
+Sous la mutation « l'entrée `vector` est ignorée », le nœud `Mapping` émettait
+toujours sa *déclaration* — donc le nom était présent, et le cas passait au vert
+alors que la texture lisait l'UV brut. **Chercher un nom n'est pas chercher un
+usage.** Le cas vérifie désormais que l'appel de texture **cite** la locale, et
+que le shader mappé **ne lit plus** l'UV brut.
+
 
 #### Les nœuds de calcul — une propriété qui porte une **décision** (2026-08-22)
 
