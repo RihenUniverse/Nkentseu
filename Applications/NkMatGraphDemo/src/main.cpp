@@ -503,6 +503,41 @@ static bool GrapheCarteNormales(float32 tr, float32 tv, float32 tb, NkString &ou
 	return r.ok;
 }
 
+// Un damier dont les deux couleurs partent dans une emission. `decalage` deplace
+// la coordonnee AVANT le damier, ce qui fait basculer la case.
+//
+// ⚠️ L'ATTENDU SE CALCULE ENTIEREMENT. Au pixel central l'UV vaut (0,5 ; 0,5).
+// Le damier vaut `mod(floor(x) + floor(y) + floor(z), 2)` sur la coordonnee
+// multipliee par l'echelle :
+//   sans decalage, echelle 5 : (2,5 ; 2,5 ; 0) -> 2 + 2 + 0 = 4 -> PAIR  -> color2
+//   decalage +0,2, echelle 5 : (3,5 ; 2,5 ; 0) -> 3 + 2 + 0 = 5 -> IMPAIR -> color1
+// Les deux cases sont donc predites, et par un calcul qui ne doit RIEN a
+// l'eclairage : c'est le damier lui-meme qu'on mesure.
+static bool GrapheDamier(float32 decalage, NkString &out) {
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
+	const NkNodeId dam = NkMatAddNode(g, NK_MN_CHECKER);
+	const NkNodeId map = NkMatAddNode(g, NK_MN_MAPPING);
+	const NkNodeId coord = NkMatAddNode(g, NK_MN_TEX_COORD);
+	g.Connect(emis, "emission", sortie, "surface");
+	g.Connect(dam, "color", emis, "color");
+	g.Connect(map, "vector_out", dam, "vector");
+	g.Connect(coord, "uv", map, "vector");
+	const float32 loc[3] = {decalage, 0.f, 0.f};
+	g.SetSocketDefault(map, "location", NkSocketDir::Input, NkValueVec(t.vector, loc, 3));
+	const float32 rouge[3] = {kE, 0.f, 0.f};
+	const float32 vert[3] = {0.f, kE, 0.f};
+	g.SetSocketDefault(dam, "color1", NkSocketDir::Input, NkValueVec(t.color, rouge, 3));
+	g.SetSocketDefault(dam, "color2", NkSocketDir::Input, NkValueVec(t.color, vert, 3));
+	g.SetSocketDefault(dam, "scale", NkSocketDir::Input, NkValueReal(t.real, 5.f));
+	g.SetSocketDefault(emis, "strength", NkSocketDir::Input, NkValueReal(t.real, 1.f));
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	out = r.source;
+	return r.ok;
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -763,7 +798,27 @@ int main() {
 					 penchee[0], plateBis[0], etalonPlusX[0], agit ? 1 : 0, bonCote ? 1 : 0));
 	}
 
-	// ── 9. le fond de repli n'a jamais ete lu ────────────────────────────
+	// ── 9. LE PROCEDURAL : un damier dont on predit la case ─────────────
+	{
+		// ⚠️ CE CAS NE MESURE PAS UN EFFET, IL MESURE UN CALCUL. Contrairement aux
+		// precedents, l'attendu ne vient pas d'une relation entre canaux mais de
+		// l'arithmetique du damier elle-meme — et il designe LAQUELLE des deux
+		// couleurs doit sortir. Une erreur d'un demi-carreau donnerait l'autre.
+		uint8 paire[4] = {}, impaire[4] = {};
+		const bool a = GrapheDamier(0.f, src) && ctx.RendreEtLire(src, "matgraph_dam_p", paire);
+		const bool b = GrapheDamier(0.2f, src) && ctx.RendreEtLire(src, "matgraph_dam_i", impaire);
+		// Case PAIRE -> color2 (vert) : l'ecart tombe sur le VERT.
+		const bool casePaire = paire[0] == paire[2] && (paire[1] - paire[2]) == kEcartAttendu;
+		// Case IMPAIRE -> color1 (rouge) : l'ecart tombe sur le ROUGE.
+		const bool caseImpaire = impaire[1] == impaire[2] && (impaire[0] - impaire[2]) == kEcartAttendu;
+		Cas("rendu/damier-la-bonne-case", a && b && casePaire && caseImpaire,
+			NkFormat("sans decalage ({0},{1},{2}) : case paire -> vert attendu={3} | decale de 0,2 ({4},{5},{6}) : "
+					 "case impaire -> rouge attendu={7}",
+					 paire[0], paire[1], paire[2], casePaire ? 1 : 0, impaire[0], impaire[1], impaire[2],
+					 caseImpaire ? 1 : 0));
+	}
+
+	// ── 10. le fond de repli n'a jamais ete lu ───────────────────────────
 	{
 		// ⚠️ LE CAS QUI EMPECHE DE SE REJOUIR TROP VITE. Si le trace avait
 		// echoue sans le dire, on lirait le MAGENTA d'effacement. Comme il est

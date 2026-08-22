@@ -1380,7 +1380,8 @@ static void CasMenuPriseCouleurEtReelle() {
 						   DansLeMenu(mc, nc, NK_MN_MIX_COLOR) && DansLeMenu(mc, nc, NK_MN_MATH) &&
 						   DansLeMenu(mc, nc, NK_MN_COLOR_RAMP) &&
 						   DansLeMenu(mc, nc, NK_MN_IMAGE_TEXTURE) &&
-						   DansLeMenu(mc, nc, NK_MN_NORMAL_MAP) && DansLeMenu(mc, nc, NK_MN_BUMP);
+						   DansLeMenu(mc, nc, NK_MN_NORMAL_MAP) && DansLeMenu(mc, nc, NK_MN_BUMP) &&
+						   DansLeMenu(mc, nc, NK_MN_NOISE) && DansLeMenu(mc, nc, NK_MN_CHECKER);
 	// Ce qui produit un REEL : Value et Math. Ni RGB ni Mix Color, parce que
 	// `couleur -> reel` n'est PAS declaree — et c'est la tout le cas.
 	const bool reelOk = DansLeMenu(mr, nr, NK_MN_VALUE) && DansLeMenu(mr, nr, NK_MN_MATH) &&
@@ -1392,8 +1393,11 @@ static void CasMenuPriseCouleurEtReelle() {
 						// Separate XYZ sort TROIS reels : il est dans le menu reel,
 						// et pas dans le menu couleur (reel->couleur est declaree,
 						// donc il y est aussi -- ce qui est correct).
-						DansLeMenu(mr, nr, NK_MN_SEPARATE_XYZ);
-	Cas("biblio/menu-asymetrique-couleur-reel", nc == 11 && nr == 4 && couleurOk && reelOk,
+						DansLeMenu(mr, nr, NK_MN_SEPARATE_XYZ) &&
+						// Les proceduraux ont une sortie `fac` REELLE : ils sont dans
+						// les deux menus, par deux prises differentes.
+						DansLeMenu(mr, nr, NK_MN_NOISE) && DansLeMenu(mr, nr, NK_MN_GRADIENT);
+	Cas("biblio/menu-asymetrique-couleur-reel", nc == 14 && nr == 7 && couleurOk && reelOk,
 		NkFormat("base_color : {0} propositions (RGB+MixColor+ColorRamp+ImageTex+Value+Math+coord+mappage, ok={1}) | roughness : {2} (Value+Math "
 				 "SEULS, RGB et MixColor doivent etre absents, ok={3})",
 				 nc, couleurOk ? 1 : 0, nr, reelOk ? 1 : 0));
@@ -2512,6 +2516,187 @@ static void CasBlocEtTexturesNeSeMarchentPasDessus() {
 				 (uint32)renderer::NK_MATBIND_GRAPH_PARAMS, blocHorsDesTextures ? 1 : 0, be));
 }
 
+
+static void CasIncludeNeSeResoutPas() {
+	// SONDE : l'#include du dialecte NkSL se resout-il quand le shader est
+	// compile DEPUIS UNE CHAINE et non depuis un fichier ? La reponse decide si
+	// les noeuds proceduraux REUTILISENT NkNoise.glsli ou doivent l'inliner.
+	NkString src;
+	src.Append("#include \"Include/NkNoise.glsli\"\n\n");
+	src.Append("@location(0) in vec2 vUV;\n@location(0) out vec4 fragColor;\n\n");
+	src.Append("@stage(fragment)\n@entry\nvoid main() {\n");
+	src.Append("    float n = NkFBM2D(vUV * 4.0, 3);\n    fragColor = vec4(n, n, n, 1.0);\n}\n");
+	NkString be, err;
+	const uint32 ok = CompileSurLesBackends(src, be, &err);
+	// ⚠️ CE CAS ATTESTE UNE LIMITE, PAS UNE CAPACITE — et c'est voulu.
+	//
+	// Le `#include` du dialecte NkSL NE SE RESOUT PAS quand le shader est compile
+	// depuis une CHAINE : le compilateur rend « #include not found ». Un shader
+	// engendre n'existe pas sur disque, il doit donc etre AUTONOME — c'est ce qui
+	// oblige a recopier les briques de NkNoise.glsli dans le compilateur.
+	//
+	// On garde ce cas parce qu'une limite non testee se perd : si un jour le
+	// resolveur apprend a travailler depuis une chaine, CE CAS PASSERA AU ROUGE,
+	// et ce sera le bon moment pour supprimer la recopie.
+	Cas("nksl/include-ne-se-resout-pas-depuis-une-chaine", ok == 0,
+		NkFormat("{0}| aucun backend ne resout l include (0 attendu) | message : {1}", be, err));
+}
+
+
+// ── Rang 2 : le procedural ───────────────────────────────────────────────────
+
+// Monte `<noeud procedural>.<prise> -> Principled.<cible>` et compile.
+static NkMatCompileResult CompileProcedural(const char *cleNoeud, const char *prise, const char *cible,
+											const char *typeProp, NkNodeId *outNode = nullptr) {
+	static NkNodeGraph g;
+	g.Clear();
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId n = NkMatAddNode(g, cleNoeud);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	g.Connect(n, prise, bsdf, cible);
+	if (typeProp)
+		g.SetProp(n, NK_MPROP_TYPE, NkValueText(t.ramp, typeProp));
+	if (outNode)
+		*outNode = n;
+	return NkMatCompileToNkSL(g);
+}
+
+static void CasProceduralCompile() {
+	// Les trois noeuds proceduraux, sur les quatre backends. DISCRIMINE aussi une
+	// propriete du systeme qui compte : ils ne consomment AUCUN slot de texture.
+	// Un procedural qui en prendrait un reduirait le plafond sans le dire.
+	struct Jeu {
+			const char *cle;
+			const char *prise;
+			const char *cible;
+	};
+	const Jeu jeux[3] = {{NK_MN_NOISE, "fac", "roughness"},
+						 {NK_MN_GRADIENT, "fac", "roughness"},
+						 {NK_MN_CHECKER, "color", "base_color"}};
+	uint32 bons = 0;
+	uint32 slotsUtilises = 0;
+	NkString detail;
+	for (uint32 i = 0; i < 3; ++i) {
+		NkMatCompileResult r = CompileProcedural(jeux[i].cle, jeux[i].prise, jeux[i].cible, nullptr);
+		NkString be, err;
+		const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+		uint32 bind[16] = {};
+		slotsUtilises += r.ok ? RelieveBindingsSet2(r.source, bind, 16) : 0u;
+		if (r.ok && ok == 4)
+			++bons;
+		detail.Append(NkFormat("{0}={1} ", NkString(jeux[i].cle), r.ok ? be : r.error));
+	}
+	Cas("procedural/trois-noeuds-4-backends", bons == 3 && slotsUtilises == 0,
+		NkFormat("{0}| slots de texture consommes={1} (0 attendu : le procedural est gratuit en ressources)",
+				 detail, slotsUtilises));
+}
+
+static void CasBriquesRecopieesVerbatim() {
+	// ⚠️ LE CAS QUI GARDE LA DUPLICATION. Le shader engendre ne peut pas inclure
+	// `NkNoise.glsli` (le resolveur ne travaille pas depuis une chaine, cf. le cas
+	// `nksl/include-...`), donc le compilateur en RECOPIE les fonctions. Une
+	// recopie sans garde diverge — c'est le motif que ce depot a paye quatre fois
+	// en une nuit.
+	//
+	// DISCRIMINE : on lit le `.glsli` SUR LE DISQUE et on exige que chaque
+	// fonction emise s'y retrouve **mot pour mot**. Le jour ou quelqu'un corrige
+	// une formule dans le fichier, ce cas passe au rouge tant que le compilateur
+	// n'a pas suivi. C'est la meme parade que pour les bindings : comparer le code
+	// a une VERITE EXTERNE, faute de pouvoir partager.
+	NkString glsli;
+	if (!LireFichier("Resources/NKRenderer/Shaders/Include/NkNoise.glsli", glsli)) {
+		Cas("procedural/briques-recopiees-verbatim", false, NkString("NkNoise.glsli INTROUVABLE"));
+		return;
+	}
+	NkNodeId n = NK_NODE_INVALID;
+	NkMatCompileResult r = CompileProcedural(NK_MN_NOISE, "fac", "roughness", nullptr, &n);
+	// Les signatures ET un morceau de corps de chacune : une signature seule
+	// passerait alors que le corps aurait diverge.
+	const char *morceaux[6] = {"float NkHash2(vec2 p) {",
+							   "return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);",
+							   "float NkValueNoise2D(vec2 p) {",
+							   "vec2 u = f * f * (3.0 - 2.0 * f);",
+							   "float NkFBM2D(vec2 p, int octaves) {",
+							   "value += NkValueNoise2D(p) * amp;"};
+	uint32 dansLeShader = 0, dansLeFichier = 0;
+	for (uint32 i = 0; i < 6; ++i) {
+		if (r.ok && Apres(r.source, morceaux[i]) > 0)
+			++dansLeShader;
+		if (Apres(glsli, morceaux[i]) > 0)
+			++dansLeFichier;
+	}
+	Cas("procedural/briques-recopiees-verbatim", r.ok && dansLeShader == 6 && dansLeFichier == 6,
+		NkFormat("{0}/6 morceaux dans le shader emis | {1}/6 dans NkNoise.glsli sur le disque | identiques={2}",
+				 dansLeShader, dansLeFichier, (dansLeShader == 6 && dansLeFichier == 6) ? 1 : 0));
+}
+
+static void CasBriquesSeulementSiUtiles() {
+	// Un shader qui porterait les fonctions de bruit sans s'en servir alourdirait
+	// chaque materiau pour rien. DISCRIMINE dans les DEUX sens : absentes sans
+	// noeud de bruit, presentes des qu'il y en a un — un controle a sens unique
+	// laisserait passer « on ne les emet jamais ».
+	NkMatCompileResult sans = CompileProcedural(NK_MN_CHECKER, "color", "base_color", nullptr);
+	NkMatCompileResult avec = CompileProcedural(NK_MN_NOISE, "fac", "roughness", nullptr);
+	const bool absentes = sans.ok && Apres(sans.source, "NkFBM2D") < 0;
+	const bool presentes = avec.ok && Apres(avec.source, "NkFBM2D") > 0;
+	Cas("procedural/briques-seulement-si-utiles", absentes && presentes,
+		NkFormat("sans noeud de bruit : absentes={0} | avec : presentes={1}", absentes ? 1 : 0,
+				 presentes ? 1 : 0));
+}
+
+static void CasDegradeTypesEtRefus() {
+	// Les quatre types de degrade emettent des codes DIFFERENTS et compilent tous.
+	// Un type inconnu est refuse en le nommant — meme discipline que partout.
+	//
+	// DISCRIMINE : on verifie que les quatre sources emises sont deux a deux
+	// DIFFERENTES. Un emetteur qui ignorerait le type les rendrait identiques, et
+	// un simple « ca compile » ne le verrait pas.
+	NkString sources[4];
+	uint32 ok4 = 0;
+	for (uint32 i = 0; i < NkMatTypeDegradeCount(); ++i) {
+		NkMatCompileResult r = CompileProcedural(NK_MN_GRADIENT, "fac", "roughness",
+												 NkMatTypeDegradeAt(i)->cle);
+		NkString be, err;
+		if (r.ok && CompileSurLesBackends(r.source, be, &err) == 4)
+			++ok4;
+		sources[i] = r.source;
+	}
+	bool tousDifferents = true;
+	for (uint32 i = 0; i < 4; ++i)
+		for (uint32 k = i + 1; k < 4; ++k)
+			if (sources[i] == sources[k])
+				tousDifferents = false;
+	NkMatCompileResult inc = CompileProcedural(NK_MN_GRADIENT, "fac", "roughness", "spirale_logarithmique");
+	const bool nomme = !inc.ok && Apres(inc.error, "spirale_logarithmique") > 0;
+	Cas("procedural/degrade-types-et-refus",
+		ok4 == NkMatTypeDegradeCount() && tousDifferents && nomme && inc.source.Size() == 0,
+		NkFormat("{0}/{1} types compilent sur 4 backends | les 4 sources sont differentes={2} | type inconnu "
+				 "refuse en le nommant={3}",
+				 ok4, NkMatTypeDegradeCount(), tousDifferents ? 1 : 0, nomme ? 1 : 0));
+}
+
+static void CasOctavesBornees() {
+	// ⚠️ Le nombre d'octaves vient d'une VALEUR DU GRAPHE, donc potentiellement
+	// d'un parametre expose : une boucle dont le compte est libre peut ne pas se
+	// derouler, et certains backends refusent alors le shader. Le borner coute
+	// deux appels ; ne pas le borner coute un shader qui compile ici et pas
+	// ailleurs.
+	//
+	// DISCRIMINE : la borne doit etre DANS LE CODE EMIS, pas appliquee a la
+	// valeur au moment de la compilation — sinon un `detail` branche sur un autre
+	// noeud echapperait a la borne.
+	NkNodeId n = NK_NODE_INVALID;
+	NkMatCompileResult r = CompileProcedural(NK_MN_NOISE, "fac", "roughness", nullptr, &n);
+	const bool borne = r.ok && ContientSansCasse(r.source, "clamp(") &&
+					   ContientSansCasse(r.source, ", 1.0, 8.0)");
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	Cas("procedural/octaves-bornees-dans-le-shader", r.ok && ok == 4 && borne,
+		NkFormat("{0}| borne [1,8] presente dans le code emis={1}", be, borne ? 1 : 0));
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -2614,6 +2799,14 @@ int main() {
 	CasRechercheParNom();
 	CasSansExpositionAucunBloc();
 	CasBlocEtTexturesNeSeMarchentPasDessus();
+	CasIncludeNeSeResoutPas();
+
+	// -- rang 2 : le procedural ------------------------------------------
+	CasProceduralCompile();
+	CasBriquesRecopieesVerbatim();
+	CasBriquesSeulementSiUtiles();
+	CasDegradeTypesEtRefus();
+	CasOctavesBornees();
 
 	logger.Info("\n-- {0} cas, {1} echec(s) --", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;

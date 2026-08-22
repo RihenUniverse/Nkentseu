@@ -150,6 +150,18 @@ namespace nkentseu {
 				};
 				static const uint32 kOpsMathCount = 7;
 
+				// Types de degrade. Ceux de Blender qui ont un sens sans
+				// coordonnee d'objet : les autres demanderaient des varyings que
+				// le vertex engendre ne fournit pas, et une prise qui rendrait
+				// zero serait le repli plausible qu'on refuse partout.
+				static const NkMatOperation kTypesDegrade[] = {
+					{"lineaire", "Linear"},
+					{"quadratique", "Quadratic"},
+					{"radial", "Radial"},
+					{"spherique", "Spherical"},
+				};
+				static const uint32 kTypesDegradeCount = 4;
+
 				// Conventions de carte de normales. Des MOTS, une seule table, et
 				// une convention inconnue est REFUSEE : un repli sur OpenGL
 				// donnerait un relief inverse sur la moitie des fichiers, et
@@ -174,6 +186,30 @@ namespace nkentseu {
 				};
 				static const uint32 kOpsMixCount = 6;
 			} // namespace detail
+
+			inline uint32 NkMatTypeDegradeCount() {
+				return detail::kTypesDegradeCount;
+			}
+
+			inline const NkMatOperation *NkMatTypeDegradeAt(uint32 i) {
+				return i < detail::kTypesDegradeCount ? &detail::kTypesDegrade[i] : nullptr;
+			}
+
+			inline int32 NkMatTrouveTypeDegrade(const char *cle) {
+				if (!cle)
+					return -1;
+				for (uint32 i = 0; i < detail::kTypesDegradeCount; ++i) {
+					const char *a = detail::kTypesDegrade[i].cle;
+					const char *b = cle;
+					while (*a && *a == *b) {
+						++a;
+						++b;
+					}
+					if (!*a && !*b)
+						return (int32)i;
+				}
+				return -1;
+			}
 
 			inline uint32 NkMatConvNormaleCount() {
 				return detail::kConvNormaleCount;
@@ -519,6 +555,16 @@ namespace nkentseu {
 			static const char *const NK_MN_NORMAL_MAP = "mat.carte_normales";
 			static const char *const NK_MN_BUMP = "mat.relief";
 			static const char *const NK_MN_SEPARATE_XYZ = "mat.separer_xyz";
+
+			// ── RANG 2 : LE PROCEDURAL ───────────────────────────────────────
+			// Des motifs calcules, sans aucune texture — donc sans consommer un
+			// seul slot du plafond. C'est ce qui les rend precieux : un materiau
+			// entierement procedural ne coute aucune ressource.
+			static const char *const NK_MN_NOISE = "mat.bruit";
+			static const char *const NK_MN_GRADIENT = "mat.degrade";
+			static const char *const NK_MN_CHECKER = "mat.damier";
+			// Le type de degrade, meme discipline que les operations : un MOT.
+			static const char *const NK_MPROP_TYPE = "type";
 			static const char *const NK_MPROP_STOPS = "arrets";
 			static const char *const NK_MPROP_INTERP = "interpolation";
 			namespace detail {
@@ -636,6 +682,31 @@ namespace nkentseu {
 					{"z", NK_MT_REAL, NkSocketDir::Output, false},
 				};
 
+				// Noise : `detail` pilote le nombre d'octaves. DEUX sorties, comme
+				// chez Blender — la valeur scalaire et sa version en gris.
+				static const NkMatSocketDecl kNoise[] = {
+					{"vector", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"scale", NK_MT_REAL, NkSocketDir::Input, false},
+					{"detail", NK_MT_REAL, NkSocketDir::Input, false},
+					{"fac", NK_MT_REAL, NkSocketDir::Output, false},
+					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
+				};
+
+				static const NkMatSocketDecl kGradient[] = {
+					{"vector", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"fac", NK_MT_REAL, NkSocketDir::Output, false},
+					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
+				};
+
+				static const NkMatSocketDecl kChecker[] = {
+					{"vector", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"color1", NK_MT_COLOR, NkSocketDir::Input, false},
+					{"color2", NK_MT_COLOR, NkSocketDir::Input, false},
+					{"scale", NK_MT_REAL, NkSocketDir::Input, false},
+					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
+					{"fac", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+
 				static const NkMatSocketDecl kColorRamp[] = {
 					{"fac", NK_MT_REAL, NkSocketDir::Input, false},
 					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
@@ -674,8 +745,11 @@ namespace nkentseu {
 					{NK_MN_NORMAL_MAP, "Normal Map", kNormalMap, 3},
 					{NK_MN_BUMP, "Bump", kBump, 4},
 					{NK_MN_SEPARATE_XYZ, "Separate XYZ", kSeparateXYZ, 4},
+					{NK_MN_NOISE, "Noise Texture", kNoise, 5},
+					{NK_MN_GRADIENT, "Gradient Texture", kGradient, 3},
+					{NK_MN_CHECKER, "Checker Texture", kChecker, 6},
 				};
-				static const uint32 kProtoCount = 16;
+				static const uint32 kProtoCount = 19;
 
 			} // namespace detail
 

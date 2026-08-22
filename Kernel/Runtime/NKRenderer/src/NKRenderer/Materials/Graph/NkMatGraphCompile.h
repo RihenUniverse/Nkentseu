@@ -214,6 +214,56 @@ namespace nkentseu {
 					out.Append(")");
 				}
 
+
+				// ── LES BRIQUES PROCEDURALES, RECOPIEES VERBATIM ─────────────
+				//
+				// ⚠️ POURQUOI RECOPIEES ET NON INCLUSES. Mesure le 2026-08-22 : le
+				// `#include` du dialecte NkSL **ne se resout pas** quand le shader est
+				// compile DEPUIS UNE CHAINE — le compilateur rend « #include not
+				// found: Include/NkNoise.glsli » sur les quatre backends. Un shader
+				// engendre n'existe pas sur disque : il doit donc etre AUTONOME.
+				//
+				// ⚠️ ET LA DUPLICATION EST GARDEE. Ce texte est copie MOT POUR MOT de
+				// `Resources/NKRenderer/Shaders/Include/NkNoise.glsli`, et un cas de
+				// banc **lit ce fichier sur le disque** pour verifier que chaque
+				// fonction s'y retrouve a l'identique. Le jour ou quelqu'un corrige
+				// une formule dans le `.glsli`, le banc passe au rouge tant que ce
+				// texte n'a pas suivi. C'est la meme parade que pour les bindings :
+				// comparer le code a une VERITE EXTERNE, faute de pouvoir partager.
+				inline void PutBriquesBruit(NkString &out) {
+					out.Append("float NkHash2(vec2 p) {\n");
+					out.Append("    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);\n");
+					out.Append("}\n");
+					out.Append("\n");
+					out.Append("vec2 NkHash22(vec2 p) {\n");
+					out.Append("    vec2 q = vec2(dot(p, vec2(127.1, 311.7)),\n");
+					out.Append("                  dot(p, vec2(269.5, 183.3)));\n");
+					out.Append("    return fract(sin(q) * 43758.5453);\n");
+					out.Append("}\n");
+					out.Append("\n");
+					out.Append("float NkValueNoise2D(vec2 p) {\n");
+					out.Append("    vec2 i = floor(p);\n");
+					out.Append("    vec2 f = fract(p);\n");
+					out.Append("    vec2 u = f * f * (3.0 - 2.0 * f);  // smoothstep\n");
+					out.Append("    float a = NkHash2(i);\n");
+					out.Append("    float b = NkHash2(i + vec2(1.0, 0.0));\n");
+					out.Append("    float c = NkHash2(i + vec2(0.0, 1.0));\n");
+					out.Append("    float d = NkHash2(i + vec2(1.0, 1.0));\n");
+					out.Append("    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);\n");
+					out.Append("}\n");
+					out.Append("\n");
+					out.Append("float NkFBM2D(vec2 p, int octaves) {\n");
+					out.Append("    float value = 0.0;\n");
+					out.Append("    float amp = 0.5;\n");
+					out.Append("    for (int i = 0; i < octaves; ++i) {\n");
+					out.Append("        value += NkValueNoise2D(p) * amp;\n");
+					out.Append("        p *= 2.0;\n");
+					out.Append("        amp *= 0.5;\n");
+					out.Append("    }\n");
+					out.Append("    return value;\n");
+					out.Append("}\n");
+					out.Append("\n");
+				}
 			} // namespace detail
 
 			// Combien de composantes porte un « shader » approxime. Public,
@@ -391,11 +441,17 @@ namespace nkentseu {
 				// Une base tangente coute deux paires de derivees : on ne l'emet que
 				// si un noeud la reclame. Un shader qui la calculerait sans
 				// l'utiliser paierait a chaque pixel pour rien.
+				// Les briques de bruit ne sont emises que si un noeud les reclame :
+				// un shader qui les porterait sans s'en servir alourdirait chaque
+				// materiau pour rien.
+				bool besoinBruit = false;
 				bool besoinTBN = false;
 				for (uint32 i = 0; i < (uint32)ordre.Size(); ++i) {
 					const NkNode *n = g.Find(ordre[i]);
 					if (n && n->type == NkString(NK_MN_NORMAL_MAP))
 						besoinTBN = true;
+					if (n && n->type == NkString(NK_MN_NOISE))
+						besoinBruit = true;
 				}
 
 				NkVector<NkNodeId> texNodes;
@@ -472,6 +528,9 @@ namespace nkentseu {
 				}
 				if (!texNodes.Empty())
 					s.Append("\n");
+
+				if (besoinBruit)
+					detail::PutBriquesBruit(s);
 
 				s.Append("@stage(fragment)\n@entry\nvoid main() {\n");
 				// La normale geometrique sert de defaut a toute prise `normal` non
@@ -1181,6 +1240,157 @@ namespace nkentseu {
 						}
 						s.Append(") * ");
 						detail::PutNom(s, n->id, "grad");
+						s.Append(");\n");
+					} else if (t == NkString(NK_MN_NOISE)) {
+						// Le bruit de valeur a octaves, recopie de NkNoise.glsli. La
+						// coordonnee par defaut est l'UV du maillage, comme pour une
+						// texture : c'est le comportement DEFINI du noeud chez
+						// Blender, pas un bouche-trou.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "fac");
+						s.Append(" = NkFBM2D((");
+						{
+							const int32 iv = n->FindSocket("vector", NkSocketDir::Input);
+							if (iv >= 0 && g.IncomingOf(n->id, iv))
+								ecrisEntree(*n, "vector", "vec3", nullptr);
+							else
+								s.Append("vec3(vUV, 0.0)");
+						}
+						s.Append(").xy * ");
+						{
+							const int32 iv = n->FindSocket("scale", NkSocketDir::Input);
+							const bool cable = iv >= 0 && g.IncomingOf(n->id, iv);
+							const NkGraphValue *d = iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+							if (cable || (d && d->IsSet()))
+								ecrisEntree(*n, "scale", "float", nullptr);
+							else
+								s.Append("5.0");
+						}
+						s.Append(", int(clamp(");
+						{
+							const int32 iv = n->FindSocket("detail", NkSocketDir::Input);
+							const bool cable = iv >= 0 && g.IncomingOf(n->id, iv);
+							const NkGraphValue *d = iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+							if (cable || (d && d->IsSet()))
+								ecrisEntree(*n, "detail", "float", nullptr);
+							else
+								s.Append("2.0");
+						}
+						// LE NOMBRE D'OCTAVES EST BORNE. Il vient d'une valeur du
+						// graphe, donc potentiellement d'un parametre expose : une
+						// boucle dont le compte est libre peut ne pas se derouler, et
+						// certains backends refusent alors le shader. Borner coute
+						// deux appels ; ne pas borner coute un shader qui compile ici
+						// et pas ailleurs.
+						s.Append(", 1.0, 8.0)));\n");
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "color");
+						s.Append(" = vec3(");
+						detail::PutNom(s, n->id, "fac");
+						s.Append(");\n");
+					} else if (t == NkString(NK_MN_GRADIENT)) {
+						const NkGraphValue *ptp = g.FindProp(n->id, NK_MPROP_TYPE);
+						int32 itd = 0;
+						if (ptp && ptp->IsSet()) {
+							itd = NkMatTrouveTypeDegrade(ptp->text.CStr());
+							if (itd < 0) {
+								r.error = NkString("type de degrade inconnu sur ");
+								r.error.Append(n->type);
+								r.error.Append(" : ");
+								r.error.Append(ptp->text);
+								r.source = NkString("");
+								return r;
+							}
+						}
+						const NkMatOperation *tdg = NkMatTypeDegradeAt((uint32)itd);
+						if (!tdg) {
+							r.error = NkString("type de degrade hors table");
+							r.source = NkString("");
+							return r;
+						}
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "co");
+						s.Append(" = ");
+						{
+							const int32 iv = n->FindSocket("vector", NkSocketDir::Input);
+							if (iv >= 0 && g.IncomingOf(n->id, iv))
+								ecrisEntree(*n, "vector", "vec3", nullptr);
+							else
+								s.Append("vec3(vUV, 0.0)");
+						}
+						s.Append(";\n");
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "fac");
+						s.Append(" = ");
+						if (detail::OpEst(tdg->cle, "lineaire")) {
+							detail::PutNom(s, n->id, "co");
+							s.Append(".x");
+						} else if (detail::OpEst(tdg->cle, "quadratique")) {
+							s.Append("max(");
+							detail::PutNom(s, n->id, "co");
+							s.Append(".x, 0.0) * max(");
+							detail::PutNom(s, n->id, "co");
+							s.Append(".x, 0.0)");
+						} else if (detail::OpEst(tdg->cle, "radial")) {
+							s.Append("atan(");
+							detail::PutNom(s, n->id, "co");
+							s.Append(".y, ");
+							detail::PutNom(s, n->id, "co");
+							s.Append(".x) * 0.15915494 + 0.5");
+						} else {
+							s.Append("max(1.0 - length(");
+							detail::PutNom(s, n->id, "co");
+							s.Append("), 0.0)");
+						}
+						s.Append(";\n");
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "color");
+						s.Append(" = vec3(");
+						detail::PutNom(s, n->id, "fac");
+						s.Append(");\n");
+					} else if (t == NkString(NK_MN_CHECKER)) {
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "co");
+						s.Append(" = (");
+						{
+							const int32 iv = n->FindSocket("vector", NkSocketDir::Input);
+							if (iv >= 0 && g.IncomingOf(n->id, iv))
+								ecrisEntree(*n, "vector", "vec3", nullptr);
+							else
+								s.Append("vec3(vUV, 0.0)");
+						}
+						s.Append(") * ");
+						{
+							const int32 iv = n->FindSocket("scale", NkSocketDir::Input);
+							const bool cable = iv >= 0 && g.IncomingOf(n->id, iv);
+							const NkGraphValue *d = iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+							if (cable || (d && d->IsSet()))
+								ecrisEntree(*n, "scale", "float", nullptr);
+							else
+								s.Append("5.0");
+						}
+						s.Append(";\n");
+						// Damier en TROIS dimensions, comme Blender : la somme des
+						// trois parties entieres, modulo 2. En 2D la composante z vaut
+						// zero et n'y change rien -- mais l'ecrire en 3D evite d'avoir
+						// a le reecrire le jour ou une coordonnee d'objet arrivera.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "fac");
+						s.Append(" = mod(floor(");
+						detail::PutNom(s, n->id, "co");
+						s.Append(".x) + floor(");
+						detail::PutNom(s, n->id, "co");
+						s.Append(".y) + floor(");
+						detail::PutNom(s, n->id, "co");
+						s.Append(".z), 2.0);\n");
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "color");
+						s.Append(" = mix(");
+						ecrisEntree(*n, "color2", "vec3", nullptr);
+						s.Append(", ");
+						ecrisEntree(*n, "color1", "vec3", nullptr);
+						s.Append(", ");
+						detail::PutNom(s, n->id, "fac");
 						s.Append(");\n");
 					} else if (t == NkString(NK_MN_OUTPUT)) {
 						// ── LE PUITS : ombrage puis ecriture ────────────────
