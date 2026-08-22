@@ -1457,6 +1457,8 @@ Preuve : `Applications/NkMatGraphCheck` — **application** console, **35 cas, 0
 | nœuds `Image Texture` · `Texture Coordinate` · `Mapping` | ✅ 2026-08-22 | **aucun binding neuf** — voir ci-dessous, la mesure a changé la réponse |
 | **variables exposées — ENTRÉES** | ✅ 2026-08-22 | l'API publique du moteur ; ⚠️ preuve de **rendu** non atteinte, voir ci-dessous |
 | variables exposées — **sorties** | ❌ | en attente d'une décision de Rodolf : par pixel ou par matériau |
+| **rang 2** — `Noise` · `Gradient` · `Checker` | ✅ 2026-08-22 | procédural : **zéro slot de texture** |
+| rang 2 — `Voronoi` · `Wave` · `Brick` | ❌ | même moule, rien de nouveau à décider |
 | `Normal Map` · `Bump` · `Separate XYZ` | ✅ 2026-08-22 | **rang 1 complet** — convention tranchée, voir ci-dessous |
 | canevas d'édition | ❌ | couche 2, `NKEditorKit`, partagé — pas ce chantier |
 
@@ -1523,6 +1525,65 @@ naturelle quand on traite une **liste** comme une **paire** — rendrait du roug
 interpolé avec du rouge. **Les deux résultats sont des couleurs plausibles ;
 seul le canal où tombe l'écart les distingue.** Mesuré : `(52, 180, 52)`, écart
 sur le vert = 128, exactement l'arrêt du milieu.
+
+#### 🎨 Rang 2 — le procédural, et une contrainte du dialecte qu'il a révélée
+
+`Noise Texture`, `Gradient Texture`, `Checker Texture`. Leur intérêt n'est pas
+seulement d'ajouter des motifs : **ils ne consomment aucun slot de texture**. Un
+matériau entièrement procédural ne coûte donc rien au plafond de 6 — et un cas le
+vérifie en comptant les bindings émis (0).
+
+##### ⚠️ Le fait mesuré qui a décidé de la conception
+
+**L'`#include` du dialecte NkSL ne se résout PAS quand le shader est compilé
+depuis une chaîne.** Les quatre backends rendent `#include not found:
+Include/NkNoise.glsli`. Un shader engendré n'existe pas sur disque : il doit donc
+être **autonome**.
+
+Conséquence : les fonctions de `NkNoise.glsli` (`NkHash2`, `NkHash22`,
+`NkValueNoise2D`, `NkFBM2D`) sont **recopiées** dans le compilateur — ce qui est
+exactement le motif de duplication que ce dépôt a payé plusieurs fois.
+
+⚠️ **Donc la duplication est GARDÉE.** Un cas de banc **lit `NkNoise.glsli` sur le
+disque** et exige que chaque fonction émise s'y retrouve **mot pour mot** —
+signatures *et* morceaux de corps, parce qu'une signature seule passerait alors
+que le corps aurait divergé. Le jour où quelqu'un corrige une formule dans le
+fichier, le banc reste rouge tant que le compilateur n'a pas suivi. C'est la même
+parade que pour les bindings : **comparer le code à une vérité externe, faute de
+pouvoir partager**.
+
+Et la limite elle-même est devenue un cas permanent
+(`nksl/include-ne-se-resout-pas-depuis-une-chaine`) : **une limite non testée se
+perd**. Si le résolveur apprend un jour à travailler depuis une chaîne, ce cas
+passera au rouge — et ce sera le bon moment pour supprimer la recopie.
+
+##### Deux décisions de mise en œuvre
+
+- **Les octaves sont bornées DANS le shader**, pas au moment de la compilation.
+  Le compte vient d'une valeur du graphe, donc potentiellement d'un paramètre
+  exposé : une boucle dont le compte est libre peut ne pas se dérouler, et
+  certains backends refusent alors le shader. Le cas vérifie que la borne est
+  dans le **code émis** — sinon un `detail` branché sur un autre nœud y
+  échapperait.
+- **Les briques de bruit ne sont émises que si un nœud les réclame**, vérifié
+  dans les deux sens.
+
+##### La preuve de rendu : un calcul, pas une relation
+
+Les preuves précédentes mesuraient des **relations entre canaux** parce que
+l'éclairage était inconnu. Le damier permet mieux : **son arithmétique est
+prédictible**. Au pixel central, `uv = (0,5 ; 0,5)` ; le damier vaut
+`mod(floor(x)+floor(y)+floor(z), 2)` sur la coordonnée mise à l'échelle :
+
+| graphe | coordonnée | somme | case | mesuré |
+|---|---|---|---|---|
+| sans décalage, échelle 5 | (2,5 ; 2,5 ; 0) | 2+2+0 = **4** | paire → `color2` | **(52,180,52)** vert |
+| décalage +0,2, échelle 5 | (3,5 ; 2,5 ; 0) | 3+2+0 = **5** | impaire → `color1` | **(180,52,52)** rouge |
+
+⚠️ **Ce cas désigne LAQUELLE des deux couleurs doit sortir.** Une erreur d'un
+demi-carreau donnerait l'autre — et l'image resterait un damier parfaitement
+plausible. La mutation qui décale le damier d'une case n'est attrapée **que** par
+ce rendu : les 74 cas de compilation la laissent passer.
 
 #### 🎛️ Les paramètres exposés — l'API publique du moteur (2026-08-22)
 
