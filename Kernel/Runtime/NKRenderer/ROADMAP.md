@@ -1453,7 +1453,8 @@ Preuve : `Applications/NkMatGraphCheck` — **application** console, **35 cas, 0
 | **preuve de RENDU sur GPU** | ✅ | `Applications/NkMatGraphDemo` — DX11 headless, 7 cas, 4 mutations rouges |
 | masque de couche par **texture** | ✅ | 4 canaux, binding 9, `SetLayerV1MaskMap()` |
 | nœuds `Value` · `RGB` · `Math` (7 op.) · `Mix Color` (6 modes) | ✅ 2026-08-22 | une propriété de nœud porte une **décision**, pas seulement une valeur |
-| nœuds `ColorRamp` / `Image Texture` / `Mapping` | ❌ | ColorRamp = charge utile variable ; Image Texture = 1er binding piloté par le graphe |
+| nœud `ColorRamp` | ✅ 2026-08-22 | la première propriété à **charge utile variable** |
+| nœuds `Image Texture` / `Mapping` / `Texture Coordinate` | ❌ | **décision prise**, voir ci-dessous : plafond fixe, source unique, refus nommé |
 | canevas d'édition | ❌ | couche 2, `NKEditorKit`, partagé — pas ce chantier |
 
 **Le NkSL émis COMPILE sur les quatre backends** (GL, Vulkan, DX11, DX12), vérifié
@@ -1476,6 +1477,80 @@ celle de Blender ; seule son exécution diffère.
 
 **3. Une entrée ni câblée ni renseignée donne le NOIR.** Le blanc ferait passer un
 matériau non fini pour un matériau clair. Le neutre doit **se voir**.
+
+#### `ColorRamp` — la première charge utile **variable** (2026-08-22)
+
+Jusque-là toute propriété portait une charge de taille **fixe** : un réel, trois,
+quatre. Une rampe en porte **4×N**, et N vient du fichier. C'est elle qui éprouve
+vraiment le sac de propriétés — et sa réponse conditionne `Image Texture`, dont
+le chemin d'image est aussi une charge variable.
+
+**Le découpage vit à UN SEUL endroit** (`NkMatLisRampe`), partagé par le
+compilateur et le banc : un découpage dupliqué finirait par diverger, et c'est le
+compilateur qui aurait raison sans que personne le sache. Quatre réels par arrêt,
+plafond **32** arrêts, positions **strictement croissantes**.
+
+**Cinq réponses, toutes distinctes, parce qu'elles ne se réparent pas pareil :**
+
+| cas | réponse |
+|---|---|
+| propriété **absente** | ✅ compile — rampe noir→blanc par défaut. **Voisin légitime** : le nœud vient d'être posé, l'auteur n'a pas choisi |
+| compte de réels non multiple de 4 | refus `mal-formee` |
+| positions **dans le désordre** | refus `positions-dans-le-desordre` → il faut réordonner |
+| deux arrêts **à la même position** | refus `deux-arrets-a-la-meme-position` → il faut en déplacer un |
+| au-delà du plafond | refus `trop-d-arrets (33 demandes, plafond 32)` |
+
+⚠️ **Les deux défauts de position ont d'abord partagé un message**, et c'est un cas
+de banc qui a exigé de les séparer : le désordre se corrige en réordonnant, une
+égalité en **déplaçant** un arrêt. Un message commun oblige l'auteur à
+comprendre lui-même lequel des deux il a sous les yeux.
+
+⚠️ **Le refus du plafond DIT LE COMPTE.** « Trop d'arrêts » seul oblige à deviner
+combien retirer.
+
+**Aucune division dans le shader** : le dénominateur de chaque segment est
+calculé **à la compilation**, et la validation a déjà garanti qu'il est non nul en
+refusant les positions égales. Une division laissée dans le shader serait une
+garde à maintenir pour rien.
+
+**Preuve de rendu — et c'est elle qui compte** : une rampe à **trois** arrêts,
+rouge → **vert au milieu** → rouge, lue à `fac = 0,5`, doit rendre du **vert
+pur**. Un émetteur qui ne lirait que le premier et le dernier arrêt — l'erreur
+naturelle quand on traite une **liste** comme une **paire** — rendrait du rouge
+interpolé avec du rouge. **Les deux résultats sont des couleurs plausibles ;
+seul le canal où tombe l'écart les distingue.** Mesuré : `(52, 180, 52)`, écart
+sur le vert = 128, exactement l'arrêt du milieu.
+
+#### 🖼️ `Image Texture` — la décision est prise, le code ne l'est pas encore
+
+**Plafond fixe de textures, refus nommé, source unique.** Les deux autres voies
+tombent, et pour des raisons écrites :
+
+- un **tableau de descripteurs** avec indexation dynamique exige
+  `descriptorIndexing` : correct en Vulkan et DX12, fragile en GL et DX11. Ça
+  casserait la **parité 5 backends**, qui est un acquis dur du dépôt.
+- un **layout par matériau** est la vraie réponse à long terme, mais le layout est
+  partagé aujourd'hui : ce refactoring toucherait tout le monde en même temps.
+
+⚠️ **La condition non négociable** : le plafond est déclaré **une fois**, et le
+layout comme le compilateur le lisent **au même endroit** —
+`Materials/NkMaterialBindings.h`. S'il vit à deux endroits, on recrée **par
+construction** la panne silencieuse déjà mesurée : un compilateur qui autorise 8
+et un layout qui en déclare 6 écrira sur deux bindings inexistants, **sans un
+mot**.
+
+**Le plafond sera un chiffre avec une provenance écrite**, pris sur ce que les
+backends *garantissent* et non sur ce qui semble raisonnable : GL 3.3 garantit 16
+unités de texture en fragment, DX11 en garantit 128 — **c'est le plancher qui
+commande**, moins ce que le moteur consomme déjà (bindings 3 à 7 et 9).
+
+**Le cas qui tranchera** : un graphe à `plafond` textures compile et rend ; un
+graphe à `plafond + 1` est refusé **en nommant le compte**. Et le contrôle qui
+protège la condition — plus important que les autres : **le banc lit
+`NkMaterialBindings.h` ET le shader émis, et vérifie que le dernier binding
+utilisé est déclaré**. C'est le prolongement direct de la phase 0, la comparaison
+du code à une **vérité externe**. ⚠️ En **comptant les bindings**, jamais en
+cherchant des noms : le générateur HLSL minuscule et suffixe les identifiants.
 
 #### Les nœuds de calcul — une propriété qui porte une **décision** (2026-08-22)
 
