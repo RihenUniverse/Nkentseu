@@ -93,6 +93,54 @@ namespace nkentseu {
 			bool msaa4x = false;
 			bool msaa8x = false;
 			bool msaa16x = false;
+
+			// =====================================================================
+			// LE CONTRAT D'ECHANTILLONNAGE — deux questions, et elles sont DISTINCTES
+			// =====================================================================
+			// EXPRIMABLE : la valeur existe dans l'enum NkSampleCount.
+			// HONORABLE  : ce peripherique sait reellement la rendre.
+			//
+			// Les confondre est un mensonge a echeance, et il est DEJA la :
+			//   - NkSampleCount declare NK_S32 et NK_S64. Ils sont EXPRIMABLES.
+			//     AUCUN backend ne les honore.
+			//   - NkVulkanDevice::ToVkSamples() est un switch dont le default: rend
+			//     VK_SAMPLE_COUNT_1_BIT. Demander 32, 64 — ou 3 par un cast depuis un
+			//     entier de configuration, ce que permet NkRendererConfig::msaaSamples —
+			//     donne donc UN echantillon : sans erreur, sans journal, sans retour.
+			//     L'appelant croit avoir du MSAA et n'en a pas. C'est exactement
+			//     « un repli qui preserve success n'est pas un repli, c'est un mensonge ».
+			//
+			// Cette fonction rend la question DICIBLE avant quelle atteigne un backend.
+			// Elle ne corrige pas ToVkSamples — elle permet de ne jamais l'appeler avec
+			// une valeur quil va trahir en silence.
+			//
+			// ⚠️ C'est une REGLE, pas une liste : « puissance de deux » et « le drapeau
+			// correspondant » se verifient par calcul. Le banc NkMsaaContractCheck
+			// enumere les 16 combinaisons de drapeaux, donc un drapeau ajoute sans
+			// case correspondant est DIT, il ne passe pas.
+			bool SupportsSamples(NkSampleCount s) const {
+				const uint32 n = static_cast<uint32>(s);
+				if (n == 1) return true; // pas de MSAA : toujours honorable
+				if (n == 0 || (n & (n - 1)) != 0) return false; // 3, 5, 6, 7... : pas une puissance de deux
+				switch (n) {
+					case 2: return msaa2x;
+					case 4: return msaa4x;
+					case 8: return msaa8x;
+					case 16: return msaa16x;
+					default: return false; // 32, 64 : exprimables, jamais honorables
+				}
+			}
+
+			// Le plus grand nombre d'echantillons que ce peripherique honore.
+			// ⚠️ Etait recopie a la main dans GetContextInfo() : une seule source
+			// desormais, sinon les deux divergent le jour ou un drapeau s'ajoute.
+			uint32 MaxSamples() const {
+				if (msaa16x) return 16u;
+				if (msaa8x) return 8u;
+				if (msaa4x) return 4u;
+				if (msaa2x) return 2u;
+				return 1u;
+			}
 	};
 
 	// =============================================================================
@@ -153,8 +201,7 @@ namespace nkentseu {
 				info.vramMB = static_cast<uint32>(caps.vramBytes / (1024ull * 1024ull));
 				info.computeSupported = caps.computeShaders;
 				info.maxTextureSize = caps.maxTextureDim2D;
-				info.maxMSAASamples =
-					caps.msaa16x ? 16u : (caps.msaa8x ? 8u : (caps.msaa4x ? 4u : (caps.msaa2x ? 2u : 1u)));
+				info.maxMSAASamples = caps.MaxSamples();
 				info.windowWidth = GetSwapchainWidth();
 				info.windowHeight = GetSwapchainHeight();
 				return info;
