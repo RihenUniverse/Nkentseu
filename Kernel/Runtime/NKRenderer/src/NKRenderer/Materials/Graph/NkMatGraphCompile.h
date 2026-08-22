@@ -428,14 +428,14 @@ namespace nkentseu {
 				// lieu de recursive, et surtout ce qui la rend SURE — pas de pile
 				// a borner, pas de cycle a craindre, TopoSort ayant deja echoue si
 				// le graphe en avait un.
-				inline void CalculeContagion(const NkNodeGraph &g, const NkVector<NkNodeId> &ordre,
+				inline void CalculeContagion(const NkMatRegistreProtos &reg, const NkNodeGraph &g, const NkVector<NkNodeId> &ordre,
 											 NkMatContagion &out) {
 					for (uint32 i = 0; i < (uint32)ordre.Size(); ++i) {
 						const NkNode *n = g.Find(ordre[i]);
 						if (!n)
 							continue;
 						bool pp = false;
-						const NkMatNodeProto *pr = NkMatFindProto(n->type.CStr());
+						const NkMatNodeProto *pr = NkMatFindProto(reg, n->type.CStr());
 						if (pr && pr->parPixel)
 							pp = true;
 						if (!pp) {
@@ -456,7 +456,7 @@ namespace nkentseu {
 				// Refuser ne suffit pas : « cette sortie depend du pixel » laisse
 				// l'auteur chercher lequel de ses quinze noeuds est coupable. On
 				// remonte donc jusqu'a la SOURCE intrinseque et on la nomme.
-				inline NkNodeId TrouveSourceParPixel(const NkNodeGraph &g, NkNodeId depart,
+				inline NkNodeId TrouveSourceParPixel(const NkMatRegistreProtos &reg, const NkNodeGraph &g, NkNodeId depart,
 													 const NkMatContagion &c, NkVector<NkNodeId> &vus) {
 					for (uint32 i = 0; i < (uint32)vus.Size(); ++i)
 						if (vus[i] == depart)
@@ -465,7 +465,7 @@ namespace nkentseu {
 					const NkNode *n = g.Find(depart);
 					if (!n)
 						return NK_NODE_INVALID;
-					const NkMatNodeProto *pr = NkMatFindProto(n->type.CStr());
+					const NkMatNodeProto *pr = NkMatFindProto(reg, n->type.CStr());
 					// On remonte D'ABORD : la source la plus profonde est la vraie
 					// cause. Rendre le noeud courant des qu'il est intrinseque
 					// nommerait le dernier maillon plutot que le premier, et
@@ -476,7 +476,7 @@ namespace nkentseu {
 						const graph::NkLink *l = g.IncomingOf(n->id, (int32)k);
 						if (!l || !c.Lit(l->fromNode))
 							continue;
-						const NkNodeId r = TrouveSourceParPixel(g, l->fromNode, c, vus);
+						const NkNodeId r = TrouveSourceParPixel(reg, g, l->fromNode, c, vus);
 						if (r != NK_NODE_INVALID)
 							return r;
 					}
@@ -879,7 +879,7 @@ namespace nkentseu {
 					const char *sortieParPixel = nullptr;
 			};
 
-			inline NkMatCompileResult NkMatCompileToNkSL(const NkNodeGraph &g,
+			inline NkMatCompileResult NkMatCompileToNkSL(const NkMatRegistreProtos &reg, const NkNodeGraph &g,
 														 const NkMatCompileOptions &opt = NkMatCompileOptions()) {
 				NkMatCompileResult r;
 
@@ -888,7 +888,7 @@ namespace nkentseu {
 				// d'ici, pas d'une erreur de shader trois etages plus bas.
 				NkNodeId sortie = NK_NODE_INVALID;
 				NkString quoi;
-				const NkMatGraphError ve = NkMatValidate(g, &sortie, &quoi);
+				const NkMatGraphError ve = NkMatValidate(reg, g, &sortie, &quoi);
 				if (ve != NkMatGraphError::Ok) {
 					r.error = NkString("graphe invalide : ");
 					r.error.Append(NkMatGraphErrorName(ve));
@@ -2856,7 +2856,7 @@ namespace nkentseu {
 				// le redire, pas le supposer.
 				{
 					detail::NkMatContagion contagion;
-					detail::CalculeContagion(g, ordre, contagion);
+					detail::CalculeContagion(reg, g, ordre, contagion);
 
 					for (uint32 i = 0; i < (uint32)ordre.Size(); ++i) {
 						const NkNode *n = g.Find(ordre[i]);
@@ -2975,7 +2975,7 @@ namespace nkentseu {
 						const graph::NkLink *l = lv ? lv : lc;
 						if (parMateriau && contagion.Lit(l->fromNode)) {
 							NkVector<NkNodeId> vus;
-							const NkNodeId src = detail::TrouveSourceParPixel(g, l->fromNode, contagion, vus);
+							const NkNodeId src = detail::TrouveSourceParPixel(reg, g, l->fromNode, contagion, vus);
 							const NkNode *sn = src != NK_NODE_INVALID ? g.Find(src) : nullptr;
 							NkString m("« ");
 							m.Append(so.nom);

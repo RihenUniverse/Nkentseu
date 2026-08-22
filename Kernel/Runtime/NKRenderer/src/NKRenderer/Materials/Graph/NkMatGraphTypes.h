@@ -1344,10 +1344,11 @@ namespace nkentseu {
 			}
 
 			// ═════════════════════════════════════════════════════════════════
-			// ⚠️⚠️ LIMITE DECLAREE — DEFAUT CONNU, CORRECTION PLANIFIEE ⚠️⚠️
+			// ✅ DEFAUT CORRIGE LE 2026-08-23 — il etait declare ici depuis la
+			//    veille, et voici ce qu'il disait :
 			//
-			//   LE REGISTRE DE GROUPES EST UNIQUE POUR LE PROCESSUS.
-			//   DEUX DOCUMENTS OUVERTS PARTAGENT LEURS GROUPES.
+			//   « LE REGISTRE DE GROUPES EST UNIQUE POUR LE PROCESSUS.
+			//     DEUX DOCUMENTS OUVERTS PARTAGENT LEURS GROUPES. »
 			//
 			// Ce n'est PAS une simplification acceptable, c'est un DEFAUT. Dans
 			// une application qui ouvre plusieurs documents -- NK3DModeler,
@@ -1359,21 +1360,23 @@ namespace nkentseu {
 			//   3. B casse quand A se ferme.
 			// Ca se decouvrira chez un utilisateur, pas ici.
 			//
-			// CE QU'IL FAUT CORRIGER, ET CE N'EST PAS CE STOCKAGE : c'est la
-			// SIGNATURE de la porte. `NkMatFindProto(cle)` ne transporte aucun
-			// contexte ; tant qu'elle n'en transporte pas, aucun rangement ne
-			// peut separer deux documents. Le stockage a capacite fixe, lui, est
-			// un choix DELIBERE et il reste bon (voir la note plus haut : un
-			// NkVector deplacerait les prototypes et le pointeur deja rendu
-			// lirait de la memoire liberee, sans planter, en rendant des noms de
-			// prises plausibles).
+			// CE QUI A ETE CORRIGE, ET CE N'EST PAS CE STOCKAGE : c'est la
+			// SIGNATURE de la porte. `NkMatFindProto(cle)` ne transportait aucun
+			// contexte ; tant qu'elle n'en transportait pas, aucun rangement ne
+			// pouvait separer deux documents. Le stockage a capacite fixe, lui,
+			// etait un choix DELIBERE et il reste inchange (voir la note plus
+			// haut : un NkVector deplacerait les prototypes et le pointeur deja
+			// rendu lirait de la memoire liberee, sans planter, en rendant des
+			// noms de prises plausibles).
 			//
-			// QUAND : juste apres (b1). Decide avec Rodolf le 2026-08-22, et
-			// decale VOLONTAIREMENT -- ouvrir la signature touche tous les
-			// appelants, et meler ce changement a la seconde cible de rendu
-			// donnerait une mesure qui porte sur deux choses a la fois.
-			// Le changement viendra seul, avec son propre temoin :
+			// Le registre est desormais un PARAMETRE SANS DEFAUT de toute la
+			// couche 3, et le banc porte son temoin :
 			// **deux documents ne voient pas les groupes l'un de l'autre**.
+			//
+			// 📌 Le changement a ete fait SEUL, apres (b1) et non pendant :
+			// ouvrir la signature touche tous les appelants, et meler cette
+			// mesure a celle de la seconde cible en aurait fait une mesure qui
+			// porte sur deux choses a la fois.
 			// ═════════════════════════════════════════════════════════════════
 			//
 			// La source d'execution. Voir plus haut pourquoi elle est a capacite
@@ -1398,15 +1401,10 @@ namespace nkentseu {
 						return i < mN ? &mEntrees[i].proto : nullptr;
 					}
 
-					// ⚠️ EXISTE POUR LES BANCS, ET C'EST UN AVEU. Le registre est
-					// unique pour tout le processus : deux documents ouverts en
-					// meme temps PARTAGENT leurs groupes, et un cas qui enregistre
-					// un groupe le laisse visible au cas suivant. C'est une limite
-					// connue, pas un oubli -- la porte `NkMatFindProto(cle)` ne
-					// transporte aucun contexte, et lui en donner un toucherait
-					// tous ses appelants. Le jour ou deux documents doivent
-					// vraiment s'ignorer, c'est cette signature qu'il faudra
-					// changer, pas ce stockage.
+					// Remet le registre a vide. Il n'y a plus rien a avouer ici :
+					// depuis que le registre est un parametre, un registre local a
+					// une portee suffit a isoler ce qu'on y met, et deux
+					// registres distincts s'ignorent par construction.
 					void Vide() {
 						mN = 0;
 					}
@@ -1416,25 +1414,36 @@ namespace nkentseu {
 					uint32 mN = 0;
 			};
 
-			// Une seule instance pour le processus. `inline` + statique de
-			// fonction : une seule copie meme si dix unites de compilation
-			// incluent cet en-tete.
-			inline NkMatRegistreProtos &NkMatRegistre() {
-				static NkMatRegistreProtos r;
-				return r;
+			// ⚠️ IL N'Y A PLUS D'INSTANCE DE PROCESSUS, ET C'EST LE POINT.
+			//
+			// Jusqu'au 2026-08-23 un `NkMatRegistre()` statique servait tout le
+			// processus. C'etait un DEFAUT declare : deux documents ouverts
+			// partageaient leurs groupes. La correction n'etait pas dans le
+			// rangement -- elle etait dans LA SIGNATURE, parce qu'une porte qui
+			// ne transporte aucun contexte ne peut separer personne, quel que
+			// soit son stockage.
+			//
+			// Le registre est donc devenu un PARAMETRE, et il n'a AUCUNE valeur
+			// par defaut. Un defaut qui serait retombe sur un registre global
+			// aurait laisse le defaut atteignable en silence : tout appelant qui
+			// n'y aurait pas pense aurait continue de partager. Ici le
+			// compilateur oblige chaque appelant a dire DE QUEL document il
+			// parle -- c'est desagreable une fois, et definitif.
+			//
+			// Chaque document en possede un ; deux documents ne voient donc pas
+			// les groupes l'un de l'autre, et le banc l'exige.
+
+			inline uint32 NkMatProtoCount(const NkMatRegistreProtos &reg) {
+				return detail::kProtoCount + reg.Count();
 			}
 
-			inline uint32 NkMatProtoCount() {
-				return detail::kProtoCount + NkMatRegistre().Count();
-			}
-
-			inline const NkMatNodeProto *NkMatProtoAt(uint32 i) {
+			inline const NkMatNodeProto *NkMatProtoAt(const NkMatRegistreProtos &reg, uint32 i) {
 				if (i < detail::kProtoCount)
 					return &detail::kProtos[i];
-				return NkMatRegistre().At(i - detail::kProtoCount);
+				return reg.At(i - detail::kProtoCount);
 			}
 
-			inline const NkMatNodeProto *NkMatFindProto(const char *key) {
+			inline const NkMatNodeProto *NkMatFindProto(const NkMatRegistreProtos &reg, const char *key) {
 				if (!key)
 					return nullptr;
 				// SOURCE 1 : la table compilee. Consultee d'abord pour que
@@ -1452,7 +1461,7 @@ namespace nkentseu {
 						return &detail::kProtos[i];
 				}
 				// SOURCE 2 : les prototypes nes du regroupement, a l'execution.
-				return NkMatRegistre().Trouve(key);
+				return reg.Trouve(key);
 			}
 
 			// ⚠️ DEFINIE ICI, APRES LA PORTE, et pas dans la classe : c'est
@@ -1525,7 +1534,8 @@ namespace nkentseu {
 			// chaque graphe tient son propre registre, et le numero 3 peut
 			// designer « couleur » ici et « vecteur » la. C'est la meme regle que
 			// le controle d'interface de NkGraphDocument, et pour la meme raison.
-			inline NkMatRegistreErreur NkMatEnregistreGroupe(const graph::NkNodeGraph &sousGraphe, const char *key,
+			inline NkMatRegistreErreur NkMatEnregistreGroupe(NkMatRegistreProtos &reg, const graph::NkNodeGraph &sousGraphe,
+													 const char *key,
 															 const char *label = nullptr) {
 				NkMatSocketDecl decls[NK_MAT_GROUPE_PRISES_MAX];
 				uint32 n = 0;
@@ -1559,7 +1569,7 @@ namespace nkentseu {
 							parPixel = true; // indecidable ici : on prend le cote sur
 							continue;
 						}
-						const NkMatNodeProto *pr = NkMatFindProto(nd->type.CStr());
+						const NkMatNodeProto *pr = NkMatFindProto(reg, nd->type.CStr());
 						if (pr && pr->parPixel)
 							parPixel = true;
 						continue;
@@ -1589,7 +1599,7 @@ namespace nkentseu {
 					return NkMatRegistreErreur::TropDePrises;
 				// `Enregistre` RECOPIE tout : les `CStr()` ci-dessus pointent dans
 				// le sous-graphe, qui peut disparaitre juste apres.
-				return NkMatRegistre().Enregistre(key, label && label[0] ? label : key, decls, n, parPixel);
+				return reg.Enregistre(key, label && label[0] ? label : key, decls, n, parPixel);
 			}
 
 			// Instancie un prototype DANS le graphe : cree le noeud puis ajoute
@@ -1599,8 +1609,8 @@ namespace nkentseu {
 			// pas ete enregistres. On ne cree PAS un noeud a moitie forme : un
 			// noeud sans ses prises se relierait mal et l'erreur se verrait trois
 			// manipulations plus loin, loin de sa cause.
-			inline NkNodeId NkMatAddNode(NkNodeGraph &g, const char *protoKey) {
-				const NkMatNodeProto *p = NkMatFindProto(protoKey);
+			inline NkNodeId NkMatAddNode(const NkMatRegistreProtos &reg, NkNodeGraph &g, const char *protoKey) {
+				const NkMatNodeProto *p = NkMatFindProto(reg, protoKey);
 				if (!p)
 					return graph::NK_NODE_INVALID;
 				// Les types doivent DEJA etre enregistres : les chercher, jamais
@@ -1648,13 +1658,13 @@ namespace nkentseu {
 			//
 			// Rend le nombre de prototypes proposables ; remplit `out` jusqu'a
 			// `maxOut`. `out` peut etre nul pour ne compter que.
-			inline uint32 NkMatNoeudsPourPrise(const NkNodeGraph &g, NkTypeId typePrise,
+			inline uint32 NkMatNoeudsPourPrise(const NkMatRegistreProtos &reg, const NkNodeGraph &g, NkTypeId typePrise,
 											   const NkMatNodeProto **out = nullptr, uint32 maxOut = 0) {
 				if (typePrise == NK_TYPE_INVALID)
 					return 0;
 				uint32 n = 0;
-				for (uint32 i = 0; i < NkMatProtoCount(); ++i) {
-					const NkMatNodeProto *p = NkMatProtoAt(i);
+				for (uint32 i = 0; i < NkMatProtoCount(reg); ++i) {
+					const NkMatNodeProto *p = NkMatProtoAt(reg, i);
 					bool proposable = false;
 					for (uint32 k = 0; k < p->socketCount; ++k) {
 						const NkMatSocketDecl &sd = p->sockets[k];
@@ -1683,9 +1693,10 @@ namespace nkentseu {
 
 			// La meme question, posee comme l'interface la pose : « sur CETTE
 			// prise de CE noeud ». Rend 0 si la prise est declaree constante.
-			inline uint32 NkMatNoeudsPourPriseDe(const NkNodeGraph &g, const char *protoKey, const char *prise,
+			inline uint32 NkMatNoeudsPourPriseDe(const NkMatRegistreProtos &reg, const NkNodeGraph &g, const char *protoKey,
+												 const char *prise,
 												 const NkMatNodeProto **out = nullptr, uint32 maxOut = 0) {
-				const NkMatNodeProto *p = NkMatFindProto(protoKey);
+				const NkMatNodeProto *p = NkMatFindProto(reg, protoKey);
 				if (!p || !prise)
 					return 0;
 				for (uint32 k = 0; k < p->socketCount; ++k) {
@@ -1702,7 +1713,7 @@ namespace nkentseu {
 						continue;
 					if (!NkMatPriseAccepteUnLien(sd))
 						return 0; // pas de point de connexion sur cette prise
-					return NkMatNoeudsPourPrise(g, g.FindType(sd.type), out, maxOut);
+					return NkMatNoeudsPourPrise(reg, g, g.FindType(sd.type), out, maxOut);
 				}
 				return 0;
 			}
@@ -1749,7 +1760,8 @@ namespace nkentseu {
 			// `outDetail`, quand il est fourni, recoit le TYPE coupable pour les
 			// diagnostics qui en designent un -- « type-de-noeud-inconnu » sans
 			// dire lequel obligerait a fouiller un graphe de cent noeuds.
-			inline NkMatGraphError NkMatValidate(const NkNodeGraph &g, NkNodeId *outOutput = nullptr,
+			inline NkMatGraphError NkMatValidate(const NkMatRegistreProtos &reg, const NkNodeGraph &g,
+										 NkNodeId *outOutput = nullptr,
 												 NkString *outDetail = nullptr) {
 				NkNodeId found = graph::NK_NODE_INVALID;
 				uint32 count = 0;
@@ -1771,7 +1783,7 @@ namespace nkentseu {
 					const graph::NkNode *n = g.RawNodeAt(i);
 					if (!n || !n->alive)
 						continue;
-					if (!NkMatFindProto(n->type.CStr())) {
+					if (!NkMatFindProto(reg, n->type.CStr())) {
 						if (outDetail)
 							*outDetail = n->type;
 						if (outOutput)

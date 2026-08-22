@@ -207,6 +207,15 @@ using namespace nkentseu;
 using namespace nkentseu::graph;
 using namespace nkentseu::renderer::matgraph;
 
+// LE REGISTRE DE PROTOTYPES DE CE PROCESSUS DE BANC.
+//
+// Depuis le 2026-08-23 le registre est un PARAMETRE : il n'existe plus
+// d'instance de processus. Ce `gReg` n'est donc PAS un retour du defaut --
+// c'est le registre d'un document unique, celui que ce banc manipule. Les
+// cas qui ont besoin de DEUX documents en declarent deux, localement, et
+// c'est precisement ce que le temoin d'isolement mesure.
+static NkMatRegistreProtos gReg;
+
 static uint32 gCas = 0;
 static uint32 gEchecs = 0;
 
@@ -265,7 +274,7 @@ static void CasInstancierPrincipled() {
 	// sens (bsdf en entree) donnerait exactement le meme compte.
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
-	const NkNodeId n = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId n = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	const NkNode *nd = g.Find(n);
 	const int32 baseColor = nd ? nd->FindSocket("base_color", NkSocketDir::Input) : -1;
 	const int32 bsdfOut = nd ? nd->FindSocket("bsdf", NkSocketDir::Output) : -1;
@@ -287,7 +296,7 @@ static void CasPrototypeInconnu() {
 	// reste VIDE — c'est le meme piege que « cycle-refuse » dans NKGraph.
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
-	const NkNodeId n = NkMatAddNode(g, "mat.noeud_qui_nexiste_pas");
+	const NkNodeId n = NkMatAddNode(gReg, g, "mat.noeud_qui_nexiste_pas");
 	NkString d;
 	d = NkFormat("rendu={0} (0 attendu) noeuds-dans-le-graphe={1} (0 attendu)", n, g.NodeCount());
 	Cas("biblio/prototype-inconnu", n == NK_NODE_INVALID && g.NodeCount() == 0, d);
@@ -300,7 +309,7 @@ static void CasTypesNonEnregistres() {
 	// CONVERSIONS, si bien qu'il refuserait plus tard des liens parfaitement
 	// bons, tres loin de la cause. Le refus doit etre net.
 	NkNodeGraph g; // volontairement SANS NkMatRegisterTypes
-	const NkNodeId n = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId n = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	NkString d;
 	d = NkFormat("rendu={0} (0 attendu) noeuds={1} (0 attendu)", n, g.NodeCount());
 	Cas("biblio/types-non-enregistres", n == NK_NODE_INVALID && g.NodeCount() == 0, d);
@@ -314,14 +323,14 @@ static void CasPrincipledVersSortie() {
 	// qui renverrait l'ordre d'insertion echoue.
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	const NkLinkError e = g.Connect(bsdf, "bsdf", out, "surface");
 	NkVector<NkNodeId> ordre;
 	const bool trie = g.TopoSort(ordre);
 	const bool bonOrdre = trie && ordre.Size() == 2 && ordre[0] == bsdf && ordre[1] == out;
 	NkNodeId trouve = NK_NODE_INVALID;
-	const NkMatGraphError v = NkMatValidate(g, &trouve);
+	const NkMatGraphError v = NkMatValidate(gReg, g, &trouve);
 	NkString d;
 	d = NkFormat("lien={0} ordre={1} (bsdf avant sortie) validation={2} sortie-trouvee={3}", NkLinkErrorName(e), bonOrdre ? "bsdf>sortie" : "MAUVAIS", NkMatGraphErrorName(v), trouve == out ? 1 : 0);
 	Cas("graphe/principled-vers-sortie", e == NkLinkError::Ok && bonOrdre && v == NkMatGraphError::Ok && trouve == out,
@@ -335,8 +344,8 @@ static void CasCouleurDansShaderRefuse() {
 	// qui laisserait le lien rendrait le meme code d'erreur.
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId emis = NkMatAddNode(gReg, g, NK_MN_EMISSION);
 	// « color » est une ENTREE couleur d'Emission : on tente une sortie->entree
 	// invalide ET un type invalide, en deux cas distincts.
 	const NkLinkError typeFaux = g.Connect(emis, "emission", out, "surface"); // valide, temoin positif
@@ -356,19 +365,19 @@ static void CasDeuxSortiesRefusees() {
 	// le probleme.
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
-	const NkNodeId out1 = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId out1 = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	g.Connect(bsdf, "bsdf", out1, "surface");
-	const NkMatGraphError avant = NkMatValidate(g);
-	const NkNodeId out2 = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkMatGraphError apres = NkMatValidate(g);
+	const NkMatGraphError avant = NkMatValidate(gReg, g);
+	const NkNodeId out2 = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkMatGraphError apres = NkMatValidate(gReg, g);
 	NkVector<NkNodeId> ordre;
 	const bool coeurContent = g.TopoSort(ordre); // le coeur, lui, ne voit rien
 	// Et le retrait de la seconde sortie doit RENDRE le graphe valide : une
 	// validation qui compterait les noeuds MORTS resterait bloquee sur
 	// « plusieurs sorties » apres la suppression.
 	g.RemoveNode(out2);
-	const NkMatGraphError apresRetrait = NkMatValidate(g);
+	const NkMatGraphError apresRetrait = NkMatValidate(gReg, g);
 	NkString d;
 	d = NkFormat("1 sortie={0} | 2 sorties={1} (coeur triable={2}, il ne voit rien) | apres retrait={3}", NkMatGraphErrorName(avant), NkMatGraphErrorName(apres), coeurContent ? 1 : 0, NkMatGraphErrorName(apresRetrait));
 	Cas("graphe/deux-sorties-refusees",
@@ -393,9 +402,9 @@ static void CasSortieNonReliee() {
 	// discrimination qu'il n'a pas est pire qu'un cas absent.
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	NkMatAddNode(g, NK_MN_PRINCIPLED); // present mais NON RELIE
-	const NkMatGraphError v = NkMatValidate(g);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	NkMatAddNode(gReg, g, NK_MN_PRINCIPLED); // present mais NON RELIE
+	const NkMatGraphError v = NkMatValidate(gReg, g);
 	const NkNode *nd = g.Find(out);
 	const int32 idx = nd ? nd->FindSocket("surface", NkSocketDir::Input) : -1;
 	NkString d;
@@ -408,8 +417,8 @@ static void CasAucuneSortie() {
 	// passerait les cas precedents sans rien prouver.
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
-	NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkMatGraphError v = NkMatValidate(g);
+	NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkMatGraphError v = NkMatValidate(gReg, g);
 	NkString d;
 	d = NkFormat("validation={0}", NkMatGraphErrorName(v));
 	Cas("graphe/aucune-sortie", v == NkMatGraphError::NoOutput, d);
@@ -422,10 +431,10 @@ static void CasMelangeShader() {
 	// sortie. Les noeuds sont crees dans l'ordre INVERSE de l'ordre attendu.
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_SHADER);
-	const NkNodeId diff = NkMatAddNode(g, NK_MN_DIFFUSE);
-	const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId mix = NkMatAddNode(gReg, g, NK_MN_MIX_SHADER);
+	const NkNodeId diff = NkMatAddNode(gReg, g, NK_MN_DIFFUSE);
+	const NkNodeId emis = NkMatAddNode(gReg, g, NK_MN_EMISSION);
 	const NkLinkError e1 = g.Connect(diff, "bsdf", mix, "shader1");
 	const NkLinkError e2 = g.Connect(emis, "emission", mix, "shader2");
 	const NkLinkError e3 = g.Connect(mix, "shader", out, "surface");
@@ -443,7 +452,7 @@ static void CasMelangeShader() {
 			pEmis = (int32)i;
 	}
 	const bool bonOrdre = trie && pDiff < pMix && pEmis < pMix && pMix < pOut;
-	const NkMatGraphError v = NkMatValidate(g);
+	const NkMatGraphError v = NkMatValidate(gReg, g);
 	NkString d;
 	d = NkFormat("liens={0}/{1}/{2} | positions diff={3} emis={4} mix={5} sortie={6} | validation={7}", NkLinkErrorName(e1), NkLinkErrorName(e2), NkLinkErrorName(e3), pDiff, pEmis, pMix, pOut, NkMatGraphErrorName(v));
 	Cas("graphe/melange-deux-bsdf",
@@ -460,8 +469,8 @@ static void CasAllerRetourFichier() {
 	// qu'il refusait (preuve que `conv` a ete relu, pas seulement reecrit).
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	NkString a;
 	g.Serialize(a);
@@ -471,7 +480,7 @@ static void CasAllerRetourFichier() {
 	NkString b;
 	g2.Serialize(b);
 	const bool identique = (a == b);
-	const NkMatGraphError v = NkMatValidate(g2);
+	const NkMatGraphError v = NkMatValidate(gReg, g2);
 	// La semantique : reel->couleur accepte, couleur->reel refuse, APRES relecture.
 	const NkTypeId r2 = g2.FindType(NK_MT_REAL), c2 = g2.FindType(NK_MT_COLOR);
 	const bool semantique = r2 && c2 && g2.Accepts(c2, r2) && !g2.Accepts(r2, c2);
@@ -528,7 +537,7 @@ static void CasDefautDePrise() {
 	// regarderait que le troisieme.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId n = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId n = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 
 	const NkGraphValue *absente = g.SocketDefault(n, "prise_qui_nexiste_pas", NkSocketDir::Input);
 	const NkGraphValue *vierge = g.SocketDefault(n, "roughness", NkSocketDir::Input);
@@ -562,7 +571,7 @@ static void CasJamaisRenseigneContreVide() {
 	// prises qui existent toutes sans defaut.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId n = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId n = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 
 	// PORTE 1 — les prises. Le Principled en a six, aucune n'a de defaut : la
 	// boucle d'ecriture les parcourt toutes, et son garde est donc exerce six
@@ -613,7 +622,7 @@ static void CasProprieteDeNoeud() {
 	// d'insertion, et la premiere lecture donnerait l'ANCIENNE valeur.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId n = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId n = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	g.SetProp(n, "operation", NkValueText(t.real, "multiplier"));
 	const uint32 apres1 = g.PropCount(n);
 	g.SetProp(n, "operation", NkValueText(t.real, "ajouter"));
@@ -647,8 +656,8 @@ static void CasAllerRetourConstruitEnMemoire() {
 	// perdue en route.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	const float32 blanc[4] = {1.f, 1.f, 1.f, 1.f};
 	g.SetSocketDefault(bsdf, "base_color", NkSocketDir::Input, NkValueVec(t.color, blanc, 4));
@@ -684,7 +693,7 @@ static void CasPrecisionExacte() {
 	// dans l'ecriture.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId n = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId n = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	const float32 tiers = 1.f / 3.f;
 	g.SetSocketDefault(n, "roughness", NkSocketDir::Input, NkValueReal(t.real, tiers));
 	NkString s;
@@ -1265,8 +1274,8 @@ static uint32 CompileSurLesBackends(const NkString &nksl, NkString &detail, NkSt
 
 // Le graphe minimal REEL : un Principled avec ses defauts, vers la sortie.
 static NkNodeId MonteUnPrincipled(NkNodeGraph &g, const NkMatTypes &t, NkNodeId *outSortie) {
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	const float32 rouge[3] = {0.8f, 0.15f, 0.1f};
 	g.SetSocketDefault(bsdf, "base_color", NkSocketDir::Input, NkValueVec(t.color, rouge, 3));
@@ -1288,7 +1297,7 @@ static void CasCompilePrincipled() {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
 	MonteUnPrincipled(g, t, nullptr);
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	NkString be;
 	NkString err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
@@ -1314,10 +1323,10 @@ static void CasCompileMixShader() {
 	// une sphere mate.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_SHADER);
-	const NkNodeId diff = NkMatAddNode(g, NK_MN_DIFFUSE);
-	const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId mix = NkMatAddNode(gReg, g, NK_MN_MIX_SHADER);
+	const NkNodeId diff = NkMatAddNode(gReg, g, NK_MN_DIFFUSE);
+	const NkNodeId emis = NkMatAddNode(gReg, g, NK_MN_EMISSION);
 	g.Connect(diff, "bsdf", mix, "shader1");
 	g.Connect(emis, "emission", mix, "shader2");
 	g.Connect(mix, "shader", out, "surface");
@@ -1329,7 +1338,7 @@ static void CasCompileMixShader() {
 	g.SetSocketDefault(emis, "strength", NkSocketDir::Input, NkValueReal(t.real, 2.0f));
 	g.SetSocketDefault(mix, "fac", NkSocketDir::Input, NkValueReal(t.real, 0.5f));
 
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	// COMPTER LES « mix( » DU FICHIER ENTIER NE MARCHE PAS, et je l'ai appris en
 	// le mesurant : le puits en emet DEUX pour son propre compte (`specExp` et
 	// `specColor`). Ma premiere version attendait 5 et en a trouve 6 — la
@@ -1386,7 +1395,7 @@ static void CasCompileOrdreRespecte() {
 	const NkMatTypes t = NkMatRegisterTypes(g);
 	NkNodeId out = NK_NODE_INVALID;
 	const NkNodeId bsdf = MonteUnPrincipled(g, t, &out);
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	// La declaration du bsdf doit apparaitre AVANT sa lecture par le puits.
 	const NkString nomAlbedo = NkFormat("n{0}_albedo", (uint32)bsdf);
 	const int32 premiere = r.ok ? Apres(r.source, nomAlbedo.CStr()) : -1;
@@ -1422,17 +1431,17 @@ static void CasCompileRefuseAvantDeGenerer() {
 	{ // aucune sortie
 		NkNodeGraph g;
 		NkMatRegisterTypes(g);
-		NkMatAddNode(g, NK_MN_PRINCIPLED);
-		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+		NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 		e1 = !r.ok;
 		m1 = r.error;
 	}
 	{ // sortie non reliee
 		NkNodeGraph g;
 		NkMatRegisterTypes(g);
-		NkMatAddNode(g, NK_MN_OUTPUT);
-		NkMatAddNode(g, NK_MN_PRINCIPLED);
-		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+		NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+		NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 		e2 = !r.ok;
 		m2 = r.error;
 	}
@@ -1440,11 +1449,11 @@ static void CasCompileRefuseAvantDeGenerer() {
 	  // coeur, il porte des prises valides, et pourtant il n'a pas d'emetteur.
 		NkNodeGraph g;
 		const NkMatTypes t = NkMatRegisterTypes(g);
-		const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+		const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
 		const NkNodeId inconnu = g.AddNode("mat.noeud_futur", "Noeud pas encore compilable");
 		g.AddSocket(inconnu, "bsdf", t.shader, NkSocketDir::Output);
 		g.Connect(inconnu, "bsdf", out, "surface");
-		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 		e3 = !r.ok;
 		m3 = r.error;
 		// Et RIEN ne doit avoir ete emis : un shader partiel serait pire qu'aucun.
@@ -1470,10 +1479,10 @@ static void CasCompileEntreeNiCableeNiRenseignee() {
 	// LAQUELLE.
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED); // AUCUN defaut pose
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED); // AUCUN defaut pose
 	g.Connect(bsdf, "bsdf", out, "surface");
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	NkString be;
 	NkString err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
@@ -1495,13 +1504,13 @@ static void CasCompileGrapheVenuDunFichier() {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
 	MonteUnPrincipled(g, t, nullptr);
-	NkMatCompileResult direct = NkMatCompileToNkSL(g);
+	NkMatCompileResult direct = NkMatCompileToNkSL(gReg, g);
 
 	NkString fichier;
 	g.Serialize(fichier);
 	NkNodeGraph g2;
 	const bool relu = g2.Deserialize(fichier.CStr());
-	NkMatCompileResult apres = NkMatCompileToNkSL(g2);
+	NkMatCompileResult apres = NkMatCompileToNkSL(gReg, g2);
 
 	const bool memeShader = direct.ok && apres.ok && (direct.source == apres.source);
 	NkString be;
@@ -1544,7 +1553,7 @@ static void CasMenuPriseShader() {
 	// le menu grandit a chaque noeud ajoute, et un tampon fixe finit
 	// toujours par etre depasse. Il l'a ete a 17.
 	const NkMatNodeProto *menu[64];
-	const uint32 n = NkMatNoeudsPourPrise(g, t.shader, menu, 64);
+	const uint32 n = NkMatNoeudsPourPrise(gReg, g, t.shader, menu, 64);
 	const bool bons = DansLeMenu(menu, n, NK_MN_PRINCIPLED) && DansLeMenu(menu, n, NK_MN_DIFFUSE) &&
 					  DansLeMenu(menu, n, NK_MN_EMISSION) && DansLeMenu(menu, n, NK_MN_MIX_SHADER);
 	const bool absents = !DansLeMenu(menu, n, NK_MN_OUTPUT) && !DansLeMenu(menu, n, NK_MN_VALUE) &&
@@ -1566,8 +1575,8 @@ static void CasMenuPriseCouleurEtReelle() {
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
 	const NkMatNodeProto *mc[64], *mr[64];
-	const uint32 nc = NkMatNoeudsPourPriseDe(g, NK_MN_PRINCIPLED, "base_color", mc, 64);
-	const uint32 nr = NkMatNoeudsPourPriseDe(g, NK_MN_PRINCIPLED, "roughness", mr, 64);
+	const uint32 nc = NkMatNoeudsPourPriseDe(gReg, g, NK_MN_PRINCIPLED, "base_color", mc, 64);
+	const uint32 nr = NkMatNoeudsPourPriseDe(gReg, g, NK_MN_PRINCIPLED, "roughness", mr, 64);
 	// Ce qui produit une COULEUR ou peut s'y convertir : RGB, Mix Color, et
 	// Value (un reel se diffuse en gris). Math aussi, pour la meme raison.
 	const bool couleurOk = DansLeMenu(mc, nc, NK_MN_RGB) && DansLeMenu(mc, nc, NK_MN_VALUE) &&
@@ -1622,8 +1631,8 @@ static void CasMenuPriseInconnue() {
 	// une prise mal orthographiee.
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
-	const uint32 n = NkMatNoeudsPourPriseDe(g, NK_MN_PRINCIPLED, "prise_qui_nexiste_pas");
-	const uint32 m = NkMatNoeudsPourPriseDe(g, "mat.noeud_inconnu", "base_color");
+	const uint32 n = NkMatNoeudsPourPriseDe(gReg, g, NK_MN_PRINCIPLED, "prise_qui_nexiste_pas");
+	const uint32 m = NkMatNoeudsPourPriseDe(gReg, g, "mat.noeud_inconnu", "base_color");
 	Cas("biblio/menu-prise-ou-noeud-inconnu", n == 0 && m == 0,
 		NkFormat("prise inconnue -> {0} | noeud inconnu -> {1} (0 et 0 attendus)", n, m));
 }
@@ -1660,15 +1669,15 @@ static void CasCompileRGBVersBaseColor() {
 	// produirait un shader qui compile parfaitement et rendrait du noir.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId rgb = NkMatAddNode(g, NK_MN_RGB);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId rgb = NkMatAddNode(gReg, g, NK_MN_RGB);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	const NkLinkError e = g.Connect(rgb, "color", bsdf, "base_color");
 	const float32 turquoise[3] = {0.04f, 0.33f, 0.37f};
 	g.SetProp(rgb, NK_MPROP_COLOR, NkValueVec(t.color, turquoise, 3));
 
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	NkString be;
 	NkString err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
@@ -1689,13 +1698,13 @@ static void CasCompileValeurVersRoughness() {
 	// compilateur choisisse `float` et non `vec3` pour ce type de sortie.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId val = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId val = NkMatAddNode(gReg, g, NK_MN_VALUE);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	const NkLinkError e = g.Connect(val, "value", bsdf, "roughness");
 	g.SetProp(val, NK_MPROP_VALUE, NkValueReal(t.real, 0.125f));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	NkString be;
 	NkString err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
@@ -1724,20 +1733,20 @@ static void CasOperationInconnueRefusee() {
 	// les deux.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId math = NkMatAddNode(g, NK_MN_MATH);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId math = NkMatAddNode(gReg, g, NK_MN_MATH);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	g.Connect(math, "value", bsdf, "roughness");
 
 	// (a) propriete absente -> doit compiler
-	NkMatCompileResult sansProp = NkMatCompileToNkSL(g);
+	NkMatCompileResult sansProp = NkMatCompileToNkSL(gReg, g);
 	// (b) operation inconnue -> doit ECHOUER, et nommer la faute
 	g.SetProp(math, NK_MPROP_OPERATION, NkValueText(t.real, "racine_carree_hyperbolique"));
-	NkMatCompileResult inconnue = NkMatCompileToNkSL(g);
+	NkMatCompileResult inconnue = NkMatCompileToNkSL(gReg, g);
 	// (c) operation valide -> doit compiler de nouveau
 	g.SetProp(math, NK_MPROP_OPERATION, NkValueText(t.real, "multiplier"));
-	NkMatCompileResult valide = NkMatCompileToNkSL(g);
+	NkMatCompileResult valide = NkMatCompileToNkSL(gReg, g);
 
 	const bool nomme = !inconnue.ok && Apres(inconnue.error, "racine_carree_hyperbolique") > 0;
 	const bool rienEmis = inconnue.source.Size() == 0;
@@ -1762,13 +1771,13 @@ static void CasToutesLesOperationsCompilent() {
 		for (uint32 i = 0; i < NkMatOperationCount(couleur); ++i) {
 			NkNodeGraph g;
 			const NkMatTypes t = NkMatRegisterTypes(g);
-			const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-			const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+			const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+			const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 			g.Connect(bsdf, "bsdf", out, "surface");
-			const NkNodeId n = NkMatAddNode(g, couleur ? NK_MN_MIX_COLOR : NK_MN_MATH);
+			const NkNodeId n = NkMatAddNode(gReg, g, couleur ? NK_MN_MIX_COLOR : NK_MN_MATH);
 			g.Connect(n, couleur ? "color" : "value", bsdf, couleur ? "base_color" : "roughness");
 			g.SetProp(n, NK_MPROP_OPERATION, NkValueText(t.real, NkMatOperationAt(couleur, i)->cle));
-			NkMatCompileResult r = NkMatCompileToNkSL(g);
+			NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 			NkString be, err;
 			const uint32 nb = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 			if (r.ok && nb == 5) {
@@ -1796,15 +1805,15 @@ static void CasDivisionParZeroGardee() {
 	// On verifie que le code emis porte la garde, ET qu'il compile partout.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId math = NkMatAddNode(g, NK_MN_MATH);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId math = NkMatAddNode(gReg, g, NK_MN_MATH);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	g.Connect(math, "value", bsdf, "roughness");
 	g.SetProp(math, NK_MPROP_OPERATION, NkValueText(t.real, "diviser"));
 	g.SetSocketDefault(math, "a", NkSocketDir::Input, NkValueReal(t.real, 1.f));
 	g.SetSocketDefault(math, "b", NkSocketDir::Input, NkValueReal(t.real, 0.f));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	NkString be, err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 	const bool garde = r.ok && ContientSansCasse(r.source, "== 0.0 ? 0.0");
@@ -1818,16 +1827,16 @@ static void CasDivisionParZeroGardee() {
 // Monte un graphe `ColorRamp -> base_color` et rend le resultat de compilation.
 static NkMatCompileResult CompileRampe(NkNodeGraph &g, const NkMatTypes &t, const float32 *arrets, uint32 nbReels,
 									   const char *interp) {
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId ramp = NkMatAddNode(g, NK_MN_COLOR_RAMP);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId ramp = NkMatAddNode(gReg, g, NK_MN_COLOR_RAMP);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	g.Connect(ramp, "color", bsdf, "base_color");
 	if (arrets)
 		g.SetProp(ramp, NK_MPROP_STOPS, NkValueVec(t.ramp, arrets, nbReels));
 	if (interp)
 		g.SetProp(ramp, NK_MPROP_INTERP, NkValueText(t.ramp, interp));
-	return NkMatCompileToNkSL(g);
+	return NkMatCompileToNkSL(gReg, g);
 }
 
 static void CasRampeChargeVariable() {
@@ -1971,7 +1980,7 @@ static void CasRampeAllerRetourFichier() {
 	g.Serialize(fichier);
 	NkNodeGraph g2;
 	const bool relu = g2.Deserialize(fichier.CStr());
-	NkMatCompileResult apres = NkMatCompileToNkSL(g2);
+	NkMatCompileResult apres = NkMatCompileToNkSL(gReg, g2);
 	const bool meme = direct.ok && apres.ok && (direct.source == apres.source);
 	const NkGraphValue *v = nullptr;
 	for (uint32 i = 0; i < g2.RawNodeCount(); ++i) {
@@ -2033,17 +2042,17 @@ static bool SlotConnu(uint32 binding) {
 static NkMatCompileResult CompileNTextures(uint32 nb) {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	NkNodeId precedent = NK_NODE_INVALID;
 	for (uint32 i = 0; i < nb; ++i) {
-		const NkNodeId tex = NkMatAddNode(g, NK_MN_IMAGE_TEXTURE);
+		const NkNodeId tex = NkMatAddNode(gReg, g, NK_MN_IMAGE_TEXTURE);
 		g.SetProp(tex, NK_MPROP_IMAGE, NkValueText(t.ramp, "image.png"));
 		if (precedent == NK_NODE_INVALID) {
 			precedent = tex;
 		} else {
-			const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_COLOR);
+			const NkNodeId mix = NkMatAddNode(gReg, g, NK_MN_MIX_COLOR);
 			g.Connect(precedent, "color", mix, "color1");
 			g.Connect(tex, "color", mix, "color2");
 			precedent = mix;
@@ -2051,7 +2060,7 @@ static NkMatCompileResult CompileNTextures(uint32 nb) {
 	}
 	if (precedent != NK_NODE_INVALID)
 		g.Connect(precedent, precedent == NK_NODE_INVALID ? "color" : "color", bsdf, "base_color");
-	return NkMatCompileToNkSL(g);
+	return NkMatCompileToNkSL(gReg, g);
 }
 
 static void CasTexturePlafondRefusNomme() {
@@ -2142,14 +2151,14 @@ static void CasTextureDeuxSorties() {
 	// shader qui compile et un materiau faux.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId tex = NkMatAddNode(g, NK_MN_IMAGE_TEXTURE);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId tex = NkMatAddNode(gReg, g, NK_MN_IMAGE_TEXTURE);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	const NkLinkError e1 = g.Connect(tex, "color", bsdf, "base_color");
 	const NkLinkError e2 = g.Connect(tex, "alpha", bsdf, "roughness");
 	g.SetProp(tex, NK_MPROP_IMAGE, NkValueText(t.ramp, "peau.png"));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const NkString nc = NkFormat("n{0}_color", (uint32)tex);
 	const NkString na = NkFormat("n{0}_alpha", (uint32)tex);
 	const bool deux = r.ok && Apres(r.source, nc.CStr()) > 0 && Apres(r.source, na.CStr()) > 0;
@@ -2172,29 +2181,29 @@ static void CasTextureCoordonneeEtMappage() {
 	NkNodeGraph g1;
 	const NkMatTypes t1 = NkMatRegisterTypes(g1);
 	{
-		const NkNodeId out = NkMatAddNode(g1, NK_MN_OUTPUT);
-		const NkNodeId bsdf = NkMatAddNode(g1, NK_MN_PRINCIPLED);
-		const NkNodeId tex = NkMatAddNode(g1, NK_MN_IMAGE_TEXTURE);
+		const NkNodeId out = NkMatAddNode(gReg, g1, NK_MN_OUTPUT);
+		const NkNodeId bsdf = NkMatAddNode(gReg, g1, NK_MN_PRINCIPLED);
+		const NkNodeId tex = NkMatAddNode(gReg, g1, NK_MN_IMAGE_TEXTURE);
 		g1.Connect(bsdf, "bsdf", out, "surface");
 		g1.Connect(tex, "color", bsdf, "base_color");
 		(void)t1;
 	}
-	NkMatCompileResult sansMap = NkMatCompileToNkSL(g1);
+	NkMatCompileResult sansMap = NkMatCompileToNkSL(gReg, g1);
 
 	NkNodeGraph g2;
 	const NkMatTypes t2 = NkMatRegisterTypes(g2);
-	const NkNodeId out2 = NkMatAddNode(g2, NK_MN_OUTPUT);
-	const NkNodeId bsdf2 = NkMatAddNode(g2, NK_MN_PRINCIPLED);
-	const NkNodeId tex2 = NkMatAddNode(g2, NK_MN_IMAGE_TEXTURE);
-	const NkNodeId map = NkMatAddNode(g2, NK_MN_MAPPING);
-	const NkNodeId coord = NkMatAddNode(g2, NK_MN_TEX_COORD);
+	const NkNodeId out2 = NkMatAddNode(gReg, g2, NK_MN_OUTPUT);
+	const NkNodeId bsdf2 = NkMatAddNode(gReg, g2, NK_MN_PRINCIPLED);
+	const NkNodeId tex2 = NkMatAddNode(gReg, g2, NK_MN_IMAGE_TEXTURE);
+	const NkNodeId map = NkMatAddNode(gReg, g2, NK_MN_MAPPING);
+	const NkNodeId coord = NkMatAddNode(gReg, g2, NK_MN_TEX_COORD);
 	g2.Connect(bsdf2, "bsdf", out2, "surface");
 	g2.Connect(tex2, "color", bsdf2, "base_color");
 	g2.Connect(map, "vector_out", tex2, "vector");
 	g2.Connect(coord, "uv", map, "vector");
 	const float32 ech[3] = {4.f, 4.f, 1.f};
 	g2.SetSocketDefault(map, "scale", NkSocketDir::Input, NkValueVec(t2.vector, ech, 3));
-	NkMatCompileResult avecMap = NkMatCompileToNkSL(g2);
+	NkMatCompileResult avecMap = NkMatCompileToNkSL(gReg, g2);
 
 	const NkString nomMap = NkFormat("n{0}_vector_out", (uint32)map);
 	const bool litUV = sansMap.ok && Apres(sansMap.source, ", vUV)") > 0;
@@ -2232,17 +2241,17 @@ static void CasTextureCoordonneeEtMappage() {
 static NkMatCompileResult CompileCarteNormales(const char *convention) {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId nm = NkMatAddNode(g, NK_MN_NORMAL_MAP);
-	const NkNodeId tex = NkMatAddNode(g, NK_MN_IMAGE_TEXTURE);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId nm = NkMatAddNode(gReg, g, NK_MN_NORMAL_MAP);
+	const NkNodeId tex = NkMatAddNode(gReg, g, NK_MN_IMAGE_TEXTURE);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	g.Connect(nm, "normal", bsdf, "normal");
 	g.Connect(tex, "color", nm, "color");
 	g.SetProp(tex, NK_MPROP_IMAGE, NkValueText(t.ramp, "relief.png"));
 	if (convention)
 		g.SetProp(tex, NK_MPROP_NORMAL_CONV, NkValueText(t.ramp, convention));
-	return NkMatCompileToNkSL(g);
+	return NkMatCompileToNkSL(gReg, g);
 }
 
 static void CasConventionNeChangePasLeShader() {
@@ -2288,11 +2297,11 @@ static void CasBaseTangenteSeulementSiUtile() {
 	// laisserait passer « on ne l'emet jamais », ce qui casserait le relief.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	(void)t;
-	NkMatCompileResult sans = NkMatCompileToNkSL(g);
+	NkMatCompileResult sans = NkMatCompileToNkSL(gReg, g);
 	NkMatCompileResult avec = CompileCarteNormales("opengl");
 	const bool absente = sans.ok && Apres(sans.source, "nkT") < 0;
 	const bool presente = avec.ok && Apres(avec.source, "nkT") > 0 && ContientSansCasse(avec.source, "dFdx(vUV)");
@@ -2317,15 +2326,15 @@ static void CasNormaleVoyageJusquAuPuits() {
 	// Principled, qui la porte comme composante de son shader.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId nm = NkMatAddNode(g, NK_MN_NORMAL_MAP);
-	const NkNodeId tex = NkMatAddNode(g, NK_MN_IMAGE_TEXTURE);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId nm = NkMatAddNode(gReg, g, NK_MN_NORMAL_MAP);
+	const NkNodeId tex = NkMatAddNode(gReg, g, NK_MN_IMAGE_TEXTURE);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	g.Connect(nm, "normal", bsdf, "normal");
 	g.Connect(tex, "color", nm, "color");
 	g.SetProp(tex, NK_MPROP_IMAGE, NkValueText(t.ramp, "relief.png"));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 
 	// Maillon 1 : le Principled prend la normale du Normal Map.
 	const NkString m1 = NkFormat("n{0}_normal = n{1}_normal", (uint32)bsdf, (uint32)nm);
@@ -2356,17 +2365,17 @@ static void CasBumpDeriveesEtGarde() {
 	// la machine.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId bump = NkMatAddNode(g, NK_MN_BUMP);
-	const NkNodeId sep = NkMatAddNode(g, NK_MN_SEPARATE_XYZ);
-	const NkNodeId coord = NkMatAddNode(g, NK_MN_TEX_COORD);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId bump = NkMatAddNode(gReg, g, NK_MN_BUMP);
+	const NkNodeId sep = NkMatAddNode(gReg, g, NK_MN_SEPARATE_XYZ);
+	const NkNodeId coord = NkMatAddNode(gReg, g, NK_MN_TEX_COORD);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	g.Connect(bump, "normal", bsdf, "normal");
 	g.Connect(sep, "x", bump, "height");
 	g.Connect(coord, "uv", sep, "vector");
 	g.SetSocketDefault(bump, "strength", NkSocketDir::Input, NkValueReal(t.real, 1.f));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const bool derive = r.ok && ContientSansCasse(r.source, "dFdx(n3_h)");
 	const bool garde = r.ok && ContientSansCasse(r.source, "< 1e-12 ? 1e-12");
 	NkString be, err;
@@ -2384,15 +2393,15 @@ static void CasSepareTroisSorties() {
 	// faux.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId sep = NkMatAddNode(g, NK_MN_SEPARATE_XYZ);
-	const NkNodeId coord = NkMatAddNode(g, NK_MN_TEX_COORD);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId sep = NkMatAddNode(gReg, g, NK_MN_SEPARATE_XYZ);
+	const NkNodeId coord = NkMatAddNode(gReg, g, NK_MN_TEX_COORD);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	g.Connect(coord, "uv", sep, "vector");
 	g.Connect(sep, "x", bsdf, "metallic");
 	g.Connect(sep, "y", bsdf, "roughness");
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const NkString nx = NkFormat("n{0}_x", (uint32)sep);
 	const NkString ny = NkFormat("n{0}_y", (uint32)sep);
 	const NkString nz = NkFormat("n{0}_z", (uint32)sep);
@@ -2431,8 +2440,8 @@ static void Expose(NkNodeGraph &g, const NkMatTypes &t, NkNodeId n, const char *
 
 // Un Principled minimal vers la sortie, pour poser des expositions dessus.
 static NkNodeId MontePrincipledExposable(NkNodeGraph &g, const NkMatTypes &t) {
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	g.SetSocketDefault(bsdf, "roughness", NkSocketDir::Input, NkValueReal(t.real, 0.35f));
 	return bsdf;
@@ -2447,7 +2456,7 @@ static void CasExposeLitLeBloc() {
 	const NkMatTypes t = NkMatRegisterTypes(g);
 	const NkNodeId bsdf = MontePrincipledExposable(g, t);
 	Expose(g, t, bsdf, "roughness", "usure");
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	// SONDE DEMANDEE PAR LE COORDINATEUR : ecrire la source EMISE dans un
 	// fichier et la regarder. Volontairement par fwrite et NON par le
 	// journal : une source de shader est pleine d ACCOLADES LITTERALES, et
@@ -2501,7 +2510,7 @@ static void CasDecalagesStd140() {
 	Expose(g, t, bsdf, "metallic", "metal");    // reel  : 4 o
 	Expose(g, t, bsdf, "base_color", "teinte"); // vec3  : aligne 16
 	Expose(g, t, bsdf, "roughness", "usure");   // reel
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const NkMatParamExpose *a = r.ok ? r.TrouveParam("metal") : nullptr;
 	const NkMatParamExpose *b = r.ok ? r.TrouveParam("teinte") : nullptr;
 	const NkMatParamExpose *c = r.ok ? r.TrouveParam("usure") : nullptr;
@@ -2540,11 +2549,11 @@ static void CasPriseConnecteeEtExposeeRefusee() {
 	const NkMatTypes t = NkMatRegisterTypes(g);
 	const NkNodeId bsdf = MontePrincipledExposable(g, t);
 	Expose(g, t, bsdf, "roughness", "usure");
-	NkMatCompileResult temoin = NkMatCompileToNkSL(g);
+	NkMatCompileResult temoin = NkMatCompileToNkSL(gReg, g);
 
-	const NkNodeId val = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId val = NkMatAddNode(gReg, g, NK_MN_VALUE);
 	const NkLinkError e = g.Connect(val, "value", bsdf, "roughness");
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const bool nomme = !r.ok && Apres(r.error, "roughness") > 0 && Apres(r.error, "CONNECTEE") > 0;
 	Cas("variable/prise-connectee-et-exposee-refusee",
 		temoin.ok && e == NkLinkError::Ok && !r.ok && nomme && r.source.Size() == 0,
@@ -2564,21 +2573,21 @@ static void CasExposeRefusNommes() {
 		const NkNodeId bsdf = MontePrincipledExposable(g, t);
 		Expose(g, t, bsdf, "metallic", "reglage");
 		Expose(g, t, bsdf, "roughness", "reglage");
-		m[0] = NkMatCompileToNkSL(g).error;
+		m[0] = NkMatCompileToNkSL(gReg, g).error;
 	}
 	{ // nom public invalide
 		NkNodeGraph g;
 		const NkMatTypes t = NkMatRegisterTypes(g);
 		const NkNodeId bsdf = MontePrincipledExposable(g, t);
 		Expose(g, t, bsdf, "roughness", "2 usures");
-		m[1] = NkMatCompileToNkSL(g).error;
+		m[1] = NkMatCompileToNkSL(gReg, g).error;
 	}
 	{ // prise inconnue -- ce que laisse un renommage de prise
 		NkNodeGraph g;
 		const NkMatTypes t = NkMatRegisterTypes(g);
 		const NkNodeId bsdf = MontePrincipledExposable(g, t);
 		Expose(g, t, bsdf, "rugosite", "usure");
-		m[2] = NkMatCompileToNkSL(g).error;
+		m[2] = NkMatCompileToNkSL(gReg, g).error;
 	}
 	{ // une prise SHADER n'est pas une valeur uniforme
 		// ⚠️ CE CAS A D'ABORD MESURE AUTRE CHOSE. Ma premiere version exposait
@@ -2591,13 +2600,13 @@ static void CasExposeRefusNommes() {
 		// graphe par ailleurs valide.
 		NkNodeGraph g;
 		const NkMatTypes t = NkMatRegisterTypes(g);
-		const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-		const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_SHADER);
-		const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
+		const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+		const NkNodeId mix = NkMatAddNode(gReg, g, NK_MN_MIX_SHADER);
+		const NkNodeId emis = NkMatAddNode(gReg, g, NK_MN_EMISSION);
 		g.Connect(mix, "shader", out, "surface");
 		g.Connect(emis, "emission", mix, "shader2"); // shader1 reste LIBRE
 		Expose(g, t, mix, "shader1", "melange");
-		m[3] = NkMatCompileToNkSL(g).error;
+		m[3] = NkMatCompileToNkSL(gReg, g).error;
 	}
 	const bool tous = m[0].Size() && m[1].Size() && m[2].Size() && m[3].Size();
 	const bool distincts = tous && !(m[0] == m[1]) && !(m[1] == m[2]) && !(m[2] == m[3]) && !(m[0] == m[3]);
@@ -2620,7 +2629,7 @@ static void CasDefautEstCeluiDeLaPrise() {
 	const NkNodeId bsdf = MontePrincipledExposable(g, t); // roughness = 0,35
 	Expose(g, t, bsdf, "roughness", "usure", true, 0.f, 1.f);
 	g.SetSocketDefault(bsdf, "roughness", NkSocketDir::Input, NkValueReal(t.real, 0.72f));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const NkMatParamExpose *p = r.ok ? r.TrouveParam("usure") : nullptr;
 	const bool suit = p && p->defaut.IsSet() && p->defaut.numbers.Size() == 1 && p->defaut.numbers[0] == 0.72f;
 	const bool bornes = p && p->bornes && p->borneMin == 0.f && p->borneMax == 1.f;
@@ -2644,15 +2653,15 @@ static void CasJetonSuitLaDisposition() {
 	const NkNodeId b1 = MontePrincipledExposable(g1, t1);
 	Expose(g1, t1, b1, "metallic", "metal");
 	Expose(g1, t1, b1, "roughness", "usure");
-	NkMatCompileResult a1 = NkMatCompileToNkSL(g1);
-	NkMatCompileResult a2 = NkMatCompileToNkSL(g1);
+	NkMatCompileResult a1 = NkMatCompileToNkSL(gReg, g1);
+	NkMatCompileResult a2 = NkMatCompileToNkSL(gReg, g1);
 
 	NkNodeGraph g2;
 	const NkMatTypes t2 = NkMatRegisterTypes(g2);
 	const NkNodeId b2 = MontePrincipledExposable(g2, t2);
 	Expose(g2, t2, b2, "roughness", "usure"); // ordre INVERSE
 	Expose(g2, t2, b2, "metallic", "metal");
-	NkMatCompileResult b = NkMatCompileToNkSL(g2);
+	NkMatCompileResult b = NkMatCompileToNkSL(gReg, g2);
 
 	const bool stable = a1.ok && a2.ok && a1.jeton == a2.jeton && a1.jeton != 0;
 	const bool change = b.ok && a1.jeton != b.jeton;
@@ -2676,7 +2685,7 @@ static void CasRechercheParNom() {
 	const NkNodeId bsdf = MontePrincipledExposable(g, t);
 	Expose(g, t, bsdf, "metallic", "metal");
 	Expose(g, t, bsdf, "roughness", "usure");
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const bool trouve = r.ok && r.TrouveParam("usure") && r.TrouveParam("metal");
 	const bool inconnu = r.ok && r.TrouveParam("usur") == nullptr && r.TrouveParam("usuree") == nullptr &&
 						 r.TrouveParam("") == nullptr;
@@ -2693,7 +2702,7 @@ static void CasSansExpositionAucunBloc() {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
 	MontePrincipledExposable(g, t);
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const bool aucunBloc = r.ok && Apres(r.source, "NkGraphParams") < 0;
 	Cas("variable/sans-exposition-aucun-bloc", r.ok && aucunBloc && r.params.Empty() && r.paramsTaille == 0u,
 		NkFormat("bloc absent={0} | {1} parametre(s) | taille={2} o", aucunBloc ? 1 : 0, (uint32)r.params.Size(),
@@ -2714,18 +2723,18 @@ static void CasBlocEtTexturesNeSeMarchentPasDessus() {
 	// deux ressources au meme endroit et l'une ecraserait l'autre en silence.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	// Le plafond de textures, chainees par des Mix Color pour que chacune serve.
 	NkNodeId precedent = NK_NODE_INVALID;
 	for (uint32 i = 0; i < renderer::NK_MATBIND_GRAPH_SLOT_COUNT; ++i) {
-		const NkNodeId tex = NkMatAddNode(g, NK_MN_IMAGE_TEXTURE);
+		const NkNodeId tex = NkMatAddNode(gReg, g, NK_MN_IMAGE_TEXTURE);
 		g.SetProp(tex, NK_MPROP_IMAGE, NkValueText(t.ramp, "img.png"));
 		if (precedent == NK_NODE_INVALID) {
 			precedent = tex;
 		} else {
-			const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_COLOR);
+			const NkNodeId mix = NkMatAddNode(gReg, g, NK_MN_MIX_COLOR);
 			g.Connect(precedent, "color", mix, "color1");
 			g.Connect(tex, "color", mix, "color2");
 			precedent = mix;
@@ -2736,7 +2745,7 @@ static void CasBlocEtTexturesNeSeMarchentPasDessus() {
 	Expose(g, t, bsdf, "roughness", "usure");
 	Expose(g, t, bsdf, "metallic", "metal");
 
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	uint32 bindings[32] = {};
 	const uint32 n = r.ok ? RelieveBindingsSet2(r.source, bindings, 32) : 0u;
 	// textures + le bloc = plafond + 1
@@ -2799,16 +2808,16 @@ static NkMatCompileResult CompileProcedural(const char *cleNoeud, const char *pr
 	static NkNodeGraph g;
 	g.Clear();
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId n = NkMatAddNode(g, cleNoeud);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId n = NkMatAddNode(gReg, g, cleNoeud);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	g.Connect(n, prise, bsdf, cible);
 	if (typeProp)
 		g.SetProp(n, NK_MPROP_TYPE, NkValueText(t.ramp, typeProp));
 	if (outNode)
 		*outNode = n;
-	return NkMatCompileToNkSL(g);
+	return NkMatCompileToNkSL(gReg, g);
 }
 
 static void CasProceduralCompile() {
@@ -3031,7 +3040,7 @@ static void CasBriquesJointsDecales() {
 // Pose un noeud de sortie nommee complet. Le nom et l'etage sont des MOTS, et
 // l'etage n'a PAS de defaut : il faut le dire a chaque fois, ici comme partout.
 static NkNodeId PoseSortie(NkNodeGraph &g, const NkMatTypes &t, const char *nom, const char *etage) {
-	const NkNodeId s = NkMatAddNode(g, NK_MN_OUTPUT_VALUE);
+	const NkNodeId s = NkMatAddNode(gReg, g, NK_MN_OUTPUT_VALUE);
 	if (nom)
 		g.SetProp(s, NK_MPROP_SORTIE_NOM, NkValueText(t.real, nom));
 	if (etage)
@@ -3053,16 +3062,16 @@ static void CasSortieValeurCalculee() {
 	NkNodeId out;
 	MonteUnPrincipled(g, t, &out);
 
-	const NkNodeId v = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId v = NkMatAddNode(gReg, g, NK_MN_VALUE);
 	g.SetProp(v, NK_MPROP_VALUE, NkValueReal(t.real, 0.25f));
-	const NkNodeId m = NkMatAddNode(g, NK_MN_MATH);
+	const NkNodeId m = NkMatAddNode(gReg, g, NK_MN_MATH);
 	g.SetProp(m, NK_MPROP_OPERATION, NkValueText(t.real, "multiplier"));
 	g.Connect(v, "value", m, "a");
 	g.SetSocketDefault(m, "b", NkSocketDir::Input, NkValueReal(t.real, 4.0f));
 	const NkNodeId s = PoseSortie(g, t, "usure", "par_materiau");
 	g.Connect(m, "value", s, "value");
 
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const NkMatSortieMateriau *so = r.ok ? r.TrouveSortie("usure") : nullptr;
 	const bool bonne = so && so->composantes == 1 && Proche(so->valeur[0], 1.0f);
 	// Une sortie d'etage (a) ne doit produire AUCUNE ligne de shader : c'est
@@ -3088,12 +3097,12 @@ static void CasSortieCouleurEtRampe() {
 	NkNodeId out;
 	MonteUnPrincipled(g, t, &out);
 
-	const NkNodeId ramp = NkMatAddNode(g, NK_MN_COLOR_RAMP);
+	const NkNodeId ramp = NkMatAddNode(gReg, g, NK_MN_COLOR_RAMP);
 	g.SetSocketDefault(ramp, "fac", NkSocketDir::Input, NkValueReal(t.real, 0.5f));
 	const NkNodeId s = PoseSortie(g, t, "teinte", "par_materiau");
 	g.Connect(ramp, "color", s, "color");
 
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const NkMatSortieMateriau *so = r.ok ? r.TrouveSortie("teinte") : nullptr;
 	const bool trois = so && so->composantes == 3;
 	const bool gris = so && Proche(so->valeur[0], 0.5f) && Proche(so->valeur[1], 0.5f) &&
@@ -3119,15 +3128,15 @@ static void CasSortieRefusParPixel() {
 	NkNodeId out;
 	MonteUnPrincipled(g, t, &out);
 
-	const NkNodeId bruit = NkMatAddNode(g, NK_MN_NOISE);
-	const NkNodeId m1 = NkMatAddNode(g, NK_MN_MATH);
-	const NkNodeId m2 = NkMatAddNode(g, NK_MN_MATH);
+	const NkNodeId bruit = NkMatAddNode(gReg, g, NK_MN_NOISE);
+	const NkNodeId m1 = NkMatAddNode(gReg, g, NK_MN_MATH);
+	const NkNodeId m2 = NkMatAddNode(gReg, g, NK_MN_MATH);
 	g.Connect(bruit, "fac", m1, "a");
 	g.Connect(m1, "value", m2, "a");
 	const NkNodeId s = PoseSortie(g, t, "densite", "par_materiau");
 	g.Connect(m2, "value", s, "value");
 
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const bool refuse = !r.ok;
 	// ⚠️ NE PAS SE CONTENTER DE « mat.bruit APPARAIT DANS LE MESSAGE ».
 	// Mutation du 22/08 : en supprimant la CONTAGION, le graphe est quand meme
@@ -3161,14 +3170,14 @@ static void CasSortieMappageNEstPasParPixel() {
 	NkMatTypes t1 = NkMatRegisterTypes(g1);
 	NkNodeId o1;
 	MonteUnPrincipled(g1, t1, &o1);
-	const NkNodeId mp1 = NkMatAddNode(g1, NK_MN_MAPPING);
+	const NkNodeId mp1 = NkMatAddNode(gReg, g1, NK_MN_MAPPING);
 	const float32 trois[3] = {3.f, 0.f, 0.f};
 	g1.SetSocketDefault(mp1, "vector", NkSocketDir::Input, NkValueVec(t1.vector, trois, 3));
-	const NkNodeId sx1 = NkMatAddNode(g1, NK_MN_SEPARATE_XYZ);
+	const NkNodeId sx1 = NkMatAddNode(gReg, g1, NK_MN_SEPARATE_XYZ);
 	g1.Connect(mp1, "vector_out", sx1, "vector");
 	const NkNodeId s1 = PoseSortie(g1, t1, "largeur", "par_materiau");
 	g1.Connect(sx1, "x", s1, "value");
-	NkMatCompileResult r1 = NkMatCompileToNkSL(g1);
+	NkMatCompileResult r1 = NkMatCompileToNkSL(gReg, g1);
 	const NkMatSortieMateriau *so1 = r1.ok ? r1.TrouveSortie("largeur") : nullptr;
 	// L'echelle par defaut vaut 1 (neutre MULTIPLICATIF), la position 0 :
 	// 3 * 1 + 0 = 3. Un evaluateur qui prendrait 0 comme echelle par defaut
@@ -3179,14 +3188,14 @@ static void CasSortieMappageNEstPasParPixel() {
 	NkMatTypes t2 = NkMatRegisterTypes(g2);
 	NkNodeId o2;
 	MonteUnPrincipled(g2, t2, &o2);
-	const NkNodeId tc = NkMatAddNode(g2, NK_MN_TEX_COORD);
-	const NkNodeId mp2 = NkMatAddNode(g2, NK_MN_MAPPING);
+	const NkNodeId tc = NkMatAddNode(gReg, g2, NK_MN_TEX_COORD);
+	const NkNodeId mp2 = NkMatAddNode(gReg, g2, NK_MN_MAPPING);
 	g2.Connect(tc, "uv", mp2, "vector");
-	const NkNodeId sx2 = NkMatAddNode(g2, NK_MN_SEPARATE_XYZ);
+	const NkNodeId sx2 = NkMatAddNode(gReg, g2, NK_MN_SEPARATE_XYZ);
 	g2.Connect(mp2, "vector_out", sx2, "vector");
 	const NkNodeId s2 = PoseSortie(g2, t2, "largeur", "par_materiau");
 	g2.Connect(sx2, "x", s2, "value");
-	NkMatCompileResult r2 = NkMatCompileToNkSL(g2);
+	NkMatCompileResult r2 = NkMatCompileToNkSL(gReg, g2);
 	// Meme garde que dans le cas precedent, et pour la meme mutation : sans
 	// contagion, l evaluateur refuse en nommant « mat.coord_texture » lui aussi.
 	const bool refuse = !r2.ok && Apres(r2.error, "depend du pixel") > 0 &&
@@ -3215,7 +3224,7 @@ static void CasSortieExposeNeContaminePas() {
 	const NkNodeId bsdf = MonteUnPrincipled(g, t, &out);
 	(void)bsdf;
 
-	const NkNodeId m = NkMatAddNode(g, NK_MN_MATH);
+	const NkNodeId m = NkMatAddNode(gReg, g, NK_MN_MATH);
 	g.SetProp(m, NK_MPROP_OPERATION, NkValueText(t.real, "ajouter"));
 	g.SetSocketDefault(m, "a", NkSocketDir::Input, NkValueReal(t.real, 0.2f));
 	g.SetSocketDefault(m, "b", NkSocketDir::Input, NkValueReal(t.real, 0.5f));
@@ -3225,7 +3234,7 @@ static void CasSortieExposeNeContaminePas() {
 	const NkNodeId s = PoseSortie(g, t, "somme", "par_materiau");
 	g.Connect(m, "value", s, "value");
 
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const NkMatSortieMateriau *so = r.ok ? r.TrouveSortie("somme") : nullptr;
 	const bool accepte = so != nullptr;
 	// 0.2 + 0.5 = 0.7 : le defaut de la prise exposee EST sa valeur de depart.
@@ -3264,11 +3273,11 @@ static void CasSortieEtagesRefuses() {
 		NkMatTypes t = NkMatRegisterTypes(g);
 		NkNodeId out;
 		MonteUnPrincipled(g, t, &out);
-		const NkNodeId v = NkMatAddNode(g, NK_MN_VALUE);
+		const NkNodeId v = NkMatAddNode(gReg, g, NK_MN_VALUE);
 		g.SetProp(v, NK_MPROP_VALUE, NkValueReal(t.real, 1.f));
 		const NkNodeId s = PoseSortie(g, t, "essai", jeux[i].etage);
 		g.Connect(v, "value", s, "value");
-		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 		const bool ok = !r.ok && Apres(r.error, jeux[i].attendu) > 0;
 		if (ok)
 			++bons;
@@ -3282,10 +3291,10 @@ static void CasSortieEtagesRefuses() {
 	NkMatTypes t = NkMatRegisterTypes(g);
 	NkNodeId out;
 	MonteUnPrincipled(g, t, &out);
-	const NkNodeId v = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId v = NkMatAddNode(gReg, g, NK_MN_VALUE);
 	const NkNodeId s = PoseSortie(g, t, "essai", "par_pixel_processeur");
 	g.Connect(v, "value", s, "value");
-	NkMatCompileResult rb2 = NkMatCompileToNkSL(g);
+	NkMatCompileResult rb2 = NkMatCompileToNkSL(gReg, g);
 	const bool ditPourquoi = Apres(rb2.error, "SYNCHRONE") > 0 || Apres(rb2.error, "synchrone") > 0;
 
 	Cas("sortie/etages-non-construits-refusent-en-se-nommant", bons == nJeux && ditPourquoi,
@@ -3304,7 +3313,7 @@ static void CasSortieSourcesEtNoms() {
 		NkNodeId out;
 		MonteUnPrincipled(g, t, &out);
 		PoseSortie(g, t, "vide", "par_materiau");
-		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 		const bool ok = !r.ok && Apres(r.error, "aucune source") > 0;
 		bons += ok ? 1 : 0;
 		detail.Append(NkFormat("[aucune source refusee={0}] ", ok ? 1 : 0));
@@ -3314,12 +3323,12 @@ static void CasSortieSourcesEtNoms() {
 		NkMatTypes t = NkMatRegisterTypes(g);
 		NkNodeId out;
 		MonteUnPrincipled(g, t, &out);
-		const NkNodeId v = NkMatAddNode(g, NK_MN_VALUE);
-		const NkNodeId c = NkMatAddNode(g, NK_MN_RGB);
+		const NkNodeId v = NkMatAddNode(gReg, g, NK_MN_VALUE);
+		const NkNodeId c = NkMatAddNode(gReg, g, NK_MN_RGB);
 		const NkNodeId s = PoseSortie(g, t, "double_source", "par_materiau");
 		g.Connect(v, "value", s, "value");
 		g.Connect(c, "color", s, "color");
-		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 		const bool ok = !r.ok && Apres(r.error, "DEUX sources") > 0;
 		bons += ok ? 1 : 0;
 		detail.Append(NkFormat("[deux sources refusees={0}] ", ok ? 1 : 0));
@@ -3329,10 +3338,10 @@ static void CasSortieSourcesEtNoms() {
 		NkMatTypes t = NkMatRegisterTypes(g);
 		NkNodeId out;
 		MonteUnPrincipled(g, t, &out);
-		const NkNodeId v = NkMatAddNode(g, NK_MN_VALUE);
+		const NkNodeId v = NkMatAddNode(gReg, g, NK_MN_VALUE);
 		const NkNodeId s = PoseSortie(g, t, "2 mots", "par_materiau");
 		g.Connect(v, "value", s, "value");
-		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 		const bool ok = !r.ok && Apres(r.error, "nom absent ou invalide") > 0;
 		bons += ok ? 1 : 0;
 		detail.Append(NkFormat("[nom invalide refuse={0}] ", ok ? 1 : 0));
@@ -3342,13 +3351,13 @@ static void CasSortieSourcesEtNoms() {
 		NkMatTypes t = NkMatRegisterTypes(g);
 		NkNodeId out;
 		MonteUnPrincipled(g, t, &out);
-		const NkNodeId v1 = NkMatAddNode(g, NK_MN_VALUE);
-		const NkNodeId v2 = NkMatAddNode(g, NK_MN_VALUE);
+		const NkNodeId v1 = NkMatAddNode(gReg, g, NK_MN_VALUE);
+		const NkNodeId v2 = NkMatAddNode(gReg, g, NK_MN_VALUE);
 		const NkNodeId s1 = PoseSortie(g, t, "meme", "par_materiau");
 		const NkNodeId s2 = PoseSortie(g, t, "meme", "par_materiau");
 		g.Connect(v1, "value", s1, "value");
 		g.Connect(v2, "value", s2, "value");
-		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 		const bool ok = !r.ok && Apres(r.error, "deux sorties portent le nom") > 0;
 		bons += ok ? 1 : 0;
 		detail.Append(NkFormat("[doublon refuse={0}] ", ok ? 1 : 0));
@@ -3367,16 +3376,16 @@ static void CasSortiePlusieursEtGraphesExistants() {
 	NkMatTypes t = NkMatRegisterTypes(g);
 	NkNodeId out;
 	MonteUnPrincipled(g, t, &out);
-	const NkNodeId a = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId a = NkMatAddNode(gReg, g, NK_MN_VALUE);
 	g.SetProp(a, NK_MPROP_VALUE, NkValueReal(t.real, 0.125f));
-	const NkNodeId b = NkMatAddNode(g, NK_MN_RGB);
+	const NkNodeId b = NkMatAddNode(gReg, g, NK_MN_RGB);
 	const float32 rouge[3] = {0.9f, 0.1f, 0.2f};
 	g.SetProp(b, NK_MPROP_COLOR, NkValueVec(t.color, rouge, 3));
 	const NkNodeId s1 = PoseSortie(g, t, "opacite", "par_materiau");
 	const NkNodeId s2 = PoseSortie(g, t, "teinte_dominante", "par_materiau");
 	g.Connect(a, "value", s1, "value");
 	g.Connect(b, "color", s2, "color");
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const NkMatSortieMateriau *o1 = r.ok ? r.TrouveSortie("opacite") : nullptr;
 	const NkMatSortieMateriau *o2 = r.ok ? r.TrouveSortie("teinte_dominante") : nullptr;
 	const bool deux = r.sorties.Size() == 2 && o1 && o2;
@@ -3389,7 +3398,7 @@ static void CasSortiePlusieursEtGraphesExistants() {
 	NkMatTypes t0 = NkMatRegisterTypes(g0);
 	NkNodeId out0;
 	MonteUnPrincipled(g0, t0, &out0);
-	NkMatCompileResult r0 = NkMatCompileToNkSL(g0);
+	NkMatCompileResult r0 = NkMatCompileToNkSL(gReg, g0);
 	const bool existantIntact = r0.ok && r0.sorties.Size() == 0 && r0.source.Size() > 100;
 
 	Cas("sortie/plusieurs-et-graphes-sans-sortie", deux && valeurs && absentEstNul && existantIntact,
@@ -3417,13 +3426,13 @@ static void CasSortieDivisionParZero() {
 	NkMatTypes t = NkMatRegisterTypes(g);
 	NkNodeId out;
 	MonteUnPrincipled(g, t, &out);
-	const NkNodeId m = NkMatAddNode(g, NK_MN_MATH);
+	const NkNodeId m = NkMatAddNode(gReg, g, NK_MN_MATH);
 	g.SetProp(m, NK_MPROP_OPERATION, NkValueText(t.real, "diviser"));
 	g.SetSocketDefault(m, "a", NkSocketDir::Input, NkValueReal(t.real, 1.f));
 	g.SetSocketDefault(m, "b", NkSocketDir::Input, NkValueReal(t.real, 0.f));
 	const NkNodeId s = PoseSortie(g, t, "quotient", "par_materiau");
 	g.Connect(m, "value", s, "value");
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const NkMatSortieMateriau *so = r.ok ? r.TrouveSortie("quotient") : nullptr;
 	const bool zero = so && so->valeur[0] == 0.f;
 	// Un NaN se detecte par sa seule propriete stable : il differe de lui-meme.
@@ -3448,11 +3457,11 @@ static NkMatCompileResult CompileOutil(const char *cle, const char *prise, const
 	const NkMatTypes t = NkMatRegisterTypes(g);
 	NkNodeId out;
 	const NkNodeId bsdf = MonteUnPrincipled(g, t, &out);
-	const NkNodeId n = NkMatAddNode(g, cle);
+	const NkNodeId n = NkMatAddNode(gReg, g, cle);
 	if (propCle && propVal)
 		g.SetProp(n, propCle, NkValueText(t.real, propVal));
 	g.Connect(n, prise, bsdf, cible);
-	return NkMatCompileToNkSL(g);
+	return NkMatCompileToNkSL(gReg, g);
 }
 
 static void CasMapRangeEtBornage() {
@@ -3513,15 +3522,15 @@ static void CasCombineXYZ() {
 	const NkMatTypes t = NkMatRegisterTypes(g);
 	NkNodeId out;
 	const NkNodeId bsdf = MonteUnPrincipled(g, t, &out);
-	const NkNodeId sep = NkMatAddNode(g, NK_MN_SEPARATE_XYZ);
-	const NkNodeId com = NkMatAddNode(g, NK_MN_COMBINE_XYZ);
+	const NkNodeId sep = NkMatAddNode(gReg, g, NK_MN_SEPARATE_XYZ);
+	const NkNodeId com = NkMatAddNode(gReg, g, NK_MN_COMBINE_XYZ);
 	const float32 v[3] = {0.25f, 0.5f, 0.75f};
 	g.SetSocketDefault(sep, "vector", NkSocketDir::Input, NkValueVec(t.vector, v, 3));
 	g.Connect(sep, "x", com, "x");
 	g.Connect(sep, "y", com, "y");
 	g.Connect(sep, "z", com, "z");
 	g.Connect(com, "vector", bsdf, "base_color");
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	if (getenv("NK_DUMP_COMB") && r.ok) {
 		FILE *f = fopen("mesures_matgraph/combine.nksl", "wb");
 		if (f) { fwrite(r.source.CStr(), 1, (size_t)r.source.Size(), f); fclose(f); }
@@ -3619,9 +3628,9 @@ static void CasVectorMathGardesNaN() {
 
 static NkMatCompileResult CompileCourbe(NkNodeGraph &g, const NkMatTypes &t, const float32 *pts,
 										uint32 nbReels, const char *interp, const float32 *fac) {
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId c = NkMatAddNode(g, NK_MN_FLOAT_CURVE);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId c = NkMatAddNode(gReg, g, NK_MN_FLOAT_CURVE);
 	g.Connect(bsdf, "bsdf", out, "surface");
 	g.Connect(c, "value", bsdf, "roughness");
 	if (pts)
@@ -3630,7 +3639,7 @@ static NkMatCompileResult CompileCourbe(NkNodeGraph &g, const NkMatTypes &t, con
 		g.SetProp(c, NK_MPROP_INTERP, NkValueText(t.curve, interp));
 	if (fac)
 		g.SetSocketDefault(c, "fac", NkSocketDir::Input, NkValueReal(t.real, *fac));
-	return NkMatCompileToNkSL(g);
+	return NkMatCompileToNkSL(gReg, g);
 }
 
 static void CasCourbeChargeVariable() {
@@ -3746,12 +3755,12 @@ static void CasCourbeDomaineDessine() {
 	const NkMatTypes t2 = NkMatRegisterTypes(g2);
 	NkNodeId o2;
 	MonteUnPrincipled(g2, t2, &o2);
-	const NkNodeId c2 = NkMatAddNode(g2, NK_MN_FLOAT_CURVE);
+	const NkNodeId c2 = NkMatAddNode(gReg, g2, NK_MN_FLOAT_CURVE);
 	g2.SetProp(c2, NK_MPROP_POINTS, NkValueVec(t2.curve, large, 6));
 	g2.SetSocketDefault(c2, "value", NkSocketDir::Input, NkValueReal(t2.real, 9.f));
 	const NkNodeId s2 = PoseSortie(g2, t2, "hors_domaine", "par_materiau");
 	g2.Connect(c2, "value", s2, "value");
-	NkMatCompileResult r2 = NkMatCompileToNkSL(g2);
+	NkMatCompileResult r2 = NkMatCompileToNkSL(gReg, g2);
 	const NkMatSortieMateriau *so = r2.ok ? r2.TrouveSortie("hors_domaine") : nullptr;
 	const bool tientLeDernier = so && Proche(so->valeur[0], 0.2f);
 	NkString be, err;
@@ -3778,12 +3787,12 @@ static void CasCourbeFacNeutreEstUn() {
 	const NkMatTypes t = NkMatRegisterTypes(g);
 	NkNodeId o;
 	MonteUnPrincipled(g, t, &o);
-	const NkNodeId c = NkMatAddNode(g, NK_MN_FLOAT_CURVE);
+	const NkNodeId c = NkMatAddNode(gReg, g, NK_MN_FLOAT_CURVE);
 	g.SetProp(c, NK_MPROP_POINTS, NkValueVec(t.curve, p, 6));
 	g.SetSocketDefault(c, "value", NkSocketDir::Input, NkValueReal(t.real, 0.5f));
 	const NkNodeId s = PoseSortie(g, t, "applique", "par_materiau");
 	g.Connect(c, "value", s, "value");
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const NkMatSortieMateriau *so = r.ok ? r.TrouveSortie("applique") : nullptr;
 	const bool applique = so && Proche(so->valeur[0], 0.9f);
 
@@ -3794,13 +3803,13 @@ static void CasCourbeFacNeutreEstUn() {
 	const NkMatTypes t0 = NkMatRegisterTypes(g0);
 	NkNodeId o0;
 	MonteUnPrincipled(g0, t0, &o0);
-	const NkNodeId c0 = NkMatAddNode(g0, NK_MN_FLOAT_CURVE);
+	const NkNodeId c0 = NkMatAddNode(gReg, g0, NK_MN_FLOAT_CURVE);
 	g0.SetProp(c0, NK_MPROP_POINTS, NkValueVec(t0.curve, p, 6));
 	g0.SetSocketDefault(c0, "value", NkSocketDir::Input, NkValueReal(t0.real, 0.5f));
 	g0.SetSocketDefault(c0, "fac", NkSocketDir::Input, NkValueReal(t0.real, 0.f));
 	const NkNodeId s0 = PoseSortie(g0, t0, "transparent", "par_materiau");
 	g0.Connect(c0, "value", s0, "value");
-	NkMatCompileResult r0 = NkMatCompileToNkSL(g0);
+	NkMatCompileResult r0 = NkMatCompileToNkSL(gReg, g0);
 	const NkMatSortieMateriau *so0 = r0.ok ? r0.TrouveSortie("transparent") : nullptr;
 	const bool transparent = so0 && Proche(so0->valeur[0], 0.5f);
 
@@ -3947,8 +3956,8 @@ static void CasGroupeCoeurAccepteUnTypeInconnu() {
 	g.AddSocket(grp, "sortie", t.color, NkSocketDir::Output);
 
 	// Il se relie a un noeud du catalogue, dans les deux sens.
-	const NkNodeId val = NkMatAddNode(g, NK_MN_VALUE);
-	const NkNodeId emi = NkMatAddNode(g, NK_MN_EMISSION);
+	const NkNodeId val = NkMatAddNode(gReg, g, NK_MN_VALUE);
+	const NkNodeId emi = NkMatAddNode(gReg, g, NK_MN_EMISSION);
 	const NkLinkError e1 = g.Connect(val, "value", grp, "entree");
 	const NkLinkError e2 = g.Connect(grp, "sortie", emi, "color");
 
@@ -4008,8 +4017,8 @@ static void CasGroupeCatalogueMateriauFerme() {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
 
-	const NkMatNodeProto *p = NkMatFindProto(cle);
-	const NkNodeId n = NkMatAddNode(g, cle);
+	const NkMatNodeProto *p = NkMatFindProto(gReg, cle);
+	const NkNodeId n = NkMatAddNode(gReg, g, cle);
 	// Le refus doit etre NET : pas de noeud a moitie forme laisse derriere.
 	const bool refusPropre = n == NK_NODE_INVALID && g.NodeCount() == 0;
 
@@ -4020,7 +4029,7 @@ static void CasGroupeCatalogueMateriauFerme() {
 	bool vuQuelquePart = false;
 	uint32 totalPropose = 0;
 	for (uint32 k = 0; k < 4; ++k) {
-		uint32 m = NkMatNoeudsPourPrise(g, types[k], menu, 64);
+		uint32 m = NkMatNoeudsPourPrise(gReg, g, types[k], menu, 64);
 		if (m > 64)
 			m = 64;
 		totalPropose += m;
@@ -4060,14 +4069,14 @@ static void CasGroupeOuVitLeRefusDuTypeInconnu() {
 	// un refus qui ne nomme pas est un refus qui fait fouiller cent noeuds.
 	char cle[32];
 	FabriqueCleDeGroupe(cle);
-	NkMatRegistre().Vide(); // le registre est global : on part d'un etat connu
+	gReg.Vide(); // le registre est global : on part d'un etat connu
 
 	NkString texte;
 	{
 		NkNodeGraph g;
 		const NkMatTypes t = NkMatRegisterTypes(g);
-		const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
-		const NkNodeId emi = NkMatAddNode(g, NK_MN_EMISSION);
+		const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+		const NkNodeId emi = NkMatAddNode(gReg, g, NK_MN_EMISSION);
 		const NkNodeId grp = g.AddNode(cle, "Mon groupe");
 		g.AddSocket(grp, "sortie", t.color, NkSocketDir::Output);
 		g.Connect(grp, "sortie", emi, "color");
@@ -4086,8 +4095,8 @@ static void CasGroupeOuVitLeRefusDuTypeInconnu() {
 	}
 	NkString quoi;
 	NkNodeId coupable = NK_NODE_INVALID;
-	const NkMatGraphError v = NkMatValidate(g2, &coupable, &quoi);
-	const NkMatCompileResult r = NkMatCompileToNkSL(g2);
+	const NkMatGraphError v = NkMatValidate(gReg, g2, &coupable, &quoi);
+	const NkMatCompileResult r = NkMatCompileToNkSL(gReg, g2);
 	const bool cleDansLeMessage = ContientLaCle(r.error, cle);
 	const bool sourceVide = r.source.Size() == 0;
 
@@ -4123,29 +4132,29 @@ static void CasCatalogueOuvertALExecution() {
 	// branche a la porte mais pas au menu passerait la premiere moitie.
 	char cle[32];
 	FabriqueCleDeGroupe(cle);
-	NkMatRegistre().Vide();
+	gReg.Vide();
 
-	const uint32 avant = NkMatProtoCount();
+	const uint32 avant = NkMatProtoCount(gReg);
 	const NkMatRegistreErreur e =
-		NkMatRegistre().Enregistre(cle, "Mon groupe", kPrisesDuGroupeEssai, 2, false);
-	const uint32 apres = NkMatProtoCount();
+		gReg.Enregistre(cle, "Mon groupe", kPrisesDuGroupeEssai, 2, false);
+	const uint32 apres = NkMatProtoCount(gReg);
 
-	const NkMatNodeProto *p = NkMatFindProto(cle);
+	const NkMatNodeProto *p = NkMatFindProto(gReg, cle);
 	// et il s'instancie comme n'importe quel autre : c'est `NkMatAddNode`, la
 	// meme fonction, sans une ligne de plus.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId n = NkMatAddNode(g, cle);
+	const NkNodeId n = NkMatAddNode(gReg, g, cle);
 	const NkNode *nd = g.Find(n);
 	const bool prises = nd && nd->FindSocket("entree", NkSocketDir::Input) >= 0 &&
 						nd->FindSocket("sortie", NkSocketDir::Output) >= 0;
 
 	const NkMatNodeProto *menu[96];
-	uint32 mc = NkMatNoeudsPourPrise(g, t.color, menu, 96);
+	uint32 mc = NkMatNoeudsPourPrise(gReg, g, t.color, menu, 96);
 	if (mc > 96)
 		mc = 96;
 	const bool dansMenuCouleur = DansLeMenu(menu, mc, cle);
-	uint32 ms = NkMatNoeudsPourPrise(g, t.shader, menu, 96);
+	uint32 ms = NkMatNoeudsPourPrise(gReg, g, t.shader, menu, 96);
 	if (ms > 96)
 		ms = 96;
 	const bool dansMenuShader = DansLeMenu(menu, ms, cle);
@@ -4159,7 +4168,7 @@ static void CasCatalogueOuvertALExecution() {
 		e == NkMatRegistreErreur::Ok && apres == avant + 1u && p != nullptr && n != NK_NODE_INVALID && prises &&
 			dansMenuCouleur && !dansMenuShader,
 		d);
-	NkMatRegistre().Vide();
+	gReg.Vide();
 }
 
 static void CasCatalogueRefusDEclipse() {
@@ -4174,22 +4183,22 @@ static void CasCatalogueRefusDEclipse() {
 	// accepterait l'inscription tout en la classant derriere la table statique
 	// rendrait le bon prototype aujourd'hui et le mauvais le jour ou l'ordre de
 	// consultation changerait. Le refus doit etre a l'ENREGISTREMENT.
-	NkMatRegistre().Vide();
-	const NkMatNodeProto *avant = NkMatFindProto(NK_MN_PRINCIPLED);
+	gReg.Vide();
+	const NkMatNodeProto *avant = NkMatFindProto(gReg, NK_MN_PRINCIPLED);
 	const uint32 prisesAvant = avant ? avant->socketCount : 0;
 
 	const NkMatRegistreErreur e =
-		NkMatRegistre().Enregistre(NK_MN_PRINCIPLED, "Faux Principled", kPrisesDuGroupeEssai, 2, false);
+		gReg.Enregistre(NK_MN_PRINCIPLED, "Faux Principled", kPrisesDuGroupeEssai, 2, false);
 
-	const NkMatNodeProto *apres = NkMatFindProto(NK_MN_PRINCIPLED);
+	const NkMatNodeProto *apres = NkMatFindProto(gReg, NK_MN_PRINCIPLED);
 	const bool intact = apres != nullptr && apres == avant && apres->socketCount == prisesAvant;
-	const bool rienEntre = NkMatRegistre().Count() == 0;
+	const bool rienEntre = gReg.Count() == 0;
 
 	// et les autres refus se nomment aussi
-	const NkMatRegistreErreur vide = NkMatRegistre().Enregistre("", "x", kPrisesDuGroupeEssai, 2, false);
-	const NkMatRegistreErreur sans = NkMatRegistre().Enregistre("grp.sans", "x", kPrisesDuGroupeEssai, 0, false);
-	NkMatRegistre().Enregistre("grp.double", "x", kPrisesDuGroupeEssai, 2, false);
-	const NkMatRegistreErreur deux = NkMatRegistre().Enregistre("grp.double", "y", kPrisesDuGroupeEssai, 2, false);
+	const NkMatRegistreErreur vide = gReg.Enregistre("", "x", kPrisesDuGroupeEssai, 2, false);
+	const NkMatRegistreErreur sans = gReg.Enregistre("grp.sans", "x", kPrisesDuGroupeEssai, 0, false);
+	gReg.Enregistre("grp.double", "x", kPrisesDuGroupeEssai, 2, false);
+	const NkMatRegistreErreur deux = gReg.Enregistre("grp.double", "y", kPrisesDuGroupeEssai, 2, false);
 
 	NkString d;
 	d = NkFormat("eclipse='{0}' | proto compile intact={1} ({2} prises) | rien n est entre={3} | nom vide='{4}' sans "
@@ -4202,7 +4211,84 @@ static void CasCatalogueRefusDEclipse() {
 			vide == NkMatRegistreErreur::NomVide && sans == NkMatRegistreErreur::SansPrise &&
 			deux == NkMatRegistreErreur::DejaEnregistre,
 		d);
-	NkMatRegistre().Vide();
+	gReg.Vide();
+}
+
+static void CasDeuxDocumentsNeVoientPasLeursGroupes() {
+	// ⚠️ LE TEMOIN DU CHANGEMENT DE SIGNATURE, ET LA SEULE RAISON DE L'AVOIR
+	// FAIT. Jusqu'au 2026-08-23 le registre etait unique pour le processus :
+	// deux documents ouverts partageaient leurs groupes. C'etait ecrit comme
+	// defaut connu, et voici ce qui l'empeche de revenir.
+	//
+	// Trois symptomes etaient annonces. Le cas les mesure TOUS LES TROIS, parce
+	// qu'ils ne se corrigent pas forcement ensemble :
+	//   1. un groupe defini dans A ne doit PAS etre trouvable depuis B ;
+	//   2. il ne doit PAS apparaitre dans le MENU de B ;
+	//   3. A et B doivent pouvoir employer LE MEME NOM sans se gener -- c'est le
+	//      symptome le plus fourbe, parce qu'il se manifeste par un refus
+	//      parfaitement legitime en apparence (« deja enregistre ») sur un nom
+	//      que le second document est pourtant seul a employer.
+	//
+	// DISCRIMINE PAR UN TEMOIN INTERNE : on verifie aussi que chaque document
+	// voit SON PROPRE groupe. Sans ca, un registre casse qui ne rendrait jamais
+	// rien passerait les trois controles ci-dessus pour la pire des raisons.
+	NkMatRegistreProtos docA;
+	NkMatRegistreProtos docB;
+
+	const NkMatRegistreErreur eA = docA.Enregistre("grp.de_A", "Groupe de A", kPrisesDuGroupeEssai, 2, false);
+	const NkMatRegistreErreur eB = docB.Enregistre("grp.de_B", "Groupe de B", kPrisesDuGroupeEssai, 2, false);
+
+	// 1. chacun voit le sien, aucun ne voit celui de l'autre
+	const bool aVoitLeSien = NkMatFindProto(docA, "grp.de_A") != nullptr;
+	const bool bVoitLeSien = NkMatFindProto(docB, "grp.de_B") != nullptr;
+	const bool aNeVoitPasB = NkMatFindProto(docA, "grp.de_B") == nullptr;
+	const bool bNeVoitPasA = NkMatFindProto(docB, "grp.de_A") == nullptr;
+
+	// 2. et le MENU suit, puisqu'il interroge la meme porte
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkMatNodeProto *menu[96];
+	uint32 mA = NkMatNoeudsPourPrise(docA, g, t.color, menu, 96);
+	if (mA > 96)
+		mA = 96;
+	const bool menuAPorteLeSien = DansLeMenu(menu, mA, "grp.de_A");
+	const bool menuANePortePasB = !DansLeMenu(menu, mA, "grp.de_B");
+	uint32 mB = NkMatNoeudsPourPrise(docB, g, t.color, menu, 96);
+	if (mB > 96)
+		mB = 96;
+	const bool menuBNePortePasA = !DansLeMenu(menu, mB, "grp.de_A");
+
+	// 3. le MEME NOM dans les deux documents, sans collision
+	const NkMatRegistreErreur mA2 = docA.Enregistre("grp.commun", "chez A", kPrisesDuGroupeEssai, 2, false);
+	const NkMatRegistreErreur mB2 = docB.Enregistre("grp.commun", "chez B", kPrisesDuGroupeEssai, 2, false);
+	const NkMatNodeProto *chezA = NkMatFindProto(docA, "grp.commun");
+	const NkMatNodeProto *chezB = NkMatFindProto(docB, "grp.commun");
+	// ⚠️ et ce ne doit pas etre le MEME objet : deux documents qui pointeraient
+	// sur une seule definition rejoueraient le defaut sous une autre forme --
+	// modifier le groupe de A changerait celui de B.
+	const bool memeNomChacunLeSien = chezA && chezB && chezA != chezB &&
+									 NkMatCleEgale(chezA->label, "chez A") && NkMatCleEgale(chezB->label, "chez B");
+
+	// 4. et fermer A ne casse pas B : on vide A, B est intact.
+	docA.Vide();
+	const bool bSurvitAlaFermetureDeA = NkMatFindProto(docB, "grp.de_B") != nullptr &&
+										NkMatFindProto(docA, "grp.de_A") == nullptr;
+
+	NkString d;
+	d = NkFormat("enregistrements {0}/{1} | chacun voit le sien={2}{3} et pas celui de l autre={4}{5} | menus : le "
+				 "sien={6} pas l autre={7}{8} | meme nom des deux cotes '{9}'/'{10}' chacun le sien={11} | B survit a "
+				 "la fermeture de A={12}",
+				 NkString(NkMatRegistreErreurNom(eA)), NkString(NkMatRegistreErreurNom(eB)), aVoitLeSien ? 1 : 0,
+				 bVoitLeSien ? 1 : 0, aNeVoitPasB ? 1 : 0, bNeVoitPasA ? 1 : 0, menuAPorteLeSien ? 1 : 0,
+				 menuANePortePasB ? 1 : 0, menuBNePortePasA ? 1 : 0, NkString(NkMatRegistreErreurNom(mA2)),
+				 NkString(NkMatRegistreErreurNom(mB2)), memeNomChacunLeSien ? 1 : 0,
+				 bSurvitAlaFermetureDeA ? 1 : 0);
+	Cas("groupe/deux-documents-ne-voient-pas-leurs-groupes",
+		eA == NkMatRegistreErreur::Ok && eB == NkMatRegistreErreur::Ok && aVoitLeSien && bVoitLeSien && aNeVoitPasB &&
+			bNeVoitPasA && menuAPorteLeSien && menuANePortePasB && menuBNePortePasA &&
+			mA2 == NkMatRegistreErreur::Ok && mB2 == NkMatRegistreErreur::Ok && memeNomChacunLeSien &&
+			bSurvitAlaFermetureDeA,
+		d);
 }
 
 static void CasPontInterfaceDeduiteDuSousGraphe() {
@@ -4220,7 +4306,7 @@ static void CasPontInterfaceDeduiteDuSousGraphe() {
 	// ⚠️ ET `parPixel` : le graphe groupe ne contient aucune source intrinseque,
 	// donc le prototype doit etre FAUX. Un pont qui rendrait `true` par prudence
 	// aveugle refuserait toutes les sorties « par materiau » d'un groupe sain.
-	NkMatRegistre().Vide();
+	gReg.Vide();
 	NkGraphDocument doc;
 	const uint32 racine = doc.AddGraph("racine");
 	doc.SetRoot(racine);
@@ -4235,9 +4321,9 @@ static void CasPontInterfaceDeduiteDuSousGraphe() {
 
 	NkMatRegistreErreur e = NkMatRegistreErreur::NomVide;
 	if (ci >= 0)
-		e = NkMatEnregistreGroupe(doc.GraphAt((uint32)ci), "grp.mon_groupe", "Mon groupe");
+		e = NkMatEnregistreGroupe(gReg, doc.GraphAt((uint32)ci), "grp.mon_groupe", "Mon groupe");
 
-	const NkMatNodeProto *p = NkMatFindProto("grp.mon_groupe");
+	const NkMatNodeProto *p = NkMatFindProto(gReg, "grp.mon_groupe");
 	uint32 nIn = 0, nOut = 0;
 	bool typesNommes = true;
 	if (p)
@@ -4273,7 +4359,7 @@ static void CasPontInterfaceDeduiteDuSousGraphe() {
 	// et il s'instancie pour de vrai, prises comprises
 	NkNodeGraph h;
 	NkMatRegisterTypes(h);
-	const NkNodeId inst = NkMatAddNode(h, "grp.mon_groupe");
+	const NkNodeId inst = NkMatAddNode(gReg, h, "grp.mon_groupe");
 
 	NkString d;
 	d = NkFormat("enregistrement='{0}' | prises deduites : {1} entree(s) {2} sortie(s) (1 et 1 attendues) | 'a' est "
@@ -4284,7 +4370,7 @@ static void CasPontInterfaceDeduiteDuSousGraphe() {
 		e == NkMatRegistreErreur::Ok && p != nullptr && nIn == 1 && nOut == 1 && sensJuste && typesNommes &&
 			!p->parPixel && inst != NK_NODE_INVALID,
 		d);
-	NkMatRegistre().Vide();
+	gReg.Vide();
 }
 
 static void CasPontParPixelEstConservateur() {
@@ -4301,7 +4387,7 @@ static void CasPontParPixelEstConservateur() {
 	//
 	// DISCRIMINE avec un TEMOIN : le cas precedent prouve qu'un groupe sain rend
 	// `false`. Sans lui, un pont qui rendrait TOUJOURS `true` passerait ici.
-	NkMatRegistre().Vide();
+	gReg.Vide();
 	// (a) un groupe qui contient une source par pixel
 	bool aParPixel = false;
 	{
@@ -4309,10 +4395,10 @@ static void CasPontParPixelEstConservateur() {
 		const NkMatTypes t = NkMatRegisterTypes(sg);
 		const NkNodeId bord = sg.AddNode(NK_NODE_GROUP_OUT, "Sorties du groupe");
 		sg.AddSocket(bord, "fac", t.real, NkSocketDir::Input);
-		const NkNodeId bruit = NkMatAddNode(sg, NK_MN_NOISE);
+		const NkNodeId bruit = NkMatAddNode(gReg, sg, NK_MN_NOISE);
 		sg.Connect(bruit, "fac", bord, "fac");
-		const NkMatRegistreErreur e = NkMatEnregistreGroupe(sg, "grp.avec_bruit", "Avec bruit");
-		const NkMatNodeProto *p = NkMatFindProto("grp.avec_bruit");
+		const NkMatRegistreErreur e = NkMatEnregistreGroupe(gReg, sg, "grp.avec_bruit", "Avec bruit");
+		const NkMatNodeProto *p = NkMatFindProto(gReg, "grp.avec_bruit");
 		aParPixel = (e == NkMatRegistreErreur::Ok) && p && p->parPixel;
 	}
 	// (b) un groupe qui contient une INSTANCE non resolue
@@ -4325,8 +4411,8 @@ static void CasPontParPixelEstConservateur() {
 		const NkNodeId imbrique = sg.AddNode(NK_NODE_INSTANCE, "un groupe imbrique");
 		sg.AddSocket(imbrique, "value", t.real, NkSocketDir::Output);
 		sg.Connect(imbrique, "value", bord, "value");
-		const NkMatRegistreErreur e = NkMatEnregistreGroupe(sg, "grp.imbrique", "Imbrique");
-		const NkMatNodeProto *p = NkMatFindProto("grp.imbrique");
+		const NkMatRegistreErreur e = NkMatEnregistreGroupe(gReg, sg, "grp.imbrique", "Imbrique");
+		const NkMatNodeProto *p = NkMatFindProto(gReg, "grp.imbrique");
 		bParPixel = (e == NkMatRegistreErreur::Ok) && p && p->parPixel;
 	}
 	NkString d;
@@ -4334,7 +4420,7 @@ static void CasPontParPixelEstConservateur() {
 				 "parPixel={1} (1 attendu, cote sur)",
 				 aParPixel ? 1 : 0, bParPixel ? 1 : 0);
 	Cas("groupe/pont-par-pixel-conservateur", aParPixel && bParPixel, d);
-	NkMatRegistre().Vide();
+	gReg.Vide();
 }
 
 static void CasGroupeRecursionRefuseeMaisOu() {
@@ -4622,12 +4708,12 @@ static NkString FormeCanonique(const NkNodeGraph &g, bool *outAmbigu) {
 // `outSel` recoit la selection a grouper : les deux Math internes.
 static void MonteGrapheAGrouper(NkNodeGraph &g, const NkMatTypes &t, NkVector<NkNodeId> &outSel, NkNodeId *outVal,
 								NkNodeId *outMix, NkNodeId *outEmi) {
-	const NkNodeId val = NkMatAddNode(g, NK_MN_VALUE);
-	const NkNodeId m1 = NkMatAddNode(g, NK_MN_MATH);
-	const NkNodeId m2 = NkMatAddNode(g, NK_MN_MATH);
-	const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_COLOR);
-	const NkNodeId emi = NkMatAddNode(g, NK_MN_EMISSION);
-	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId val = NkMatAddNode(gReg, g, NK_MN_VALUE);
+	const NkNodeId m1 = NkMatAddNode(gReg, g, NK_MN_MATH);
+	const NkNodeId m2 = NkMatAddNode(gReg, g, NK_MN_MATH);
+	const NkNodeId mix = NkMatAddNode(gReg, g, NK_MN_MIX_COLOR);
+	const NkNodeId emi = NkMatAddNode(gReg, g, NK_MN_EMISSION);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
 
 	// Des positions DISTINCTES : elles font partie du descripteur, et deux
 	// noeuds Math superposes rendraient la forme canonique ambigue -- ce que le
@@ -4782,13 +4868,13 @@ static void CasRegroupementInterfaceDeduite() {
 // dans lequel les croisements sont decouverts.
 static void MonteGrapheOrdre(NkNodeGraph &g, const NkMatTypes &t, NkVector<NkNodeId> &outSel, bool ordreInverse) {
 	(void)t;
-	const NkNodeId v1 = NkMatAddNode(g, NK_MN_VALUE);
-	const NkNodeId v2 = NkMatAddNode(g, NK_MN_VALUE);
-	const NkNodeId v3 = NkMatAddNode(g, NK_MN_VALUE);
-	const NkNodeId m1 = NkMatAddNode(g, NK_MN_MATH);
-	const NkNodeId m2 = NkMatAddNode(g, NK_MN_MATH);
-	const NkNodeId m3 = NkMatAddNode(g, NK_MN_MATH);
-	const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_COLOR);
+	const NkNodeId v1 = NkMatAddNode(gReg, g, NK_MN_VALUE);
+	const NkNodeId v2 = NkMatAddNode(gReg, g, NK_MN_VALUE);
+	const NkNodeId v3 = NkMatAddNode(gReg, g, NK_MN_VALUE);
+	const NkNodeId m1 = NkMatAddNode(gReg, g, NK_MN_MATH);
+	const NkNodeId m2 = NkMatAddNode(gReg, g, NK_MN_MATH);
+	const NkNodeId m3 = NkMatAddNode(gReg, g, NK_MN_MATH);
+	const NkNodeId mix = NkMatAddNode(gReg, g, NK_MN_MIX_COLOR);
 
 	// Des LIBELLES distincts sur les sources : c'est par eux que le cas
 	// identifiera QUELLE source aboutit sur QUELLE prise du groupe. Sans eux,
@@ -5063,14 +5149,14 @@ static NkMatCompileResult CompileAvecSortie(const char *etage, const char *nomDe
 	NkNodeId out;
 	MonteUnPrincipled(g, t, &out);
 	if (etage) {
-		const NkNodeId v = NkMatAddNode(g, NK_MN_VALUE);
+		const NkNodeId v = NkMatAddNode(gReg, g, NK_MN_VALUE);
 		g.SetProp(v, NK_MPROP_VALUE, NkValueReal(t.real, 0.f));
 		const NkNodeId so = PoseSortie(g, t, "humidite", etage);
 		g.Connect(v, "value", so, "value");
 	}
 	NkMatCompileOptions opt;
 	opt.sortieParPixel = nomDemande;
-	return NkMatCompileToNkSL(g, opt);
+	return NkMatCompileToNkSL(gReg, g, opt);
 }
 
 static void CasB1ToutMateriauDeclareEtEcritLaSecondeCible() {
@@ -5161,10 +5247,10 @@ static void CasB1LaValeurVientDuGraphe() {
 	NkMatTypes t = NkMatRegisterTypes(g);
 	NkNodeId out;
 	MonteUnPrincipled(g, t, &out);
-	const NkNodeId bruit = NkMatAddNode(g, NK_MN_NOISE);
+	const NkNodeId bruit = NkMatAddNode(gReg, g, NK_MN_NOISE);
 	const NkNodeId so = PoseSortie(g, t, "grain", "par_pixel_cible");
 	g.Connect(bruit, "fac", so, "value");
-	const NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 
 	// La locale du bruit suit la convention `n<id>_fac`.
 	NkString attendu = NkFormat("fragAux = vec4(vec3(n{0}_fac", bruit);
@@ -5201,17 +5287,17 @@ static void CasB1ValeurProcesseurAbsenteEtDite() {
 	MonteUnPrincipled(g, t, &out);
 
 	// (a) une sortie par materiau qui vaut REELLEMENT zero
-	const NkNodeId va = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId va = NkMatAddNode(gReg, g, NK_MN_VALUE);
 	g.SetProp(va, NK_MPROP_VALUE, NkValueReal(t.real, 0.f));
 	const NkNodeId sa = PoseSortie(g, t, "constante_nulle", "par_materiau");
 	g.Connect(va, "value", sa, "value");
 
 	// (b1) une sortie par pixel, dont la valeur processeur N'EXISTE PAS
-	const NkNodeId bruit = NkMatAddNode(g, NK_MN_NOISE);
+	const NkNodeId bruit = NkMatAddNode(gReg, g, NK_MN_NOISE);
 	const NkNodeId sb = PoseSortie(g, t, "grain", "par_pixel_cible");
 	g.Connect(bruit, "fac", sb, "value");
 
-	const NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	const NkMatSortieMateriau *pa = r.ok ? r.TrouveSortie("constante_nulle") : nullptr;
 	const NkMatSortieMateriau *pb = r.ok ? r.TrouveSortie("grain") : nullptr;
 
@@ -5245,17 +5331,17 @@ static void CasB1RefusNommes() {
 	NkMatTypes t = NkMatRegisterTypes(g);
 	NkNodeId out;
 	MonteUnPrincipled(g, t, &out);
-	const NkNodeId v1 = NkMatAddNode(g, NK_MN_VALUE);
-	const NkNodeId v2 = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId v1 = NkMatAddNode(gReg, g, NK_MN_VALUE);
+	const NkNodeId v2 = NkMatAddNode(gReg, g, NK_MN_VALUE);
 	const NkNodeId s1 = PoseSortie(g, t, "humidite", "par_pixel_cible");
 	const NkNodeId s2 = PoseSortie(g, t, "usure", "par_pixel_cible");
 	g.Connect(v1, "value", s1, "value");
 	g.Connect(v2, "value", s2, "value");
-	const NkMatCompileResult ambigu = NkMatCompileToNkSL(g);
+	const NkMatCompileResult ambigu = NkMatCompileToNkSL(gReg, g);
 	// et la MEME scene, levee en nommant la sortie voulue : c'est le temoin.
 	NkMatCompileOptions opt;
 	opt.sortieParPixel = "usure";
-	const NkMatCompileResult leve = NkMatCompileToNkSL(g, opt);
+	const NkMatCompileResult leve = NkMatCompileToNkSL(gReg, g, opt);
 
 	const bool nomInconnu = !inconnue.ok && ContientSansCasse(inconnue.error, "nexiste_pas");
 	const bool deuxRefus = !ambigu.ok && ContientSansCasse(ambigu.error, "il faut dire laquelle");
@@ -5356,6 +5442,7 @@ int main() {
 	//    une seule porte, et le refus d eclipse.
 	CasCatalogueOuvertALExecution();
 	CasCatalogueRefusDEclipse();
+	CasDeuxDocumentsNeVoientPasLeursGroupes();
 	CasPontInterfaceDeduiteDuSousGraphe();
 	CasPontParPixelEstConservateur();
 

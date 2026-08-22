@@ -100,6 +100,15 @@ using namespace nkentseu::renderer;
 using namespace nkentseu::renderer::matgraph;
 
 // ── comptage des cas ─────────────────────────────────────────────────────────
+// LE REGISTRE DE PROTOTYPES DE CE PROCESSUS DE BANC.
+//
+// Depuis le 2026-08-23 le registre est un PARAMETRE : il n'existe plus
+// d'instance de processus. Ce `gReg` n'est donc PAS un retour du defaut --
+// c'est le registre d'un document unique, celui que ce banc manipule. Les
+// cas qui ont besoin de DEUX documents en declarent deux, localement, et
+// c'est precisement ce que le temoin d'isolement mesure.
+static NkMatRegistreProtos gReg;
+
 static uint32 gCas = 0;
 static uint32 gEchecs = 0;
 
@@ -342,7 +351,7 @@ static const int32 kEcartAttendu = 128;
 
 // Emission pure sur un canal : color = (E,0,0) ou (0,E,0), strength = 1.
 static NkNodeId AjouteEmission(NkNodeGraph &g, const NkMatTypes &t, uint32 canal) {
-	const NkNodeId n = NkMatAddNode(g, NK_MN_EMISSION);
+	const NkNodeId n = NkMatAddNode(gReg, g, NK_MN_EMISSION);
 	float32 c[3] = {0.f, 0.f, 0.f};
 	c[canal] = kE;
 	g.SetSocketDefault(n, "color", NkSocketDir::Input, NkValueVec(t.color, c, 3));
@@ -354,10 +363,10 @@ static NkNodeId AjouteEmission(NkNodeGraph &g, const NkMatTypes &t, uint32 canal
 static bool GrapheEmission(uint32 canal, NkString &out) {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId sortie = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
 	const NkNodeId e = AjouteEmission(g, t, canal);
 	g.Connect(e, "emission", sortie, "surface");
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	out = r.source;
 	return r.ok;
 }
@@ -366,15 +375,15 @@ static bool GrapheEmission(uint32 canal, NkString &out) {
 static bool GrapheMelange(float32 fac, NkString &out) {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_SHADER);
+	const NkNodeId sortie = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId mix = NkMatAddNode(gReg, g, NK_MN_MIX_SHADER);
 	const NkNodeId rouge = AjouteEmission(g, t, 0);
 	const NkNodeId vert = AjouteEmission(g, t, 1);
 	g.Connect(rouge, "emission", mix, "shader1");
 	g.Connect(vert, "emission", mix, "shader2");
 	g.Connect(mix, "shader", sortie, "surface");
 	g.SetSocketDefault(mix, "fac", NkSocketDir::Input, NkValueReal(t.real, fac));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	out = r.source;
 	return r.ok;
 }
@@ -388,11 +397,11 @@ static bool GrapheMelange(float32 fac, NkString &out) {
 static bool GrapheMelangeCouleur(const char *operation, float32 fac, NkString &out) {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
-	const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_COLOR);
-	const NkNodeId rouge = NkMatAddNode(g, NK_MN_RGB);
-	const NkNodeId vert = NkMatAddNode(g, NK_MN_RGB);
+	const NkNodeId sortie = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId emis = NkMatAddNode(gReg, g, NK_MN_EMISSION);
+	const NkNodeId mix = NkMatAddNode(gReg, g, NK_MN_MIX_COLOR);
+	const NkNodeId rouge = NkMatAddNode(gReg, g, NK_MN_RGB);
+	const NkNodeId vert = NkMatAddNode(gReg, g, NK_MN_RGB);
 	g.Connect(emis, "emission", sortie, "surface");
 	g.Connect(mix, "color", emis, "color");
 	g.Connect(rouge, "color", mix, "color1");
@@ -404,7 +413,7 @@ static bool GrapheMelangeCouleur(const char *operation, float32 fac, NkString &o
 	g.SetProp(mix, NK_MPROP_OPERATION, NkValueText(t.real, operation));
 	g.SetSocketDefault(mix, "fac", NkSocketDir::Input, NkValueReal(t.real, fac));
 	g.SetSocketDefault(emis, "strength", NkSocketDir::Input, NkValueReal(t.real, 1.f));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	out = r.source;
 	return r.ok;
 }
@@ -417,10 +426,10 @@ static bool GrapheMelangeCouleur(const char *operation, float32 fac, NkString &o
 static bool GrapheRampe(const float32 *arrets, uint32 nbReels, float32 fac, NkString &out) {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
-	const NkNodeId ramp = NkMatAddNode(g, NK_MN_COLOR_RAMP);
-	const NkNodeId val = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId sortie = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId emis = NkMatAddNode(gReg, g, NK_MN_EMISSION);
+	const NkNodeId ramp = NkMatAddNode(gReg, g, NK_MN_COLOR_RAMP);
+	const NkNodeId val = NkMatAddNode(gReg, g, NK_MN_VALUE);
 	g.Connect(emis, "emission", sortie, "surface");
 	g.Connect(ramp, "color", emis, "color");
 	g.Connect(val, "value", ramp, "fac");
@@ -428,7 +437,7 @@ static bool GrapheRampe(const float32 *arrets, uint32 nbReels, float32 fac, NkSt
 	g.SetProp(ramp, NK_MPROP_INTERP, NkValueText(t.ramp, "lineaire"));
 	g.SetProp(val, NK_MPROP_VALUE, NkValueReal(t.real, fac));
 	g.SetSocketDefault(emis, "strength", NkSocketDir::Input, NkValueReal(t.real, 1.f));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	out = r.source;
 	return r.ok;
 }
@@ -446,11 +455,11 @@ static bool GrapheRampe(const float32 *arrets, uint32 nbReels, float32 fac, NkSt
 static bool GrapheCourbe(const float32 *pts, uint32 nbReels, float32 x, NkString &out) {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
-	const NkNodeId comb = NkMatAddNode(g, NK_MN_COMBINE_XYZ);
-	const NkNodeId courbe = NkMatAddNode(g, NK_MN_FLOAT_CURVE);
-	const NkNodeId val = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId sortie = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId emis = NkMatAddNode(gReg, g, NK_MN_EMISSION);
+	const NkNodeId comb = NkMatAddNode(gReg, g, NK_MN_COMBINE_XYZ);
+	const NkNodeId courbe = NkMatAddNode(gReg, g, NK_MN_FLOAT_CURVE);
+	const NkNodeId val = NkMatAddNode(gReg, g, NK_MN_VALUE);
 	g.Connect(emis, "emission", sortie, "surface");
 	g.Connect(comb, "vector", emis, "color");
 	g.Connect(courbe, "value", comb, "y");
@@ -461,7 +470,7 @@ static bool GrapheCourbe(const float32 *pts, uint32 nbReels, float32 x, NkString
 	g.SetProp(courbe, NK_MPROP_INTERP, NkValueText(t.curve, "lineaire"));
 	g.SetProp(val, NK_MPROP_VALUE, NkValueReal(t.real, x));
 	g.SetSocketDefault(emis, "strength", NkSocketDir::Input, NkValueReal(t.real, 1.f));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	out = r.source;
 	return r.ok;
 }
@@ -473,9 +482,9 @@ static bool GrapheCourbe(const float32 *pts, uint32 nbReels, float32 x, NkString
 static bool GrapheNormaleImposee(float32 nx, float32 ny, float32 nz, NkString &out) {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId rgb = NkMatAddNode(g, NK_MN_RGB);
+	const NkNodeId sortie = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId rgb = NkMatAddNode(gReg, g, NK_MN_RGB);
 	g.Connect(bsdf, "bsdf", sortie, "surface");
 	g.Connect(rgb, "color", bsdf, "normal");
 	const float32 n[3] = {nx, ny, nz};
@@ -484,7 +493,7 @@ static bool GrapheNormaleImposee(float32 nx, float32 ny, float32 nz, NkString &o
 	g.SetSocketDefault(bsdf, "base_color", NkSocketDir::Input, NkValueVec(t.color, gris, 3));
 	g.SetSocketDefault(bsdf, "metallic", NkSocketDir::Input, NkValueReal(t.real, 0.f));
 	g.SetSocketDefault(bsdf, "roughness", NkSocketDir::Input, NkValueReal(t.real, 1.f));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	out = r.source;
 	return r.ok;
 }
@@ -495,11 +504,11 @@ static bool GrapheNormaleImposee(float32 nx, float32 ny, float32 nz, NkString &o
 static bool GrapheRelief(float32 force, NkString &out) {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId bump = NkMatAddNode(g, NK_MN_BUMP);
-	const NkNodeId sep = NkMatAddNode(g, NK_MN_SEPARATE_XYZ);
-	const NkNodeId coord = NkMatAddNode(g, NK_MN_TEX_COORD);
+	const NkNodeId sortie = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId bump = NkMatAddNode(gReg, g, NK_MN_BUMP);
+	const NkNodeId sep = NkMatAddNode(gReg, g, NK_MN_SEPARATE_XYZ);
+	const NkNodeId coord = NkMatAddNode(gReg, g, NK_MN_TEX_COORD);
 	g.Connect(bsdf, "bsdf", sortie, "surface");
 	g.Connect(bump, "normal", bsdf, "normal");
 	g.Connect(sep, "x", bump, "height");
@@ -510,7 +519,7 @@ static bool GrapheRelief(float32 force, NkString &out) {
 	g.SetSocketDefault(bsdf, "base_color", NkSocketDir::Input, NkValueVec(t.color, gris, 3));
 	g.SetSocketDefault(bsdf, "metallic", NkSocketDir::Input, NkValueReal(t.real, 0.f));
 	g.SetSocketDefault(bsdf, "roughness", NkSocketDir::Input, NkValueReal(t.real, 1.f));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	out = r.source;
 	return r.ok;
 }
@@ -520,10 +529,10 @@ static bool GrapheRelief(float32 force, NkString &out) {
 static bool GrapheCarteNormales(float32 tr, float32 tv, float32 tb, NkString &out) {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
-	const NkNodeId nm = NkMatAddNode(g, NK_MN_NORMAL_MAP);
-	const NkNodeId rgb = NkMatAddNode(g, NK_MN_RGB);
+	const NkNodeId sortie = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	const NkNodeId nm = NkMatAddNode(gReg, g, NK_MN_NORMAL_MAP);
+	const NkNodeId rgb = NkMatAddNode(gReg, g, NK_MN_RGB);
 	g.Connect(bsdf, "bsdf", sortie, "surface");
 	g.Connect(nm, "normal", bsdf, "normal");
 	g.Connect(rgb, "color", nm, "color");
@@ -533,7 +542,7 @@ static bool GrapheCarteNormales(float32 tr, float32 tv, float32 tb, NkString &ou
 	g.SetSocketDefault(bsdf, "base_color", NkSocketDir::Input, NkValueVec(t.color, gris, 3));
 	g.SetSocketDefault(bsdf, "metallic", NkSocketDir::Input, NkValueReal(t.real, 0.f));
 	g.SetSocketDefault(bsdf, "roughness", NkSocketDir::Input, NkValueReal(t.real, 1.f));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	out = r.source;
 	return r.ok;
 }
@@ -551,11 +560,11 @@ static bool GrapheCarteNormales(float32 tr, float32 tv, float32 tb, NkString &ou
 static bool GrapheDamier(float32 decalage, NkString &out) {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
-	const NkNodeId dam = NkMatAddNode(g, NK_MN_CHECKER);
-	const NkNodeId map = NkMatAddNode(g, NK_MN_MAPPING);
-	const NkNodeId coord = NkMatAddNode(g, NK_MN_TEX_COORD);
+	const NkNodeId sortie = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId emis = NkMatAddNode(gReg, g, NK_MN_EMISSION);
+	const NkNodeId dam = NkMatAddNode(gReg, g, NK_MN_CHECKER);
+	const NkNodeId map = NkMatAddNode(gReg, g, NK_MN_MAPPING);
+	const NkNodeId coord = NkMatAddNode(gReg, g, NK_MN_TEX_COORD);
 	g.Connect(emis, "emission", sortie, "surface");
 	g.Connect(dam, "color", emis, "color");
 	g.Connect(map, "vector_out", dam, "vector");
@@ -568,7 +577,7 @@ static bool GrapheDamier(float32 decalage, NkString &out) {
 	g.SetSocketDefault(dam, "color2", NkSocketDir::Input, NkValueVec(t.color, vert, 3));
 	g.SetSocketDefault(dam, "scale", NkSocketDir::Input, NkValueReal(t.real, 5.f));
 	g.SetSocketDefault(emis, "strength", NkSocketDir::Input, NkValueReal(t.real, 1.f));
-	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
 	out = r.source;
 	return r.ok;
 }
@@ -912,8 +921,8 @@ static void MatriceDeuxBlocs(DemoContexte &ctx) {
 static bool GrapheEmissionExposee(NkMatCompileResult &r, bool avecLeReelDevant) {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
-	const NkNodeId b = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId sortie = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId b = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
 	g.Connect(b, "bsdf", sortie, "surface");
 	// ⚠️ DEUX parametres exposes, et le choix des deux prises n'est PAS libre.
 	//
@@ -945,7 +954,7 @@ static bool GrapheEmissionExposee(NkMatCompileResult &r, bool avecLeReelDevant) 
 	NkString c2(NK_MPROP_EXPOSE_PREFIX);
 	c2.Append("emission");
 	g.SetProp(b, c2.CStr(), NkValueText(t.real, "teinte"));
-	r = NkMatCompileToNkSL(g);
+	r = NkMatCompileToNkSL(gReg, g);
 	return r.ok;
 }
 
