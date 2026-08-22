@@ -2232,3 +2232,137 @@ struct de bloc écrit à la main, ou le jour où quelqu'un ajoute un archétype.
 `static_assert` tiendront jusque-là — ils ne laissent pas la dérive être
 silencieuse, ils obligent seulement à un geste conscient.
 
+---
+
+## 📌 Les GROUPES de nœuds — mesure du registre, et le regroupement (2026-08-22)
+
+Demande de Rodolf (R8/R9 de `echanges/design.reponses.md`) : *« un groupe est un
+groupement de nœuds que l'utilisateur peut empaqueter pour réutiliser à volonté
+comme des fonctions »*, et son interface **se déduit** des fils qui traversent la
+frontière de la sélection — elle ne se déclare pas.
+
+Preuve : `Applications/NkMatGraphCheck` — **106 cas, 0 échec, 13 mutations sur 13
+détectées**.
+
+### 🔴 Le fait d'architecture : il y a DEUX registres, et ils ne répondent pas pareil
+
+Un groupe est un **type de nœud créé par l'utilisateur à l'exécution**. La
+question « le registre l'accepte-t-il ? » n'a **pas de réponse unique**.
+
+| | verdict | mesure |
+|---|---|---|
+| **couche 1** — `NkNodeGraph` | ✅ **accepte** | il n'a **aucun** registre de types de nœuds : `NkNode::type` est une `NkString` libre, `AddNode` ne valide rien. Une clé composée à l'exécution porte des prises, se relie, prend son rang au tri topologique et traverse le fichier **mot pour mot**. |
+| **couche 3** — `kProtos` | ❌ **clos à la compilation** | tableau `static const`. `NkMatFindProto`, `NkMatAddNode` **et** le menu `NkMatNoeudsPourPrise` lisent **cette seule source**. |
+
+**La conséquence utile est dans la seconde ligne** : le menu interrogeant le
+**même** registre, **ouvrir le registre ouvre le menu sans une ligne de plus**. Il
+n'y a **pas deux endroits à réparer**. Le catalogue doit devenir **deux sources
+lues par la même porte** — prototypes compilés + prototypes de groupe enregistrés
+à l'exécution. ⏳ **En attente d'arbitrage de Rodolf.**
+
+⚠️ **Trou trouvé au passage** : `NkMatValidate` — la validation **de domaine** —
+rend **`ok`** sur un graphe portant un type de nœud inconnu ; elle ne consulte pas
+le catalogue. Seul l'**émetteur** l'arrête, en le **nommant**. Ça tient tant qu'un
+type inconnu est une anomalie ; plus le jour où un groupe est un type légitime.
+
+### La récursion : refusée et nommée, mais à l'APLATISSEMENT
+
+`RecursiveSubgraph` attrape la boucle **directe et indirecte** (deux maillons — un
+contrôle regardant le voisin immédiat la manquerait). Mais **la construction
+réussit** : un document récursif se bâtit, et n'échoue qu'à l'usage. Le cas exige
+**les deux**, pour que l'écart avec ce que Rodolf demande soit *mesuré*, pas
+oublié — si le contrôle passe à l'insertion, **le cas tombera et sera relu**.
+
+⚠️ Mesure qui tranche le débat « borne ou refus nommé » : sans le contrôle de
+récursion, la borne de profondeur (32) arrête quand même — mais rend
+**`trop-profond`**. **Ça s'arrête, et ça accuse le mauvais coupable.**
+
+### `NkGraphGroup.h/.inl` — regrouper / dégrouper
+
+Dans le **cœur**, parce que regrouper est de l'**autorat** : ça ne regarde que des
+nœuds, des prises et des liens, jamais ce qu'un type *signifie*. Garde-fou n°1
+intact.
+
+Traité : déduplication **par prise source**, ordre déterministe (verticale du
+nœud interne, puis horizontale, puis indice de prise, puis identifiant), noms
+venus de la prise interne avec homonymes désambiguïsés **dans l'ordre déjà figé**,
+liens dedans→dedans laissés à l'intérieur.
+
+⚠️ **Le piège absent de l'énoncé** : chaque graphe tient **son propre registre de
+types et ses propres conversions dirigées**. Un sous-graphe créé vide refuse à
+l'intérieur un lien réel → couleur que le parent acceptait, et **le fil est perdu
+sans un mot** — `Connect` rend une erreur que personne ne lit. Registre **et**
+conversions sont recopiés en premier (`ConversionCount`/`ConversionAt`, ajoutés à
+`NkNodeGraph` pour ça).
+
+### 🔴 Trois mutations sur huit ont SURVÉCU au premier tour
+
+1. **« l'ordre des prises n'est plus trié » est passée verte.** Le cas comparait
+   la **suite des noms** — or ils dérivent des prises internes (`a`, `a_2`, `a_3`)
+   et sortent **dans ce même ordre quelle que soit la permutation**. La suite des
+   noms est identique quand le câblage est **entièrement permuté**. **Sixième
+   occurrence de « je vérifie une étiquette, jamais la relation ».** Le cas compare
+   désormais la **correspondance** (qui se branche sur quoi). Il a fallu aussi
+   refaire le graphe d'essai : **avec une entrée et une sortie, l'ordre est une
+   propriété vide.**
+2. et 3. **« défaut de prise non recopié » et « propriété non recopiée » sont
+   passées vertes parce que le graphe d'essai n'en portait aucun.** Ce n'est pas
+   l'assertion qui manquait, **c'est la matière** — un contrôle ne peut pas voir
+   disparaître ce qui n'existe pas.
+
+> **Un contrôle ne vaut que ce que son graphe d'essai porte. Une assertion juste
+> sur une matière absente est verte pour rien.**
+
+### ⚠️ Ce que le critère « aller-retour identique » ne prouve PAS
+
+Une **déduplication ratée y survit** : cinq entrées identiques se redistribuent
+correctement au dégroupement et le graphe revient identique. Le critère est
+**nécessaire, pas suffisant** — d'où un second cas qui regarde l'**interface**.
+
+Deux limites écrites dans le banc : la forme canonique range les nœuds par leur
+**contenu** (normaliser le texte sérialisé alignerait deux ordres différents) et
+**signale `ambigu`** quand deux nœuds partagent un descripteur, au lieu de rendre
+un vert trompeur ; et **`Dégrouper` ne supprime pas la définition** — retirer un
+graphe du document décalerait les index, et chaque `graph` rangé dans un
+`NkEvalStep` désignerait le mauvais graphe.
+
+## 📌 (b1) — la seconde cible de rendu est EXPRIMABLE (2026-08-22)
+
+**Aucun shader du dépôt ne déclarait deux sorties couleur** — les `@location(1)
+out` qu'on y trouve sont tous des varyings de **sommet**. Il n'y avait rien pour
+l'attester, et (b1) allait être construit dessus.
+
+✅ Mesuré : les quatre générateurs émettent le second attachement avec le bon
+sémantique (`SV_Target0` **et** `SV_Target1` en HLSL, `location = 0` **et**
+`location = 1` en GLSL), glslang rend du vrai SPIR-V, et un **témoin** à une seule
+cible distingue « la seconde cible est refusée » de « mon shader est mauvais ».
+
+⚠️ **Le cas ne lit pas `success`, et la mutation dit pourquoi** : quand on retire
+la seconde sortie, **les quatre colonnes de génération restent à « gen »** pendant
+que la cible est entièrement absente. Un générateur qui ignorerait
+`@location(1)` et émettrait les deux sorties sur `SV_Target0` écrirait la valeur
+auxiliaire **par-dessus la couleur** : image plausible, tampon auxiliaire vide.
+
+### Les quatre canaux, et le format proposé
+
+| canal | contenu | bornes |
+|---|---|---|
+| **R, G, B** | la valeur de la sortie nommée résolue cette passe | **non bornée par nature** |
+| **A** | **validité** — ce pixel porte-t-il cette sortie ? | **{0, 1}, un bit** |
+
+**Le quatrième canal n'est pas un identifiant** : le moteur résout **une seule**
+sortie nommée par passe, puisque l'API est **par nom** (`NkMatSortieMateriau`). Il
+n'y a rien à identifier — seulement à dire **si le pixel la porte**.
+
+**Proposé : `R16G16B16A16_FLOAT`, 8 o/px (16 Mo en 1080p)**, avec une propriété
+**domaine déclaré** sur le nœud `Named Output` ; une seule sortie `non bornée`
+promeut la cible en 32 bits, et **la promotion est nommée dans le journal** — le
+coût cher devient optionnel et **imputable**. ⏳ **En attente d'arbitrage.**
+
+⚠️ **Ce qu'un matériau sans sortie nommée y écrit** — fait matériel : *une sortie
+MRT non écrite sur un pixel couvert est **indéfinie**, pas nulle*. Donc **tout
+matériau déclare et écrit la seconde sortie** ; celui qui n'a rien à y mettre
+écrit `(0,0,0,0)`, et **quand `A == 0`, RGB n'a aucun sens**. Un lecteur qui
+ignorerait `A` lirait `0.0` — une valeur **parfaitement plausible** sur un matériau
+qui n'a jamais entendu parler de cette sortie. Le contrôle correspondant se mesure
+**sans GPU**, sur le NkSL émis.
