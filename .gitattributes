@@ -27,3 +27,9 @@
 *.apk binary
 *.exe binary
 *.pdf binary
+
+# Les fichiers de classement des verificateurs sont lus caractere pour
+# caractere par des scripts ; un CRLF injecte par la normalisation y serait
+# invisible dans tout diff. Voir VERIFICATEUR.md, « une regle de normalisation
+# peut defaire une correction sans toucher au code corrige ».
+*.list text eol=lf
