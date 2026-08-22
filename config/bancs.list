@@ -54,12 +54,12 @@
 NKEditMeshHarness    | banc        | rapide  |                        | code         | batteries EditMesh ; main rend gFail (0 = tout passe)
 NKSmoothMeshTest     | banc        | rapide  |                        | code         | Surface Nets ; rend fail == 0 ? 0 : 1
 NKUIDesign           | banc        | rapide  | --roundtrip-controles  | code         | temoins de bruit de l aller-retour .nkgui ; teste AVANT toute creation de fenetre
-NkAssetIODemo        | banc        | rapide  |                        | code         | Noge/IO ; lit Resources/Models depuis la racine du depot
+NkAssetIODemo        | banc        | rapide  |                        | code         | Noge/IO ; lit Resources/Models depuis la racine du depot. Ses deux fixtures (tree.obj, rock/rock.obj) sont VERSEES au depot le 22/08 malgre .gitignore (git add -f) : un lecteur OBJ dont aucun test ne tourne ailleurs que sur la machine de Rodolf n'est pas teste.
 NkEditableMeshDemo   | banc        | rapide  |                        | code         | preuve Noge/Modeling ; rend gFailCount == 0 ? 0 : 1
-NkFBXParityDemo      | banc        | rapide  |                        | code         | parite FBX / glTF CesiumMan ; rend gFailCount == 0 ? 0 : 1
+NkFBXParityDemo      | banc        | complet |                        | code         | parite FBX / glTF. Passe en mode complet le 22/08 : exige Resources/Models/CesiumMan/CesiumMan.fbx, ABSENT du depot ET de la copie de travail de Rodolf (seul le .glb existe) — gros fichier, sujet a part. XBot/YBot sont deja sautes proprement par le banc.
 NkGpuProbe           | banc        | complet |                        | code         | compute NKRHI HEADLESS : demande un vrai peripherique GPU
 NkMatInventaireTest  | banc-arrete |         |                        |              | banc ARRETE le 17/08 (cc6aba5b) : include commente Nkentseu.jenga:1220, echouait au lien PAR CONSTRUCTION. Se re-enregistre quand Demo3DHost devient une bibliotheque.
-NkSLCheck            | banc        | rapide  |                        | sans-verdict | MESURE 2026-08-22 : main rend TOUJOURS 0, y compris avec success=0 dans sa sortie. Deverse un diagnostic, ne se juge pas.
+NkSLCheck            | banc        | rapide  |                        | code         | 8 conversions NkSL + le PBR FS en GL et Vulkan. Rendait 0 inconditionnellement avec success=0 dans sa sortie ; corrige le 22/08 : compte ses echecs, rend 1. Etait sans-verdict jusque-la.
 NkSLComputeCheck     | banc        | rapide  |                        | code         | compute NkSL 6 cibles ; rend g_fail
 
 # --- NON EXAMINES (classes pas-banc par defaut, voir l'entete) ---------------

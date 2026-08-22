@@ -8,6 +8,13 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 
+# Fixtures de bancs : fins de ligne FIGEES en LF.
+# Une entree de test doit etre identique octet pour octet partout, sinon le
+# banc mesure la machine. Sans cette ligne, `* text=auto` + core.autocrlf=true
+# rendaient tree.obj / rock.obj en CRLF a la sortie de caisse, alors qu'AUCUN
+# des deux lecteurs OBJ (NkOBJLoader.cpp, NkOBJIO.cpp) ne mentionne le CR.
+*.obj text eol=lf
+
 # Binaires courants (jamais de conversion).
 *.png binary
 *.jpg binary

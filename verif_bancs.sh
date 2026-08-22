@@ -373,19 +373,57 @@ premiere_ligne_utile() {
         | grep -aiE 'error|erreur|fatal|undefined reference|unresolved external|LNK[0-9]+|C[0-9]{4}' \
         | grep -avE 'Build Successful|0 error' | head -1)
   else
-    # `introuvable|not found|missing` est DANS le motif, et volontairement :
-    # sur les trois echecs mesures le 2026-08-22, la ligne « fichier
-    # introuvable » precede la ligne « [FAIL] », donc `head -1` rend la CAUSE
-    # au lieu du SYMPTOME. Un rapport qui nomme « [FAIL] LoadOBJ reussit »
-    # envoie chercher un bug de chargeur ; « fichier introuvable :
-    # Resources/Models/tree.obj » envoie chercher le fichier.
+    # ⚠️ DEUX MESURES ONT ECRIT CE BLOC. Il choisit UNE ligne pour dire pourquoi
+    # un banc est tombe ; se tromper de ligne, c'est envoyer chercher au mauvais
+    # endroit — donc pire que se taire.
+    #
+    # MESURE 1 (22/08 matin) — la CAUSE precede le SYMPTOME. Sur un banc dont la
+    # fixture manque, le journal porte d'abord « fichier introuvable :
+    # .../CesiumMan.fbx », PUIS « [FAIL] LoadFBX reussit ». Citer le [FAIL] envoie
+    # chercher un bug de chargeur ; citer l'introuvable envoie chercher le fichier.
+    #
+    # MESURE 2 (22/08 soir) — et le motif large a MENTI, dans les deux sens :
+    #   a) il a cite « [OK] NkOBJIO::Import: aucune erreur » comme cause d'un
+    #      echec — le mot `erreur` accroche A L'INTERIEUR DE SA PROPRE NEGATION ;
+    #   b) une fois (a) corrige, il a cite un WRN de texture situe 180 lignes
+    #      avant le vrai [FAIL], sans aucun rapport avec lui.
+    # Chercher un MOT au lieu d'un ETAT : la faute meme que cet outil existe pour
+    # interdire, venue se loger dedans. Deux fois.
+    #
+    # LA REGLE QUI TIENT LES DEUX : on s'ancre sur le MARQUEUR D'ECHEC (une
+    # donnee, pas un mot), et on ne remonte a une ligne de cause que si elle est
+    # ADJACENTE (5 lignes avant, au plus). Adjacente = elle parle du meme echec.
+    # Lointaine = c'est du bruit qui passait par la.
     l=$(sed 's/\x1b\[[0-9;]*m//g' "$j" 2>/dev/null \
-        | grep -aiE 'error|erreur|fail|echec|echoue|assert|abort|exception|\bKO\b|introuvable|not found|no such file|manquant|missing' \
-        | head -1)
+        | grep -avE '\[[[:space:]]*OK[[:space:]]*\]|aucune erreur|aucun echec|sans erreur|no error|0 error' \
+        | awk '
+            { buf[NR] = $0 }
+            !prem && tolower($0) ~ /\[fail\]|\[err\]|\[echec\]|\<ko\>|assert|abort|exception/ { prem = NR }
+            END {
+              if (prem) {
+                deb = prem - 5; if (deb < 1) deb = 1
+                for (k = deb; k < prem; k++)
+                  if (tolower(buf[k]) ~ /introuvable|not found|no such file|manquant|missing/) {
+                    # On rend LES DEUX : l echec fait foi, la cause adjacente
+                    # l accompagne. Choisir entre les deux, c est parier ; les
+                    # donner toutes les deux, c est renseigner.
+                    print buf[prem] "   || cause adjacente : " buf[k]; exit
+                  }
+                print buf[prem]; exit
+              }
+            }')
+    # Aucun marqueur d echec : le banc est tombe sans le dire (code non nul, sortie
+    # muette). On retombe alors sur le motif large — faute de mieux, et c est ecrit.
+    if [ -z "$l" ]; then
+      l=$(sed 's/\x1b\[[0-9;]*m//g' "$j" 2>/dev/null \
+          | grep -avE '\[[[:space:]]*OK[[:space:]]*\]|aucune erreur|aucun echec|sans erreur|no error|0 error' \
+          | grep -aiE 'error|erreur|fatal|introuvable|not found|no such file|manquant|missing' \
+          | head -1)
+    fi
   fi
   [ -z "$l" ] && l=$(sed 's/\x1b\[[0-9;]*m//g' "$j" 2>/dev/null | grep -av '^[[:space:]]*$' | tail -1)
   [ -z "$l" ] && l="(sortie vide)"
-  printf '%s' "$l" | cut -c1-200
+  printf '%s' "$l" | cut -c1-320
 }
 
 chemin_exe() {

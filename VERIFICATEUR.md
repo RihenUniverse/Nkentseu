@@ -40,6 +40,52 @@ aujourd'hui la note `non-examine` (voir la dette, plus bas).
 
 ---
 
+## ⚠️ La limite la plus dangereuse : il ne mesure QU'UNE référence
+
+**Un vérificateur qui ne mesure que `main` rapporte comme défauts des
+corrections en attente de fusion.**
+
+Ce n'est pas une inquiétude théorique, c'est ce qui s'est passé au premier
+passage réel, le 22/08 :
+
+| ce que le vérificateur a rapporté | ce que c'était vraiment |
+|---|---|
+| `NkEditableMeshDemo` : 4 `[FAIL]` de normales | des **attentes périmées du banc**, corrigées le 21 sur la branche de NK3DModeler et **jamais fusionnées**. Les intitulés rapportés sont mot pour mot ceux de `main` ; sur sa branche le même banc rend **37 OK / 0 FAIL**. |
+| `gSkipCount` absent | **0 occurrence sur `main`, 5 sur sa branche.** |
+
+⚠️ **L'outil n'a pas menti** : il a mesuré `main`, et `main` était en retard.
+C'est la définition même de ce qu'il fait. Mais le coût de cette vérité
+partielle n'est pas du bruit — **c'est qu'un agent rediagnostique un bug déjà
+résolu.** Ça a failli arriver.
+
+Et la mesure suivante a montré que c'est pire d'un cran : le soir du 22/08,
+**la branche `feat/verificateur` elle-même était 4 commits DERRIÈRE `main`**
+(`git rev-list --count HEAD..main` = 4). La première passe ne mesurait donc même
+pas `main`, mais une photo de `main` prise le matin. *(Vérifié plutôt que
+supposé : les 4 commits ne touchaient que des documents de design NKGraph —
+aucune conséquence sur les bancs. Le principe, lui, tient.)*
+
+**Ce que ça impose au vérificateur — et ce qui n'est pas encore fait :**
+
+1. **Nommer sa référence.** Le rapport porte déjà `branche` et `HEAD`. Ce n'est
+   pas assez : il doit dire **de combien de commits il est derrière `main`**, et
+   le dire **en haut**, pas en note.
+2. **Nommer les branches en avance sur les fichiers qu'il accuse.** Pour chaque
+   banc en ÉCHEC, la question à poser AVANT de diagnostiquer est mécanique :
+   *quelle branche non fusionnée touche les sources de ce banc ?*
+   `git log --all --oneline main..<branche> -- <chemins du banc>` répond en une
+   seconde.
+3. **Écrire la phrase sur la ligne d'échec elle-même**, pas dans un document que
+   personne ne relit : *« mesuré sur <réf> ; N branche(s) non fusionnée(s)
+   touchent ces fichiers — vérifie avant de diagnostiquer »*.
+
+⚠️ **Règle de lecture, en attendant que ce soit outillé** : un ÉCHEC de ce
+vérificateur est **une mesure de la référence courante**, jamais un verdict sur
+le code du dépôt. Avant de diagnostiquer quoi que ce soit, on demande à l'agent
+qui tient le module s'il a la correction en attente.
+
+---
+
 ## Les six règles, et le défaut mesuré qui a fait écrire chacune
 
 ### 1. Le code de sortie de la CONSTRUCTION est une donnée du contrôle
@@ -183,23 +229,72 @@ combien de projets classés.
 - **verdict** : `code` · `code+absence:<motif>` · `code+presence:<motif>` ·
   `sans-verdict`
 
-### `sans-verdict` — la valeur qui a été ajoutée après mesure
+### `sans-verdict` — la valeur ajoutée après mesure, et le banc qu'elle a fait corriger
 
-`NkSLCheck.exe` sort **code 0** en 0,045 s, avec dans sa propre sortie :
+`NkSLCheck.exe` sortait **code 0** en 0,045 s, avec dans sa propre sortie :
 
 ```
 ----- PBR FS GLSL-OpenGL (success=0, 0 octets) -----
 ----- PBR FS GLSL-Vulkan (success=0, 0 octets) -----
 ```
 
-Son `main` finit par `return 0;` — inconditionnel. Ce banc **déverse un
-diagnostic**, il ne se juge pas. Prendre son code de sortie pour un verdict
-serait rejouer « un repli qui préserve `success` n'est pas un repli » à
-l'échelle du contrôle.
+Son `main` finissait par `return 0;` — inconditionnel. **Un banc qui échoue en
+rendant « tout va bien » est la forme la plus dangereuse de la grille** : il
+n'omet pas l'alarme, il l'éteint. C'était « un repli qui préserve `success` »
+rejoué à l'échelle du contrôle.
 
-Un banc `sans-verdict` est donc **lancé, journalisé, et compté INDÉTERMINÉ** —
+**Corrigé le 22/08** : le banc compte ses échecs et rend 1 s'il y en a. Il est
+passé de `sans-verdict` à `code` dans `config/bancs.list`.
+
+⚠️ **Et la correction a immédiatement retourné l'accusation contre le banc.**
+Une fois qu'il a su parler, il a dit *pourquoi* :
+
+```
+[FAIL] PBR FS GLSL-OpenGL : la compilation a échoué (success=0)
+  ERREUR ligne 136: #include not found: Include/NkShadowAtlas.glsli
+  ERREUR ligne 168: #include not found: Include/NkVoxelAO.glsli
+```
+
+Ce n'était **pas** un défaut de NkSL. Le banc lisait le `.nksl` et le passait à
+`Compile()`, **qui ne connaît aucun dossier de recherche d'`#include`** — seul
+`Preprocess(source, baseDir)` en prend un. Le banc mesurait donc **son propre
+montage** et l'imputait au compilateur. Corrigé (`Preprocess` avec
+`Resources/NKRenderer/Shaders`) : **10 contrôles, 0 en échec, code 0.**
+
+C'est la deuxième fois en deux jours que la faute était dans l'instrument et non
+dans le sujet (la première : `cp -p` dans la contre-épreuve). D'où la règle
+tenue ici : **avant de rapporter un défaut, on vérifie que la mesure ne mesure
+pas le montage.**
+
+Un banc `sans-verdict` reste **lancé, journalisé, et compté INDÉTERMINÉ** —
 **jamais vert**. Le rapport les liste à part, avec la phrase qui compte : *ces
-bancs tournent, mais leur code de sortie ne juge rien.*
+bancs tournent, mais leur code de sortie ne juge rien.* Il n'en reste **aucun**
+aujourd'hui.
+
+---
+
+## Les fixtures d'un banc doivent être versionnées
+
+⚠️ **Un banc dont l'entrée n'est pas versionnée mesure la machine, pas le code.**
+Il est vert sur une seule copie de travail et rouge dans tout arbre neuf, chez
+tout agent, et dans toute CI.
+
+Deux bancs étaient dans ce cas au premier passage. Arbitrage rendu le 22/08 :
+
+| banc | fichiers | décision |
+|---|---|---|
+| `NkAssetIODemo` | `Resources/Models/tree.obj` (280 o), `Resources/Models/rock/rock.obj` (15 Ko) | **versés au dépôt** par `git add -f` (`.gitignore:45` ignore `*.obj`, `:704` ignore `/Resources/Models/`). *C'est la base même du lecteur OBJ : un lecteur dont aucun test ne peut tourner ailleurs que sur une machine n'est pas testé.* Leurs voisins `rock.mtl` / `rock.png` étaient déjà suivis. |
+| `NkFBXParityDemo` | `CesiumMan/CesiumMan.fbx`, `XBot/` | **passé en `mode complet`** (gros fichiers, la parité FBX est un sujet à part). ⚠️ **Mesure du 22/08 : `CesiumMan.fbx` est absent du dépôt ET de la copie de travail de Rodolf** — seul le `.glb` existe. Ce banc n'est donc vert **nulle part** aujourd'hui, pas seulement « ailleurs ». `XBot`/`YBot` sont, eux, déjà sautés proprement par le banc. |
+
+⚠️ Une fois `git add -f` passé, le fichier est **suivi** et les règles de
+`.gitignore` ne s'y appliquent plus. On n'a donc **pas** touché à `.gitignore` :
+`/Resources/Models/` y exclut le dossier entier, et git *ne redescend pas* dans
+un dossier exclu — une ligne `!.../tree.obj` y serait **sans effet**, ce qui
+donnerait un fichier de règles qui ment sur ce qu'il fait.
+
+**Règle pour un banc neuf** : si son entrée n'est pas dans `git ls-files`, soit
+on la verse, soit le banc la fabrique à l'exécution, soit il part en
+`mode complet` avec la note qui dit ce qu'il exige. Pas de quatrième choix.
 
 ---
 
