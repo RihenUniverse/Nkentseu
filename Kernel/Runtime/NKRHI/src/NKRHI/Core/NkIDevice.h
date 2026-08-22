@@ -119,15 +119,23 @@ namespace nkentseu {
 			// enumere les 16 combinaisons de drapeaux, donc un drapeau ajoute sans
 			// case correspondant est DIT, il ne passe pas.
 			bool SupportsSamples(NkSampleCount s) const {
-				const uint32 n = static_cast<uint32>(s);
-				if (n == 1) return true; // pas de MSAA : toujours honorable
-				if (n == 0 || (n & (n - 1)) != 0) return false; // 3, 5, 6, 7... : pas une puissance de deux
-				switch (n) {
+				// UNE SEULE REGLE, EXPRIMEE UNE SEULE FOIS.
+				// ⚠️ La premiere version portait EN PLUS une garde explicite
+				// « n est-il une puissance de deux ? ». Elle etait REDONDANTE : le
+				// default: ci-dessous refuse deja 0, 3, 5, 6, 7, 32, 64, 100...
+				// MESURE : retirer cette garde ne faisait tomber AUCUN cas du banc
+				// NkMsaaContractCheck — ni en build incremental, ni en table rase.
+				// Deux protections pour le meme cas rendent le banc incapable de dire
+				// LAQUELLE tient, et laissent une des deux etre du code que rien ne
+				// peut prouver juste.
+				switch (static_cast<uint32>(s)) {
+					case 1: return true; // pas de MSAA : toujours honorable
 					case 2: return msaa2x;
 					case 4: return msaa4x;
 					case 8: return msaa8x;
 					case 16: return msaa16x;
-					default: return false; // 32, 64 : exprimables, jamais honorables
+					// 0, 3, 5, 7... : inexprimables. 32, 64 : exprimables, jamais honorables.
+					default: return false;
 				}
 			}
 
