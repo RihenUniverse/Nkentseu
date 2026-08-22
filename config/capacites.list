@@ -1,0 +1,199 @@
+# config/capacites.list - CLASSEMENT DES CAPACITES DETECTEES (2026-08-22)
+# =============================================================================
+# CE FICHIER EST LA DONNEE DE ./verif_capacites.sh, exactement comme
+# config/bancs.list est celle de ./verif_bancs.sh - et pour la meme raison.
+#
+# LE DETECTEUR N'A PAS LE DROIT DE JUGER. Il n'a le droit que d'EXIGER UN
+# CLASSEMENT.
+#   Un detecteur qui pretend savoir si une capacite est implementee a tort une
+#   fois sur trois, et on l'eteint le vendredi. Un detecteur qui dit "ce
+#   symbole n'est pas classe" a toujours raison : c'est un fait sur CE fichier,
+#   pas un jugement sur le code.
+#   Jour 1  : on classe les 126 candidats, et l'outil est VERT.
+#   Jour 2+ : il devient ROUGE sur le 127e - c'est-a-dire exactement le jour ou
+#             il sert.
+#
+# FORMAT - un symbole par ligne, champs separes par "|" :
+#
+#   <symbole> | <detecteur> | <classe> | <date> | <note>
+#
+#   detecteur :
+#     D1   virtuelle creuse APPARIEE a un drapeau mCaps.<x> = true
+#     D2   champ dont aucune occurrence du depot n'est une lecture
+#
+#   classe :
+#     implementee      le detecteur se trompe. LA NOTE DOIT DIRE OU EST LA
+#                      LECTURE - sinon ce n'est pas une correction, c'est un
+#                      silence poli.
+#     vision-assumee   annoncee, pas ecrite, et on l'assume. INTERDIT des qu'un
+#                      drapeau annonce "true" a du code (voir plus bas).
+#     dette-datee      a faire, avec une echeance.
+#     morte-a-retirer  le symbole part.
+#
+#   date :
+#     obligatoire pour "dette-datee". Un champ VIDE est un oubli -> ECHEC.
+#     Le mot A-DATER est une reponse valide et DIFFERENTE du vide : il dit
+#     "cette echeance appartient a Rodolf, je ne l'invente pas". Le verificateur
+#     NOMME ces lignes a chaque passage, sans rougir. Une dette qu'on ne
+#     mentionne plus est une dette oubliee - meme regle que les bancs arretes.
+#     Inventer une date pour faire taire l'outil serait produire un chiffre
+#     credible et faux : precisement ce qu'on traque.
+#
+# LA LIGNE DE PARTAGE DE "vision-assumee" (arbitrage de Rodolf, R3-a)
+#
+#   capacite documentee, sans drapeau, sans point d'entree  -> vision-assumee OK
+#   capacite dont un drapeau annonce "true" a du code       -> vision-assumee NON
+#
+#   Un "true" n'est pas une declaration d'intention : c'est une reponse a une
+#   question que le code pose a l'execution, et dont il va se servir pour
+#   choisir un chemin. DEUX SORTIES SEULEMENT : le drapeau rend "false", ou la
+#   capacite s'implemente. La classer "vision" et passer n'est pas un troisieme
+#   choix - ce serait rendre acceptable, par un fichier de configuration,
+#   exactement la classe de mensonge que ce chantier traque.
+#   Le detecteur REFUSE ce classement. C'est la seule chose qu'il refuse.
+#
+# CE QUE "D2" DIT, ET CE QU'IL NE DIT PAS
+#   il dit        "ce champ est ecrit et jamais lu"        - exact, verifiable
+#   il ne dit PAS "cette capacite n'est pas implementee"   - pas le meme enonce
+#   Deux formes distinctes apparaissent, et les confondre serait mentir sur ce
+#   qu'on sait :
+#     ecrit-jamais-lu   quelqu'un REGLE ce champ, et il ne se passe rien.
+#     jamais-mentionne  personne ne le nomme, ni en ecriture ni en lecture.
+#                       Enonce plus FAIBLE : ca peut aussi vouloir dire que
+#                       l'attribution n'a pas trouve la voie d'acces.
+#
+# LE MOT "non-examine" DANS LA NOTE
+#   117 lignes le portent. Il est la pour qu'on ne prenne pas mon remplissage
+#   pour un jugement : je les ai CLASSEES pour que la garde soit totale des le
+#   premier jour, je ne les ai pas EXAMINEES une par une. Le verificateur compte
+#   ces lignes a chaque passage. Chaque agent qui passe sur un de ces symboles
+#   corrige sa ligne au passage - plutot qu'une grande revue en une fois, qui
+#   n'arrive jamais.
+#
+# =============================================================================
+FrameStats::cpuSubmitTimeMs                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+FrameStats::gpuMemoryUsedBytes               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+FrameStats::pipelineChanges                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkAttachmentDesc::storeOp                    | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkBindlessHeapDesc::debugName                | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkBindlessHeapDesc::maxSampledTextures       | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkBindlessHeapDesc::maxSamplers              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkBindlessHeapDesc::maxStorageBuffers        | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkBindlessHeapDesc::maxStorageTextures       | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkBindlessHeapDesc::maxUniformBuffers        | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkBlendAttachment::alphaOp                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkBlendAttachment::blendEnable               | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkBlendAttachment::colorOp                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkBlendAttachment::colorWriteMask            | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkBlendAttachment::dstAlpha                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkBlendAttachment::dstColor                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkBlendAttachment::srcAlpha                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkBlendAttachment::srcColor                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkClusterConfig::maxLightsPerCluster         | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkClusterConfig::tilesX                      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkClusterConfig::tilesY                      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDescriptorSetLayoutDesc::isBindless        | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::bindlessTextures               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::conservativeRasterization      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::depthClipControl               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::drawIndirect                   | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::drawIndirectCount              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::geometryShaders                | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::independentBlend               | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::logicOp                        | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::maxColorAttachments            | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::maxDescriptorSets              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::maxPushConstantBytes           | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::maxSamplerAnisotropy           | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::maxTextureArrayLayers          | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::maxTextureCubeSize             | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::maxTextureDim3D                | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::maxUniformBufferRange          | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::maxVertexAttributes            | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::maxVertexBindings              | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::meshShaders                    | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::minStorageBufferAlign          | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::minUniformBufferAlign          | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::mipGenInShader                 | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::multiDrawIndirect              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::multiViewport                  | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::nonPowerOfTwoTextures          | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::pipelineStats                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::rayTracing                     | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::shaderAtomicFloat              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::shaderAtomicInt64              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::shaderFloat16                  | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::shaderInt16                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceCaps::tessellationShaders            | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::textureCompressionASTC         | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::textureCompressionBC           | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::textureCompressionETC2         | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkDeviceCaps::timestampQueries               | D2  | dette-datee     | A-DATER | une des neuf : le drapeau lui-meme. Ecrit 4 fois, lu ZERO fois - personne ne le consulte avant d'appeler les quatre virtuelles creuses ci-dessus.
+NkDeviceCaps::variableRateShading            | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDispatchIndirectArgs::groupsX              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkFrameContext::frameNumber                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkGraphicsPipelineDesc::patchControlPoints   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkGraphicsPipelineDesc::subpass              | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkIBLConfig::brdfLUTSize                     | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkIBLConfig::enabled                         | D2  | dette-datee     | A-DATER | une des neuf. Aucune occurrence de '.ibl.enabled' dans tout le depot : le drapeau qui active l'IBL n'est jamais consulte.
+NkIBLConfig::ground                          | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkIBLConfig::hdrPath                         | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkIBLConfig::horizon                         | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkIBLConfig::skyTop                          | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkIDevice::BeginTimestampQuery               | D1  | dette-datee     | A-DATER | une des neuf. Corps VIDE. mCaps.timestampQueries est mis a true par DX12, OpenGL et Vulkan : le moteur croit pouvoir chronometrer le GPU.
+NkIDevice::EndTimestampQuery                 | D1  | dette-datee     | A-DATER | une des neuf. Corps VIDE, appariee au meme drapeau que BeginTimestampQuery.
+NkIDevice::GetTimestampPeriodNs              | D1  | dette-datee     | A-DATER | une des neuf, et la plus dangereuse : rend 1.f en dur. 1.f est un nombre CREDIBLE, et tout calcul de duree base dessus rend un chiffre plausible et faux.
+NkIDevice::GetTimestampResults               | D1  | dette-datee     | A-DATER | une des neuf. Rend false en dur : l'appelant ne peut pas distinguer 'pas de resultat' de 'pas implemente'.
+NkIDevice::arrayLayer                        | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkMappedMemory::depthPitch                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkPostConfig::bloomPasses                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkPostConfig::contrast                       | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkPostConfig::dof                            | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkPostConfig::dofAperture                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkPostConfig::dofFocusDist                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkPostConfig::filmGrain                      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkPostConfig::filmGrainStr                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkPostConfig::motionBlur                     | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkPostConfig::motionBlurShutter              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkPostConfig::ssaoSamples                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkPostConfig::ssr                            | D2  | dette-datee     | A-DATER | une des neuf. 6 ecritures dont 2 '= true' dans le fichier meme, 0 lecture : activer les reflexions en espace ecran ne fait rien.
+NkRasterizerDesc::antialiasedLine            | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkRenderPassDesc::hasResolve                 | D2  | dette-datee     | A-DATER | une des neuf. Ecrit par SetResolve(), lu nulle part : le resolve MSAA se configure et ne se produit pas.
+NkRendererConfig::debugOverlay               | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkRendererConfig::maxMeshes                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkRendererConfig::maxParticles               | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkRendererConfig::msaaSamples                | D2  | dette-datee     | A-DATER | une des neuf. Regle le nombre d'echantillons MSAA ; aucune lecture dans un fichier nommant NkRendererConfig ni via une voie d'acces.
+NkRendererConfig::voxelAOEnabled             | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkRendererConfig::wireframe                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSamplerDesc::borderColor                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkShaderStageDesc::dxilData                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkShaderStageDesc::dxilSize                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkShaderStageDesc::hasSwFn                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkShaderStageDesc::metalIRData               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkShaderStageDesc::metalIRSize               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkShaderStageDesc::mslSource                 | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkShaderStageDesc::swFragFn                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkShadowConfig::depthBias                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkShadowConfig::normalBias                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkShadowConfig::poissonSamples               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkShadowConfig::softness                     | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkStencilOpState::compareMask                | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkStencilOpState::reference                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkStencilOpState::writeMask                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkSubmitInfo::signalSemaphoreCount           | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSubmitInfo::signalSemaphores               | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSubmitInfo::waitSemaphoreCount             | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSubmitInfo::waitSemaphores                 | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSubmitInfo::waitStages                     | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSwapchainDesc::colorFormat                 | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSwapchainDesc::debugName                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSwapchainDesc::depthFormat                 | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSwapchainDesc::hdr                         | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSwapchainDesc::imageCount                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSwapchainDesc::samples                     | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSwapchainDesc::vsync                       | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkVertexAttribute::format                    | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkVertexAttribute::location                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkVertexAttribute::semanticIdx               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkVertexSoftware::clipW                      | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkVertexSoftware::clipZ                      | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu

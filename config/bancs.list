@@ -52,6 +52,7 @@
 
 # --- BANCS ------------------------------------------------------------------
 NKEditMeshHarness    | banc        | rapide  |                        | code         | batteries EditMesh ; main rend gFail (0 = tout passe)
+NKMatTypeResetTest   | banc        | rapide  |                        | code         | reset du type de materiau par table (99b62b18) ; rend gFail == 0 ? 0 : 1. Son controle de couverture rend rouge tout champ de NkVpMatParams ajoute sans entree dans la table.
 NKSmoothMeshTest     | banc        | rapide  |                        | code         | Surface Nets ; rend fail == 0 ? 0 : 1
 NKUIDesign           | banc        | rapide  | --roundtrip-controles  | code         | temoins de bruit de l aller-retour .nkgui ; teste AVANT toute creation de fenetre
 NkAssetIODemo        | banc        | rapide  |                        | code         | Noge/IO ; lit Resources/Models depuis la racine du depot. Ses deux fixtures (tree.obj, rock/rock.obj) sont VERSEES au depot le 22/08 malgre .gitignore (git add -f) : un lecteur OBJ dont aucun test ne tourne ailleurs que sur la machine de Rodolf n'est pas teste.
