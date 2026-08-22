@@ -2448,6 +2448,70 @@ static void CasSansExpositionAucunBloc() {
 				 r.paramsTaille));
 }
 
+
+static void CasBlocEtTexturesNeSeMarchentPasDessus() {
+	// ⚠️ « PRESENT DANS LA TABLE » NE SUFFIT PAS : un binding peut etre declare
+	// ET DEJA OCCUPE. Le controle precedent verifiait que chaque binding de
+	// TEXTURE appartient a la table ; il ne disait rien du bloc uniforme, qui vit
+	// dans le meme set et donc dans le meme espace de numeros.
+	//
+	// Ce cas monte le graphe le plus charge possible — le plafond de textures ET
+	// des parametres exposes — et exige que TOUS les bindings du set 2 soient
+	// deux a deux distincts. Un jour ou quelqu'un ajoutera le slot des parametres
+	// a la table des textures, ce cas tombera ; sans lui, le shader declarerait
+	// deux ressources au meme endroit et l'une ecraserait l'autre en silence.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	// Le plafond de textures, chainees par des Mix Color pour que chacune serve.
+	NkNodeId precedent = NK_NODE_INVALID;
+	for (uint32 i = 0; i < renderer::NK_MATBIND_GRAPH_SLOT_COUNT; ++i) {
+		const NkNodeId tex = NkMatAddNode(g, NK_MN_IMAGE_TEXTURE);
+		g.SetProp(tex, NK_MPROP_IMAGE, NkValueText(t.ramp, "img.png"));
+		if (precedent == NK_NODE_INVALID) {
+			precedent = tex;
+		} else {
+			const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_COLOR);
+			g.Connect(precedent, "color", mix, "color1");
+			g.Connect(tex, "color", mix, "color2");
+			precedent = mix;
+		}
+	}
+	g.Connect(precedent, "color", bsdf, "base_color");
+	// ET des parametres exposes, donc un bloc uniforme dans le MEME set.
+	Expose(g, t, bsdf, "roughness", "usure");
+	Expose(g, t, bsdf, "metallic", "metal");
+
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	uint32 bindings[32] = {};
+	const uint32 n = r.ok ? RelieveBindingsSet2(r.source, bindings, 32) : 0u;
+	// textures + le bloc = plafond + 1
+	const bool compte = (n == renderer::NK_MATBIND_GRAPH_SLOT_COUNT + 1u);
+	bool distincts = true;
+	for (uint32 i = 0; i < n; ++i)
+		for (uint32 k = i + 1; k < n; ++k)
+			if (bindings[i] == bindings[k])
+				distincts = false;
+	// Et le binding du bloc ne doit PAS figurer dans la table des textures.
+	bool blocHorsDesTextures = true;
+	for (uint32 i = 0; i < renderer::NK_MATBIND_GRAPH_SLOT_COUNT; ++i)
+		if (renderer::NK_MATBIND_GRAPH_SLOTS[i] == renderer::NK_MATBIND_GRAPH_PARAMS)
+			blocHorsDesTextures = false;
+	NkString liste;
+	for (uint32 i = 0; i < n; ++i)
+		liste.Append(NkFormat("{0} ", bindings[i]));
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	Cas("imgtex/bloc-et-textures-ne-se-marchent-pas-dessus",
+		r.ok && ok == 4 && compte && distincts && blocHorsDesTextures,
+		NkFormat("{0} bindings emis [{1}] (attendu {2}) | deux a deux distincts={3} | le slot du bloc ({4}) est "
+				 "hors de la table des textures={5} | {6}",
+				 n, liste, renderer::NK_MATBIND_GRAPH_SLOT_COUNT + 1u, distincts ? 1 : 0,
+				 (uint32)renderer::NK_MATBIND_GRAPH_PARAMS, blocHorsDesTextures ? 1 : 0, be));
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -2549,6 +2613,7 @@ int main() {
 	CasJetonSuitLaDisposition();
 	CasRechercheParNom();
 	CasSansExpositionAucunBloc();
+	CasBlocEtTexturesNeSeMarchentPasDessus();
 
 	logger.Info("\n-- {0} cas, {1} echec(s) --", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;
