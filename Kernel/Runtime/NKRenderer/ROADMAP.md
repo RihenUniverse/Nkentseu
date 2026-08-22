@@ -1455,7 +1455,8 @@ Preuve : `Applications/NkMatGraphCheck` — **application** console, **35 cas, 0
 | nœuds `Value` · `RGB` · `Math` (7 op.) · `Mix Color` (6 modes) | ✅ 2026-08-22 | une propriété de nœud porte une **décision**, pas seulement une valeur |
 | nœud `ColorRamp` | ✅ 2026-08-22 | la première propriété à **charge utile variable** |
 | nœuds `Image Texture` · `Texture Coordinate` · `Mapping` | ✅ 2026-08-22 | **aucun binding neuf** — voir ci-dessous, la mesure a changé la réponse |
-| **variables exposées** (paramètres pilotables depuis le code) | ❌ | **le prochain**, et le point où le chantier devient une API publique |
+| **variables exposées — ENTRÉES** | ✅ 2026-08-22 | l'API publique du moteur ; ⚠️ preuve de **rendu** non atteinte, voir ci-dessous |
+| variables exposées — **sorties** | ❌ | en attente d'une décision de Rodolf : par pixel ou par matériau |
 | `Normal Map` · `Bump` · `Separate XYZ` | ✅ 2026-08-22 | **rang 1 complet** — convention tranchée, voir ci-dessous |
 | canevas d'édition | ❌ | couche 2, `NKEditorKit`, partagé — pas ce chantier |
 
@@ -1523,6 +1524,85 @@ interpolé avec du rouge. **Les deux résultats sont des couleurs plausibles ;
 seul le canal où tombe l'écart les distingue.** Mesuré : `(52, 180, 52)`, écart
 sur le vert = 128, exactement l'arrêt du milieu.
 
+#### 🎛️ Les paramètres exposés — l'API publique du moteur (2026-08-22)
+
+C'est le point où ce chantier cesse d'être un compilateur de shaders. Une API
+publique se change mal après coup, d'où le soin sur la forme.
+
+**Une propriété `expose.<prise>` porte le NOM PUBLIC du paramètre.** Présente =
+exposé, absente = constante. Le nom **est** la donnée — c'est lui que le code du
+jeu emploiera (`SetFloat("usure", 0.7f)`) ; un booléen obligerait à inventer le
+nom ailleurs, donc à le maintenir à deux endroits.
+
+⚠️ **« Exposé » n'est pas le défaut, et ce n'est pas un choix de prototype.** Une
+constante se **replie** dans le code émis ; une variable exposée vit dans un bloc
+uniforme et **aucune optimisation n'est plus possible sur elle**. Tout exposer
+donnerait un matériau pilotable et lent. Et `roughness` est exposable dans un
+matériau et pas dans un autre : c'est donc un choix **d'auteur, sur son nœud**,
+porté par l'instance.
+
+##### Ce que la disposition garantit
+
+⚠️ **Elle porte des DÉCALAGES, jamais un ordre.** En `std140` un `vec3` s'aligne
+sur 16 octets : réel, vec3, réel donnent **0, 16, 28** pour un bloc de **32** —
+pas 0, 4, 16. Un moteur qui déduirait les positions de l'ordre de déclaration
+écrirait à côté dès le premier `vec3`, **sans erreur, avec une valeur crédible**.
+
+⚠️ **Un jeton de compilation accompagne la disposition.** Recompiler un graphe
+**édité** peut réordonner le bloc ; du code de jeu ayant retenu un décalage
+écrirait alors dans le mauvais paramètre. **L'API est par NOM**, et tout cache de
+décalage doit porter ce jeton et se jeter quand il change.
+
+**Le défaut d'un paramètre exposé EST le `defaultValue` de sa prise**, jamais une
+seconde valeur à côté : deux sources pour une même chose divergent, et c'est
+alors l'éditeur qui montre l'une pendant que le moteur envoie l'autre. Le cas le
+vérifie en **changeant** le défaut après avoir posé l'exposition.
+
+**Aucun binding neuf** : le bloc réutilise le slot 8 — l'UBO matériau, mort pour
+un matériau engendré qui n'a pas de struct figée. Même raisonnement que les
+textures.
+
+##### 🔴 Une prise CONNECTÉE **et** exposée est refusée, en la nommant
+
+C'est le cas le plus insidieux, et il manquait à la proposition initiale. Si une
+prise reçoit un lien **et** porte une exposition, **le lien remplace la valeur
+exposée** : `SetFloat("usure", 0.9f)` ne fait **rien**. Le matériau compile, il
+rend, le paramètre est mort — aucune erreur, aucun journal.
+
+⚠️ **Chez Blender le problème ne se pose pas parce que brancher un lien fait
+disparaître le widget : l'interface rend l'état impossible.** Nous n'avons pas
+d'interface — **c'est donc la validation qui doit le rendre impossible.**
+
+##### ⚠️ Le coût, nommé plutôt que déduit
+
+« Le même matériau, deux objets, deux valeurs » implique un bloc **par
+instance**, pas par matériau : un tampon uniforme par objet (ou des push
+constants pour les petits blocs), donc **une écriture et une liaison de plus par
+objet dessiné**. C'est écrit ici pour que quelqu'un puisse le contester en le
+voyant, plutôt que le découvrir dans un profil.
+
+##### ⚠️ CE QUI N'EST PAS PROUVÉ : le rendu
+
+Les entrées sont prouvées **à la compilation** — 67 cas, 5 mutations rouges,
+NkSL valide sur les 4 backends. **La preuve de RENDU n'est pas atteinte.** Un
+banc qui compile une fois et rend trois fois en ne changeant que le contenu du
+bloc affiche le plancher achromatique : les valeurs n'arrivent pas au shader.
+
+Ce qui a été **écarté par la mesure**, pour que personne ne recommence :
+
+- ce n'est pas l'index de set (essai en `set=0, binding=1` : même résultat) ;
+- ce n'est pas un renumérotage séquentiel des cbuffers (liaison simultanée au
+  slot 1 : sans effet) ;
+- ce n'est pas une écriture partielle (le tampon entier est écrit) ;
+- les handles sont tous valides (layout, set, tampon), et le HLSL généré place
+  bien le bloc sur `register(b8)` ;
+- DX11 **ignore l'index de set** et lie par le numéro de binding, lequel est
+  sous la limite de 14 cbuffers.
+
+La cause reste à trouver. **Tant qu'elle ne l'est pas, l'exposition est une
+capacité prouvée à la compilation seulement** — et le dire vaut mieux que de
+laisser croire qu'un `SetFloat` piloterait quoi que ce soit aujourd'hui.
+
 #### 🗿 Le relief — convention tranchée, et la normale qui **voyage** (2026-08-22)
 
 **Convention interne : OpenGL, `+Y` vers le haut** (« vert vers le haut »). Une
@@ -1585,6 +1665,12 @@ de référence.
 | `Bump` force **+1** | **129** | tombe sur l'étalon −x |
 | `Bump` force **−1** | **82** | tombe sur l'étalon +x |
 | carte **penchée** (0,75 ; 0,5 ; 1) | **82** | tombe sur l'étalon +x |
+
+⚠️ **Fait établi par ces correspondances exactes, et écrit pendant qu'on le
+sait** : la base tangente construite par dérivées d'écran est **unitaire et
+alignée sur `+u`**. Rien ne l'imposait a priori — la normalisation commune de
+`T` et `B` préserve leur rapport, elle ne garantit pas leur norme. C'est la
+correspondance au bit entre la carte penchée et l'étalon `+x` qui l'établit.
 
 ⚠️ **L'appariement est ORIENTÉ, et il doit l'être.** Une première version
 acceptait « chacun tombe sur l'un des deux étalons », dans n'importe quel ordre —
