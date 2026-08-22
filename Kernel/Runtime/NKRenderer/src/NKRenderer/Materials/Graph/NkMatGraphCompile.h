@@ -42,6 +42,11 @@
 // -----------------------------------------------------------------------------
 
 #include "NKRenderer/Materials/Graph/NkMatGraphTypes.h"
+// ⚠️ LE PLAFOND DE TEXTURES ET LES SLOTS VIENNENT D'ICI, ET DE NULLE PART
+// AILLEURS. Un compilateur qui autoriserait 8 slots quand le layout en
+// declare 6 ecrirait sur deux bindings inexistants — sans erreur, sans
+// journal, sans difference d'image. C'est la panne mesuree le 22/08.
+#include "NKRenderer/Materials/NkMaterialBindings.h"
 
 #include <stdio.h> // snprintf : formatage des litteraux, pas de flux
 
@@ -177,6 +182,28 @@ namespace nkentseu {
 					return r;
 				}
 
+				// ── PRE-PASSE : LES TEXTURES ────────────────────────────────
+				// Il faut les compter AVANT d'ecrire le prologue, puisque c'est la
+				// que leurs samplers se declarent. On leur attribue un slot dans
+				// l'ordre topologique : deterministe, donc reproductible d'une
+				// compilation a l'autre — un ordre qui varierait ferait changer le
+				// shader emis sans qu'aucune donnee n'ait bouge.
+				NkVector<NkNodeId> texNodes;
+				for (uint32 i = 0; i < (uint32)ordre.Size(); ++i) {
+					const NkNode *n = g.Find(ordre[i]);
+					if (n && n->type == NkString(NK_MN_IMAGE_TEXTURE))
+						texNodes.PushBack(n->id);
+				}
+				if ((uint32)texNodes.Size() > NK_MATBIND_GRAPH_SLOT_COUNT) {
+					// ⚠️ LE REFUS DIT COMBIEN. « Trop de textures » seul obligerait
+					// l'auteur a deviner ce qu'il doit retirer de son graphe.
+					r.error = NkString("ce graphe demande ");
+					detail::PutU(r.error, (uint32)texNodes.Size());
+					r.error.Append(" textures, le plafond est ");
+					detail::PutU(r.error, NK_MATBIND_GRAPH_SLOT_COUNT);
+					return r;
+				}
+
 				// ── PROLOGUE ────────────────────────────────────────────────
 				// Les varyings et l'UBO camera sont ceux du moteur, recopies a
 				// l'identique de `layeredv1.frag.nksl` : un materiau genere doit
@@ -200,6 +227,22 @@ namespace nkentseu {
 				s.Append("    mat4  view;\n    mat4  proj;\n    mat4  viewProj;\n    mat4  invViewProj;\n");
 				s.Append("    vec4  camPos;\n    vec4  camDir;\n    vec2  viewport;\n");
 				s.Append("    float time;\n    float deltaTime;\n    float iblStrength;\n} uCam;\n\n");
+				// Les samplers du graphe. AUCUN BINDING NEUF : on reutilise les
+				// emplacements que le layout materiau declare deja, dans l'ordre.
+				// Un materiau engendre n'a que faire de `tAlbedo` ou de `tHeight` —
+				// ces slots sont morts pour lui, et le depot reutilise deja le meme
+				// binding pour des usages differents selon l'archetype.
+				for (uint32 i = 0; i < (uint32)texNodes.Size(); ++i) {
+					s.Append("@binding(set=2, binding=");
+					detail::PutU(s, NK_MATBIND_GRAPH_SLOTS[i]);
+					s.Append(") uniform sampler2D ");
+					s.Append(NK_MATBIND_GRAPH_SAMPLER_PREFIX);
+					detail::PutU(s, i);
+					s.Append(";\n");
+				}
+				if (!texNodes.Empty())
+					s.Append("\n");
+
 				s.Append("@stage(fragment)\n@entry\nvoid main() {\n");
 
 				// Resout une entree : soit la locale du producteur, soit le defaut
@@ -211,12 +254,25 @@ namespace nkentseu {
 						const graph::NkLink *l = g.IncomingOf(n.id, idx);
 						if (l) {
 							// Une entree « shader » lit LA composante demandee du
-							// producteur ; une entree scalaire ou vectorielle lit sa
-							// locale unique.
-							if (composante)
+							// producteur. Une entree ordinaire lit la locale nommee
+							// d'apres LA PRISE SOURCE.
+							//
+							// ⚠️ POURQUOI PAS UN « val » UNIQUE, comme avant :
+							// `Image Texture` a DEUX sorties — `color` et `alpha`.
+							// Un nom unique par noeud ne peut pas les distinguer, et
+							// l'entree qui lirait « la » valeur en prendrait une au
+							// hasard. Le nom de la prise est deja la cle stable du
+							// modele ; la locale en herite.
+							if (composante) {
 								detail::PutNom(s, l->fromNode, composante);
-							else
-								detail::PutNom(s, l->fromNode, "val");
+							} else {
+								const NkNode *src = g.Find(l->fromNode);
+								const char *nomPrise = "val";
+								if (src && l->fromSocket >= 0 &&
+									(uint32)l->fromSocket < (uint32)src->sockets.Size())
+									nomPrise = src->sockets[(uint32)l->fromSocket].name.CStr();
+								detail::PutNom(s, l->fromNode, nomPrise);
+							}
 							return;
 						}
 						const NkGraphValue &d = n.sockets[(uint32)idx].defaultValue;
@@ -334,7 +390,9 @@ namespace nkentseu {
 							g.FindProp(n->id, estCouleur ? NK_MPROP_COLOR : NK_MPROP_VALUE);
 						s.Append("    ");
 						s.Append(estCouleur ? "vec3 " : "float ");
-						detail::PutNom(s, n->id, "val");
+						// `RGB` sort sur « color », `Value` sur « value » : la locale
+						// porte le nom de la prise, pas un « val » generique.
+						detail::PutNom(s, n->id, estCouleur ? "color" : "value");
 						s.Append(" = ");
 						if (pv && pv->IsSet())
 							detail::PutValeur(s, *pv, estCouleur ? "vec3" : "float");
@@ -398,7 +456,7 @@ namespace nkentseu {
 
 						s.Append("    ");
 						s.Append(couleur ? "vec3 " : "float ");
-						detail::PutNom(s, n->id, "val");
+						detail::PutNom(s, n->id, couleur ? "color" : "value");
 						s.Append(" = ");
 
 						if (!couleur) {
@@ -576,7 +634,7 @@ namespace nkentseu {
 						// dynamique — le shader reste lisible et aucun backend
 						// n'a besoin d'indexation dynamique de tableau.
 						s.Append("    vec3 ");
-						detail::PutNom(s, n->id, "val");
+						detail::PutNom(s, n->id, "color");
 						s.Append(" = vec3(");
 						for (uint32 c = 0; c < 3; ++c) {
 							if (c)
@@ -589,9 +647,9 @@ namespace nkentseu {
 							const float32 p0 = st[(k - 1) * NK_RAMP_REELS_PAR_ARRET];
 							const float32 p1 = st[k * NK_RAMP_REELS_PAR_ARRET];
 							s.Append("    ");
-							detail::PutNom(s, n->id, "val");
+							detail::PutNom(s, n->id, "color");
 							s.Append(" = mix(");
-							detail::PutNom(s, n->id, "val");
+							detail::PutNom(s, n->id, "color");
 							s.Append(", vec3(");
 							for (uint32 c = 0; c < 3; ++c) {
 								if (c)
@@ -623,6 +681,72 @@ namespace nkentseu {
 							}
 							s.Append(");\n");
 						}
+					} else if (t == NkString(NK_MN_TEX_COORD)) {
+						// L'UV du maillage, sans calcul. `vUV` est une varying, et
+						// on est dans l'ENTREE : la contrainte du dialecte (jamais
+						// de varying dans un helper) ne s'applique pas ici.
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "uv");
+						s.Append(" = vec3(vUV, 0.0);\n");
+					} else if (t == NkString(NK_MN_MAPPING)) {
+						// vecteur * echelle + position. L'echelle vaut 1 et la
+						// position 0 par defaut : un Mapping fraichement pose ne
+						// doit RIEN changer, sinon l'auteur voit son image bouger
+						// en branchant un noeud cense etre neutre.
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "vector_out");
+						s.Append(" = (");
+						ecrisEntree(*n, "vector", "vec3", nullptr);
+						s.Append(") * (");
+						{
+							const int32 iv = n->FindSocket("scale", NkSocketDir::Input);
+							const bool cable = iv >= 0 && g.IncomingOf(n->id, iv);
+							const NkGraphValue *d =
+								iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+							if (cable || (d && d->IsSet()))
+								ecrisEntree(*n, "scale", "vec3", nullptr);
+							else
+								s.Append("vec3(1.0)"); // neutre MULTIPLICATIF
+						}
+						s.Append(") + (");
+						ecrisEntree(*n, "location", "vec3", nullptr);
+						s.Append(");\n");
+					} else if (t == NkString(NK_MN_IMAGE_TEXTURE)) {
+						// ── LE PREMIER NOEUD QUI CONSOMME UNE RESSOURCE ───────
+						uint32 slot = 0;
+						for (uint32 i = 0; i < (uint32)texNodes.Size(); ++i)
+							if (texNodes[i] == n->id)
+								slot = i;
+						// La coordonnee : celle qu'on lui donne, ou l'UV du
+						// maillage. Blender fait exactement ce repli, et il n'est
+						// pas « plausible » — c'est le comportement DEFINI du
+						// noeud, pas un bouche-trou.
+						const int32 iv = n->FindSocket("vector", NkSocketDir::Input);
+						const bool cable = iv >= 0 && g.IncomingOf(n->id, iv);
+						s.Append("    vec4 ");
+						detail::PutNom(s, n->id, "texel");
+						s.Append(" = texture(");
+						s.Append(NK_MATBIND_GRAPH_SAMPLER_PREFIX);
+						detail::PutU(s, slot);
+						s.Append(", ");
+						if (cable) {
+							s.Append("(");
+							ecrisEntree(*n, "vector", "vec3", nullptr);
+							s.Append(").xy");
+						} else {
+							s.Append("vUV");
+						}
+						s.Append(");\n");
+						// DEUX sorties, deux locales nommees d'apres leurs prises.
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "color");
+						s.Append(" = ");
+						detail::PutNom(s, n->id, "texel");
+						s.Append(".rgb;\n    float ");
+						detail::PutNom(s, n->id, "alpha");
+						s.Append(" = ");
+						detail::PutNom(s, n->id, "texel");
+						s.Append(".a;\n");
 					} else if (t == NkString(NK_MN_OUTPUT)) {
 						// ── LE PUITS : ombrage puis ecriture ────────────────
 						// Le modele d'eclairage est celui de LayeredV1, a

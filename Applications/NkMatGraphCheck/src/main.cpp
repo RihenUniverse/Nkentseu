@@ -1378,14 +1378,18 @@ static void CasMenuPriseCouleurEtReelle() {
 	// Value (un reel se diffuse en gris). Math aussi, pour la meme raison.
 	const bool couleurOk = DansLeMenu(mc, nc, NK_MN_RGB) && DansLeMenu(mc, nc, NK_MN_VALUE) &&
 						   DansLeMenu(mc, nc, NK_MN_MIX_COLOR) && DansLeMenu(mc, nc, NK_MN_MATH) &&
-						   DansLeMenu(mc, nc, NK_MN_COLOR_RAMP);
+						   DansLeMenu(mc, nc, NK_MN_COLOR_RAMP) &&
+						   DansLeMenu(mc, nc, NK_MN_IMAGE_TEXTURE);
 	// Ce qui produit un REEL : Value et Math. Ni RGB ni Mix Color, parce que
 	// `couleur -> reel` n'est PAS declaree — et c'est la tout le cas.
 	const bool reelOk = DansLeMenu(mr, nr, NK_MN_VALUE) && DansLeMenu(mr, nr, NK_MN_MATH) &&
 						!DansLeMenu(mr, nr, NK_MN_RGB) && !DansLeMenu(mr, nr, NK_MN_MIX_COLOR) &&
-						!DansLeMenu(mr, nr, NK_MN_COLOR_RAMP);
-	Cas("biblio/menu-asymetrique-couleur-reel", nc == 5 && nr == 2 && couleurOk && reelOk,
-		NkFormat("base_color : {0} propositions (RGB+MixColor+ColorRamp+Value+Math, ok={1}) | roughness : {2} (Value+Math "
+						!DansLeMenu(mr, nr, NK_MN_COLOR_RAMP) &&
+						// `Image Texture` a une sortie `alpha` REELLE : il est donc
+						// legitimement dans les DEUX menus, par deux prises differentes.
+						DansLeMenu(mr, nr, NK_MN_IMAGE_TEXTURE);
+	Cas("biblio/menu-asymetrique-couleur-reel", nc == 8 && nr == 3 && couleurOk && reelOk,
+		NkFormat("base_color : {0} propositions (RGB+MixColor+ColorRamp+ImageTex+Value+Math+coord+mappage, ok={1}) | roughness : {2} (Value+Math "
 				 "SEULS, RGB et MixColor doivent etre absents, ok={3})",
 				 nc, couleurOk ? 1 : 0, nr, reelOk ? 1 : 0));
 }
@@ -1449,7 +1453,8 @@ static void CasCompileRGBVersBaseColor() {
 	const bool porteLaValeur = r.ok && ContientSansCasse(r.source, "0.330000013");
 	// Et le Principled doit LIRE la locale du RGB, pas un litteral : c'est la
 	// preuve que le lien a ete suivi et non que la valeur a ete recopiee.
-	const NkString nomVal = NkFormat("n{0}_val", (uint32)rgb);
+	// La locale porte le nom de la PRISE source : `RGB` sort sur « color ».
+	const NkString nomVal = NkFormat("n{0}_color", (uint32)rgb);
 	const bool lien = r.ok && Apres(r.source, nomVal.CStr()) > 0;
 	Cas("compile/rgb-vers-base-color", e == NkLinkError::Ok && r.ok && ok == 4 && porteLaValeur && lien,
 		NkFormat("lien={0} | {1}| valeur de la propriete presente={2} | le BSDF lit {3}={4}",
@@ -1472,7 +1477,8 @@ static void CasCompileValeurVersRoughness() {
 	NkString be;
 	NkString err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
-	const NkString decl = NkFormat("float n{0}_val = 0.125", (uint32)val);
+	// `Value` sort sur « value ».
+	const NkString decl = NkFormat("float n{0}_value = 0.125", (uint32)val);
 	const bool bonType = r.ok && Apres(r.source, decl.CStr()) > 0;
 	Cas("compile/valeur-vers-roughness", e == NkLinkError::Ok && r.ok && ok == 4 && bonType,
 		NkFormat("lien={0} | {1}| declaration '{2}' presente={3}", NkString(NkLinkErrorName(e)), be, decl,
@@ -1757,6 +1763,245 @@ static void CasRampeAllerRetourFichier() {
 				 relu ? 1 : 0, meme ? 1 : 0, v ? (uint32)v->numbers.Size() : 0u, (uint32)fichier.Size()));
 }
 
+
+// ── Image Texture : la premiere RESSOURCE consommee par un graphe ────────────
+
+// Releve tous les bindings du set 2 declares dans un shader emis. On COMPTE des
+// NOMBRES, on ne cherche pas des noms : le generateur HLSL minuscule et suffixe
+// les identifiants, et chercher « nkGraphTex0 » testerait le generateur de noms
+// plutot que le shader. Lecon payee le 22/08 sur `tMask` -> `tmask_tex`.
+static uint32 RelieveBindingsSet2(const NkString &nksl, uint32 *out, uint32 maxOut) {
+	const char *p = nksl.CStr();
+	const char *motif = "@binding(set=2, binding=";
+	uint32 n = 0;
+	while (*p) {
+		const char *a = p;
+		const char *b = motif;
+		while (*b && *a == *b) {
+			++a;
+			++b;
+		}
+		if (*b == 0) {
+			uint32 v = 0;
+			while (*a >= '0' && *a <= '9') {
+				v = v * 10u + (uint32)(*a - '0');
+				++a;
+			}
+			if (out && n < maxOut)
+				out[n] = v;
+			++n;
+			p = a;
+			continue;
+		}
+		++p;
+	}
+	return n;
+}
+
+static bool SlotConnu(uint32 binding) {
+	for (uint32 i = 0; i < renderer::NK_MATBIND_GRAPH_SLOT_COUNT; ++i)
+		if (renderer::NK_MATBIND_GRAPH_SLOTS[i] == binding)
+			return true;
+	return false;
+}
+
+// Monte un graphe avec `nb` noeuds Image Texture, tous branches vers la sortie
+// par un empilement de Mix Color (il faut bien que chacun serve a quelque chose,
+// sinon rien ne garantit qu'il soit emis).
+static NkMatCompileResult CompileNTextures(uint32 nb) {
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	NkNodeId precedent = NK_NODE_INVALID;
+	for (uint32 i = 0; i < nb; ++i) {
+		const NkNodeId tex = NkMatAddNode(g, NK_MN_IMAGE_TEXTURE);
+		g.SetProp(tex, NK_MPROP_IMAGE, NkValueText(t.ramp, "image.png"));
+		if (precedent == NK_NODE_INVALID) {
+			precedent = tex;
+		} else {
+			const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_COLOR);
+			g.Connect(precedent, "color", mix, "color1");
+			g.Connect(tex, "color", mix, "color2");
+			precedent = mix;
+		}
+	}
+	if (precedent != NK_NODE_INVALID)
+		g.Connect(precedent, precedent == NK_NODE_INVALID ? "color" : "color", bsdf, "base_color");
+	return NkMatCompileToNkSL(g);
+}
+
+static void CasTexturePlafondRefusNomme() {
+	// LE CAS QUI TRANCHE : `plafond` textures compile, `plafond + 1` est refuse
+	// EN NOMMANT LE COMPTE. Sans le nombre, l'auteur doit deviner ce qu'il retire.
+	//
+	// DISCRIMINE aussi le bord exact : un plafond mal ecrit (`>=` au lieu de `>`)
+	// refuserait le cas parfaitement legitime a `plafond` pile.
+	const uint32 plafond = renderer::NK_MATBIND_GRAPH_SLOT_COUNT;
+	NkMatCompileResult pile = CompileNTextures(plafond);
+	NkMatCompileResult trop = CompileNTextures(plafond + 1);
+	NkString be, err;
+	const uint32 ok = pile.ok ? CompileSurLesBackends(pile.source, be, &err) : 0u;
+	const NkString attendu = NkFormat("ce graphe demande {0} textures, le plafond est {1}", plafond + 1, plafond);
+	const bool ditLeCompte = !trop.ok && Apres(trop.error, attendu.CStr()) > 0;
+	Cas("imgtex/plafond-refus-nomme", pile.ok && ok == 4 && !trop.ok && ditLeCompte && trop.source.Size() == 0,
+		NkFormat("{0} textures : compile={1} {2}| {3} textures : refuse={4} en disant le compte={5} | message : {6}",
+				 plafond, pile.ok ? 1 : 0, be, plafond + 1, trop.ok ? 0 : 1, ditLeCompte ? 1 : 0, trop.error));
+}
+
+static void CasTextureBindingsDesDeuxCotes() {
+	// ⚠️ LE CONTROLE QUI PROTEGE LA CONDITION NON NEGOCIABLE, et le plus
+	// important des trois. Le compilateur et le layout doivent lire LE MEME
+	// endroit ; si le plafond vivait a deux places, un compilateur qui autorise 8
+	// quand le layout en declare 6 ecrirait sur deux bindings inexistants — sans
+	// erreur, sans journal, sans difference d'image.
+	//
+	// On confronte donc le SHADER EMIS a la table C++ : chaque binding declare
+	// doit etre dans `NK_MATBIND_GRAPH_SLOTS`, et leur nombre doit valoir le
+	// nombre de noeuds texture. C'est la comparaison du code a une VERITE
+	// EXTERNE, comme en phase 0.
+	//
+	// ⚠️ Et on COMPTE DES NOMBRES : chercher le nom du sampler testerait le
+	// generateur de noms, pas le shader.
+	const uint32 plafond = renderer::NK_MATBIND_GRAPH_SLOT_COUNT;
+	uint32 bindings[16] = {};
+	NkMatCompileResult r = CompileNTextures(plafond);
+	const uint32 n = r.ok ? RelieveBindingsSet2(r.source, bindings, 16) : 0u;
+	bool tousConnus = (n == plafond);
+	bool tousDistincts = true;
+	for (uint32 i = 0; i < n; ++i) {
+		if (!SlotConnu(bindings[i]))
+			tousConnus = false;
+		for (uint32 k = i + 1; k < n; ++k)
+			if (bindings[i] == bindings[k])
+				tousDistincts = false;
+	}
+	NkString liste;
+	for (uint32 i = 0; i < n; ++i)
+		liste.Append(NkFormat("{0} ", bindings[i]));
+	Cas("imgtex/bindings-declares-des-deux-cotes", r.ok && tousConnus && tousDistincts,
+		NkFormat("{0} bindings emis [{1}] | tous dans NK_MATBIND_GRAPH_SLOTS={2} | tous distincts={3} | plafond C++={4}",
+				 n, liste, tousConnus ? 1 : 0, tousDistincts ? 1 : 0, plafond));
+}
+
+static void CasTextureAucunBindingNeuf() {
+	// LE COROLLAIRE, et il merite son propre cas : le graphe ne doit JAMAIS
+	// declarer un binding hors de la table — c'est-a-dire ne jamais rien ajouter
+	// au layout partage. Un emetteur qui numeroterait ses samplers 10, 11, 12
+	// (des nombres libres a l'oeil) passerait le cas precedent si celui-ci ne
+	// verifiait que le compte.
+	//
+	// DISCRIMINE par le MAXIMUM : on compare au plus grand slot de la table, pas
+	// a une constante recopiee ici.
+	uint32 maxTable = 0;
+	for (uint32 i = 0; i < renderer::NK_MATBIND_GRAPH_SLOT_COUNT; ++i)
+		if (renderer::NK_MATBIND_GRAPH_SLOTS[i] > maxTable)
+			maxTable = renderer::NK_MATBIND_GRAPH_SLOTS[i];
+	uint32 bindings[16] = {};
+	NkMatCompileResult r = CompileNTextures(renderer::NK_MATBIND_GRAPH_SLOT_COUNT);
+	const uint32 n = r.ok ? RelieveBindingsSet2(r.source, bindings, 16) : 0u;
+	uint32 maxEmis = 0;
+	for (uint32 i = 0; i < n; ++i)
+		if (bindings[i] > maxEmis)
+			maxEmis = bindings[i];
+	Cas("imgtex/aucun-binding-hors-table", r.ok && n > 0 && maxEmis <= maxTable,
+		NkFormat("plus grand binding emis={0} | plus grand de la table={1} | aucun binding neuf={2}", maxEmis,
+				 maxTable, (maxEmis <= maxTable) ? 1 : 0));
+}
+
+static void CasTextureDeuxSorties() {
+	// `Image Texture` est le PREMIER noeud a deux sorties. C'est lui qui a impose
+	// de nommer les locales d'apres la prise et non par un « val » unique.
+	//
+	// DISCRIMINE : `color` alimente base_color, `alpha` alimente roughness. Les
+	// deux locales doivent EXISTER et etre DIFFERENTES. Un emetteur qui garderait
+	// un nom unique par noeud ferait lire la meme valeur aux deux entrees — un
+	// shader qui compile et un materiau faux.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId tex = NkMatAddNode(g, NK_MN_IMAGE_TEXTURE);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	const NkLinkError e1 = g.Connect(tex, "color", bsdf, "base_color");
+	const NkLinkError e2 = g.Connect(tex, "alpha", bsdf, "roughness");
+	g.SetProp(tex, NK_MPROP_IMAGE, NkValueText(t.ramp, "peau.png"));
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkString nc = NkFormat("n{0}_color", (uint32)tex);
+	const NkString na = NkFormat("n{0}_alpha", (uint32)tex);
+	const bool deux = r.ok && Apres(r.source, nc.CStr()) > 0 && Apres(r.source, na.CStr()) > 0;
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	Cas("imgtex/deux-sorties-distinctes",
+		e1 == NkLinkError::Ok && e2 == NkLinkError::Ok && r.ok && ok == 4 && deux,
+		NkFormat("liens {0}/{1} | {2}| locales '{3}' et '{4}' presentes={5}", NkString(NkLinkErrorName(e1)),
+				 NkString(NkLinkErrorName(e2)), be, nc, na, deux ? 1 : 0));
+}
+
+static void CasTextureCoordonneeEtMappage() {
+	// Sans entree `vector`, la texture lit l'UV du maillage — c'est le
+	// comportement DEFINI du noeud chez Blender, pas un bouche-trou.
+	// Avec un `Mapping` branche, elle doit lire la coordonnee TRANSFORMEE.
+	//
+	// DISCRIMINE : le shader du second cas doit citer la locale du Mapping ; le
+	// premier doit citer `vUV`. Un emetteur qui ignorerait l'entree lirait `vUV`
+	// dans les deux, et l'image ne bougerait jamais quoi qu'on branche.
+	NkNodeGraph g1;
+	const NkMatTypes t1 = NkMatRegisterTypes(g1);
+	{
+		const NkNodeId out = NkMatAddNode(g1, NK_MN_OUTPUT);
+		const NkNodeId bsdf = NkMatAddNode(g1, NK_MN_PRINCIPLED);
+		const NkNodeId tex = NkMatAddNode(g1, NK_MN_IMAGE_TEXTURE);
+		g1.Connect(bsdf, "bsdf", out, "surface");
+		g1.Connect(tex, "color", bsdf, "base_color");
+		(void)t1;
+	}
+	NkMatCompileResult sansMap = NkMatCompileToNkSL(g1);
+
+	NkNodeGraph g2;
+	const NkMatTypes t2 = NkMatRegisterTypes(g2);
+	const NkNodeId out2 = NkMatAddNode(g2, NK_MN_OUTPUT);
+	const NkNodeId bsdf2 = NkMatAddNode(g2, NK_MN_PRINCIPLED);
+	const NkNodeId tex2 = NkMatAddNode(g2, NK_MN_IMAGE_TEXTURE);
+	const NkNodeId map = NkMatAddNode(g2, NK_MN_MAPPING);
+	const NkNodeId coord = NkMatAddNode(g2, NK_MN_TEX_COORD);
+	g2.Connect(bsdf2, "bsdf", out2, "surface");
+	g2.Connect(tex2, "color", bsdf2, "base_color");
+	g2.Connect(map, "vector_out", tex2, "vector");
+	g2.Connect(coord, "uv", map, "vector");
+	const float32 ech[3] = {4.f, 4.f, 1.f};
+	g2.SetSocketDefault(map, "scale", NkSocketDir::Input, NkValueVec(t2.vector, ech, 3));
+	NkMatCompileResult avecMap = NkMatCompileToNkSL(g2);
+
+	const NkString nomMap = NkFormat("n{0}_vector_out", (uint32)map);
+	const bool litUV = sansMap.ok && Apres(sansMap.source, ", vUV)") > 0;
+	// ⚠️ CE CAS A SURVECU A SA MUTATION, et la faute etait dans le cas. Sa
+	// premiere version cherchait le NOM de la locale du Mapping n'importe ou dans
+	// le shader. Sous la mutation « l'entree vector est ignoree », le noeud
+	// Mapping emettait toujours SA DECLARATION -- donc le nom etait present, et le
+	// cas passait au vert alors que la texture lisait l'UV brut.
+	//
+	// **Chercher un nom n'est pas chercher un USAGE.** On verifie donc DEUX
+	// choses : que l'appel de texture CITE la locale du mappage, et que le shader
+	// mappe ne lit PLUS l'UV brut dans son appel de texture.
+	const NkString appelMappe = NkFormat(", ({0}).xy)", nomMap);
+	const bool litMap = avecMap.ok && Apres(avecMap.source, appelMappe.CStr()) > 0;
+	const bool nePlusLireUV = avecMap.ok && Apres(avecMap.source, ", vUV)") < 0;
+	// Le neutre MULTIPLICATIF : un Mapping sans echelle renseignee ne doit rien
+	// changer. Le neutre general du compilateur est le NOIR — ici ce serait
+	// annuler l image. Le cas verifie donc que l echelle posee (4) est bien la.
+	// Le litteral porte son point decimal : PutLit le force, et ce cas a d abord
+	// echoue parce que j attendais « vec3(4, 4, 1) ». L attendu etait faux, pas le code.
+	const bool echelle = avecMap.ok && ContientSansCasse(avecMap.source, "vec3(4.0, 4.0, 1.0)");
+	NkString be, err;
+	const uint32 ok = avecMap.ok ? CompileSurLesBackends(avecMap.source, be, &err) : 0u;
+	Cas("imgtex/uv-par-defaut-et-mappage", litUV && litMap && nePlusLireUV && ok == 4 && echelle,
+		NkFormat("sans mappage lit vUV={0} | l'appel de texture CITE {1}={2} | ne lit plus l'UV brut={3} | echelle 4 "
+				 "presente={4} | {5}",
+				 litUV ? 1 : 0, nomMap, litMap ? 1 : 0, nePlusLireUV ? 1 : 0, echelle ? 1 : 0, be));
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -1833,6 +2078,13 @@ int main() {
 	CasRampeRefusNommes();
 	CasRampeInterpolation();
 	CasRampeAllerRetourFichier();
+
+	// -- Image Texture : la premiere RESSOURCE consommee par un graphe ----
+	CasTexturePlafondRefusNomme();
+	CasTextureBindingsDesDeuxCotes();
+	CasTextureAucunBindingNeuf();
+	CasTextureDeuxSorties();
+	CasTextureCoordonneeEtMappage();
 
 	logger.Info("\n-- {0} cas, {1} echec(s) --", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;

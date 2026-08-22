@@ -368,6 +368,18 @@ namespace nkentseu {
 			// fixe (un reel, trois, quatre) ; celle-ci est ce qui eprouve
 			// vraiment le sac de proprietes.
 			static const char *const NK_MN_COLOR_RAMP = "mat.rampe_couleur";
+
+			// `Image Texture` et ses deux compagnons de rang 1. `Texture
+			// Coordinate` et `Mapping` existent pour que l'auteur puisse dire OU
+			// echantillonner ; sans eux une texture ne saurait que lire l'UV brut.
+			static const char *const NK_MN_IMAGE_TEXTURE = "mat.texture_image";
+			static const char *const NK_MN_TEX_COORD = "mat.coord_texture";
+			static const char *const NK_MN_MAPPING = "mat.mappage";
+			// Le chemin de l'image : une charge utile VARIABLE elle aussi, mais
+			// textuelle cette fois. C'est le second usage du sac de proprietes
+			// apres les arrets de rampe, et il valide l'autre moitie de
+			// `NkGraphValue` — le texte, la ou la rampe validait les reels.
+			static const char *const NK_MPROP_IMAGE = "image";
 			static const char *const NK_MPROP_STOPS = "arrets";
 			static const char *const NK_MPROP_INTERP = "interpolation";
 			namespace detail {
@@ -428,6 +440,36 @@ namespace nkentseu {
 					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
 				};
 
+				// Image Texture : DEUX sorties. C'est le premier noeud du depot
+				// dans ce cas, et c'est ce qui a impose de nommer les locales
+				// engendrees d'apres le NOM DE LA PRISE et non par un « val »
+				// unique — un noeud a deux sorties n'a pas « une » valeur.
+				static const NkMatSocketDecl kImageTexture[] = {
+					{"vector", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
+					{"alpha", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+
+				// Texture Coordinate : les coordonnees disponibles sans calcul.
+				// On n'expose que `uv` pour l'instant — `generated`, `object` et
+				// `camera` demandent des varyings que le vertex engendre ne
+				// fournit pas encore, et une prise qui rendrait zero serait
+				// exactement le repli plausible qu'on refuse partout ailleurs.
+				static const NkMatSocketDecl kTexCoord[] = {
+					{"uv", NK_MT_VECTOR, NkSocketDir::Output, false},
+				};
+
+				// Mapping : deplace, tourne, met a l'echelle une coordonnee.
+				// La rotation est volontairement absente de cette premiere
+				// tranche : elle demande une convention d'axes qu'il vaut mieux
+				// poser avec `Normal Map` et `Bump`, qui en dependent aussi.
+				static const NkMatSocketDecl kMapping[] = {
+					{"vector", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"location", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"scale", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"vector_out", NK_MT_VECTOR, NkSocketDir::Output, false},
+				};
+
 				static const NkMatSocketDecl kColorRamp[] = {
 					{"fac", NK_MT_REAL, NkSocketDir::Input, false},
 					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
@@ -460,8 +502,11 @@ namespace nkentseu {
 					{NK_MN_MATH, "Math", kMath, 3},
 					{NK_MN_MIX_COLOR, "Mix Color", kMixColor, 4},
 					{NK_MN_COLOR_RAMP, "ColorRamp", kColorRamp, 2},
+					{NK_MN_IMAGE_TEXTURE, "Image Texture", kImageTexture, 3},
+					{NK_MN_TEX_COORD, "Texture Coordinate", kTexCoord, 1},
+					{NK_MN_MAPPING, "Mapping", kMapping, 4},
 				};
-				static const uint32 kProtoCount = 10;
+				static const uint32 kProtoCount = 13;
 
 			} // namespace detail
 

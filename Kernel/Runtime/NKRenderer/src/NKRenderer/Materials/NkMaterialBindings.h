@@ -58,5 +58,60 @@ namespace nkentseu {
 		// par ce nom : renommer d'un cote sans l'autre met le banc au rouge.
 		static const char *const NK_MATBIND_LAYER_MASK_SAMPLER = "tMask";
 
+		// ─────────────────────────────────────────────────────────────────────
+		// LES SLOTS DE TEXTURE UTILISABLES PAR UN GRAPHE DE MATERIAU
+		// ─────────────────────────────────────────────────────────────────────
+		// ⚠️ AUCUN BINDING NOUVEAU. C'est le resultat d'une mesure, pas une
+		// economie de paresse, et ca ecarte le risque le plus serieux du
+		// chantier — toucher au layout PARTAGE par tous les archetypes.
+		//
+		// CE QUI A ETE MESURE le 2026-08-22, et qui change la reponse :
+		//
+		// 1. Le shader PBR declare **27 samplers en fragment** a lui seul (5 dans
+		//    le set materiau, 22 dans le set global : IBL, atlas d'ombres, 12
+		//    lumieres, voxels, LTC, matcap). La specification OpenGL ne garantit
+		//    que **16** unites de texture par etage ; le moteur depasse donc deja
+		//    le minimum garanti et s'appuie sur les 32 que donnent les pilotes
+		//    reels. ⚠️ C'est une dette ANTERIEURE a ce chantier — je la nomme,
+		//    je ne l'aggrave pas. Un budget calcule sur « 16 moins ce qui est
+		//    pris » serait deja negatif : le chiffre n'aurait aucun sens.
+		//
+		// 2. Le depot REUTILISE DEJA le meme binding pour des usages differents
+		//    selon le shader : le binding 3 porte `tAlbedo` en PBR et
+		//    `tReflection` en sol miroir ; le binding 4 porte `tNormal`,
+		//    `tMatcap`, `tReflectionBack` ou `tShadowRamp` selon l'archetype.
+		//    **Le sens d'un binding est donc LOCAL AU SHADER**, et c'est une
+		//    propriete etablie du depot, pas une invention.
+		//
+		// CONSEQUENCE : un materiau ENGENDRE n'a que faire de `tAlbedo` ou de
+		// `tHeight` — ces slots sont morts pour lui. Il reutilise donc les six
+		// emplacements que le layout declare deja, dans l'ordre. Le plafond n'est
+		// pas un chiffre choisi : **c'est le nombre de slots existants**.
+		//
+		// Ce que ca evite, et c'est le point : pas de binding neuf, donc pas de
+		// nouvelle occasion d'ecrire sur un binding que le layout ne declare pas
+		// — la panne silencieuse mesuree le 22/08, qui ne produit ni erreur, ni
+		// journal, ni difference d'image.
+		static const unsigned int NK_MATBIND_GRAPH_SLOTS[] = {
+			NK_MATBIND_ALBEDO,			 // 3
+			NK_MATBIND_NORMAL_OR_MATCAP, // 4
+			NK_MATBIND_ORM,				 // 5
+			NK_MATBIND_EMISSIVE,		 // 6
+			NK_MATBIND_HEIGHT,			 // 7
+			NK_MATBIND_LAYER_MASK,		 // 9
+		};
+
+		// LE PLAFOND. Une seule source : le compilateur le lit ici, le banc le
+		// lit ici, et le banc verifie en plus que le shader emis ne declare aucun
+		// binding hors de cette table. S'il vivait a deux endroits, un
+		// compilateur qui autorise 8 et un layout qui en declare 6 ecrirait sur
+		// deux bindings inexistants, sans un mot.
+		static const unsigned int NK_MATBIND_GRAPH_SLOT_COUNT = 6;
+
+		// Le nom des samplers engendres. Numerotes, parce qu'un graphe ne sait
+		// pas ce que sa Nieme texture represente — c'est l'auteur qui le sait, et
+		// il l'a mis dans le nom du noeud, pas dans celui du slot.
+		static const char *const NK_MATBIND_GRAPH_SAMPLER_PREFIX = "nkGraphTex";
+
 	} // namespace renderer
 } // namespace nkentseu
