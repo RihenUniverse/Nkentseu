@@ -74,11 +74,25 @@ rate() { NB_RATE=$((NB_RATE + 1)); dire2 "  [RATE] $*"; }
 # Ici rien n'est compile — mais on ne restaure quand meme pas « a la main » :
 # on demande a git de remettre l'etat exact, et on VERIFIE qu'il l'a fait.
 restaurer() {
-  git checkout -- "$ENTETE" "$SOURCE" 2>/dev/null
-  [ -f "$LISTE.sauvegarde" ] && mv -f "$LISTE.sauvegarde" "$LISTE"
+  # `git checkout --` sur les TROIS fichiers, y compris la liste. C'est plus sur
+  # que reposer la sauvegarde : si la sauvegarde a deja ete consommee, ou si la
+  # contre-epreuve est morte entre deux etapes, git connait quand meme l'etat de
+  # depart. Et c'est SANS RISQUE precisement grace au controle negatif : on a
+  # refuse de demarrer sur un arbre sale, donc il n'y a aucun travail non commite
+  # a jeter ici.
+  git checkout -- "$ENTETE" "$SOURCE" "$LISTE" 2>/dev/null
+  rm -f "$LISTE.sauvegarde"
   return 0
 }
-trap 'restaurer' EXIT
+# ⚠️ EXIT NE SUFFIT PAS, ET CA A COUTE UNE FUITE REELLE (2026-08-22).
+# Cette contre-epreuve a ete tuee par un delai d'execution. Bash n'execute PAS le
+# piege EXIT sur un signal fatal non trappe : elle est morte en laissant
+# `config/capacites.list` ampute de sa directive de plafond et porteur de deux
+# lignes fantomes. Un outil qui modifie des fichiers versionnes doit rendre l'arbre
+# sur TOUTES ses sorties, pas seulement sur celles qu'il a prevues.
+# (Ce qui l'a rattrape : son propre controle negatif, qui a refuse de repartir sur
+#  un arbre sale. Le filet a tenu — mais un filet n'excuse pas la chute.)
+trap 'restaurer' EXIT INT TERM HUP
 
 # =============================================================================
 # CONTROLE NEGATIF
@@ -255,7 +269,7 @@ cp "$LISTE.sauvegarde" "$LISTE"
 dire ""
 dire "-- H : retrait complet -> VERT et arbre identique ---------------------"
 restaurer
-trap - EXIT
+trap - EXIT INT TERM HUP
 
 reste=$(git status --porcelain -- "$ENTETE" "$SOURCE" "$LISTE")
 [ -z "$reste" ] && vu "arbre identique : git ne voit plus rien sur les trois fichiers" \

@@ -122,6 +122,28 @@ done
 T0=$(date +%s)
 
 # =============================================================================
+# 0. AUTOCONTROLE — la parade d'un defaut paye TROIS FOIS ce soir
+# =============================================================================
+# Entre le heredoc qui ecrit ce fichier, le shell qui le lit et awk qui compile
+# ses chaines, il y a trois couches d'echappement — et deux d'entre elles
+# mangent un « 
+ » en silence. Resultat trois fois de suite : un printf awk
+# coupe par un VRAI saut de ligne, l'awk qui refuse de compiler, et une section
+# du rapport RESTEE VIDE. Une section vide se lit « rien a signaler ».
+#
+# ⚠️ C'est la forme exacte que ce chantier traque : un outil casse et un depot
+# sain rendent la meme sortie. On ne s'en remet donc pas a la relecture.
+if grep -nE 'printf\("?"[^"]*$|printf "[^"]*$' "$0" > /dev/null 2>&1; then
+  dire2 "[cap] ECHEC D'INSTRUMENT : une chaine de format awk n'est pas fermee dans $0 :"
+  grep -nE 'printf\("?"[^"]*$|printf "[^"]*$' "$0" | while IFS= read -r l; do dire2 "[cap]   $l"; done
+  dire2 "[cap]   Un « \n » a ete avale par une couche d'echappement. L'awk concerne ne"
+  dire2 "[cap]   compilera pas, et SA SECTION DU RAPPORT SERA VIDE — ce qui se lit"
+  dire2 "[cap]   « rien a signaler ». Repare avant de conclure quoi que ce soit."
+  exit 2
+fi
+
+
+# =============================================================================
 # 1. PRECONDITIONS — ne rien conclure depuis un montage casse
 # =============================================================================
 for f in "${ENTETES_D2[@]}" "${ENTETES_D1[@]}"; do
@@ -224,6 +246,93 @@ grep -rhoP 'mCaps\.\K[A-Za-z_][A-Za-z0-9_]*(?=[ \t]*=[^=])' Kernel Engine --incl
   | sort -u > "$TMP/drapeaux.txt"
 
 # =============================================================================
+# 3bis. EXTRACTION D3 — ce que le C++ LIE contre ce que les shaders ECHANTILLONNENT
+# =============================================================================
+# D3 etait refuse le 22/08 au soir, et la raison etait mesuree : cote C++,
+# l'index de set n'existait DANS AUCUNE DECLARATION — il vivait dans un
+# commentaire de NkResources.h et dans un nom de membre. Comparer les deux cotes
+# aurait demande de DEVINER l'appariement enum -> set, et un detecteur qui devine
+# fabrique des faux positifs.
+#
+# Ce n'etait pas une fatalite, c'etait une ligne de code manquante. Elle est
+# ecrite : `kStandardBindings` porte (set, binding, type, etage) et
+# CreateStandardLayouts() la parcourt. L'appariement est devenu une DONNEE DU
+# CODE, donc D3 se calcule — exactement, sans deviner.
+#
+# ⚠️ CE QUE D3 AFFIRME, ET RIEN DE PLUS :
+#   il dit      « le C++ lie ce (set, binding) et AUCUN shader du corpus ne le
+#                 declare » — exact, verifiable, et c'est un defaut en soi :
+#                 une ressource poussee vers un slot que personne ne lit.
+#   il ne dit PAS « le shader lit la mauvaise chose » : deux slots peuvent porter
+#                 le meme numero pour des raisons legitimes, et trancher demande
+#                 de savoir ce que la carte lit. Ce n'est pas mesurable ici.
+#
+# ⚠️ ET IL NE REGARDE PAS LE SENS INVERSE COMME UN DEFAUT. Le corpus compte 47
+# couples (set, binding) distincts pour 18 bindings standard : la majorite
+# appartient a des familles de shaders (compute, 2D, post) qui n'utilisent PAS
+# les layouts standard. Crier sur chacun serait fabriquer 29 faux positifs le
+# premier jour.
+NKRESOURCES_H="Kernel/Runtime/NKRenderer/src/NKRenderer/Core/NkResources.h"
+if [ -f "$NKRESOURCES_H" ]; then
+  # (a) la table : set|binding|nom — les valeurs numeriques viennent des enums
+  awk '
+    /kStandardBindings\[\] = \{/ { dans = 1 }
+    dans && /^[[:space:]]*\};/     { dans = 0 }
+    /^[[:space:]]*NK_SET_[A-Z]+[[:space:]]*=[[:space:]]*[0-9]+/ {
+      l = $0; sub(/^[[:space:]]*/, "", l)
+      nom = l; sub(/[[:space:]]*=.*$/, "", nom)
+      v = l; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[^0-9].*$/, "", v)
+      valset[nom] = v
+    }
+    /^[[:space:]]*NK_BIND_[A-Z_0-9]+[[:space:]]*=[[:space:]]*[0-9]+/ {
+      l = $0; sub(/^[[:space:]]*/, "", l)
+      nom = l; sub(/[[:space:]]*=.*$/, "", nom)
+      v = l; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[^0-9].*$/, "", v)
+      valbind[nom] = v
+    }
+    dans && /^[[:space:]]*\{NK_SET_/ {
+      l = $0; gsub(/[{} 	]/, "", l)
+      n = split(l, c, ",")
+      if (n >= 2 && (c[1] in valset) && (c[2] in valbind))
+        printf "%s|%s|%s\n", valset[c[1]], valbind[c[2]], c[2]
+    }
+  ' "$NKRESOURCES_H" | sort -u > "$TMP/d3_cpp.txt"
+
+  # (b) ce que les shaders declarent, avec le TYPE et l'IDENTIFIANT
+  grep -rhoP 'layout\s*\(\s*set\s*=\s*\d+\s*,\s*binding\s*=\s*\d+\s*\)[^;{]*'        Resources Kernel 2>/dev/null     | sed 's/[[:space:]]\+/ /g'     | awk '{
+        s = $0
+        if (match(s, /set *= *[0-9]+/))     { st = substr(s, RSTART, RLENGTH); gsub(/[^0-9]/, "", st) }
+        if (match(s, /binding *= *[0-9]+/)) { bd = substr(s, RSTART, RLENGTH); gsub(/[^0-9]/, "", bd) }
+        r = s; sub(/^[^)]*\)[ ]*/, "", r)
+        gsub(/^(readonly|writeonly|coherent|restrict|volatile) +/, "", r)
+        n = split(r, w, " ")
+        id = (n >= 1 ? w[n] : "?")
+        ty = (n >= 2 ? w[n-1] : "?")
+        # un IDENTIFIANT, pas un morceau de phrase : la sortie ramassait
+        # « ) liraient » et « space0)` » dans du texte de commentaire.
+        if (id !~ /^[A-Za-z_][A-Za-z0-9_]*$/) next
+        if (ty !~ /^[A-Za-z_][A-Za-z0-9_]*$/) ty = "?"
+        if (st != "" && bd != "") printf "%s|%s|%s|%s\n", st, bd, ty, id
+      }' | sort -u > "$TMP/d3_shaders.txt"
+
+  # (c) LES DECLARATIONS SANS SET — et c'est la moitie du corpus.
+  # ⚠️ Defaut de D3 trouve en contre-verifiant ses deux premiers candidats :
+  # OpenGL n'a pas de descriptor sets. Ses shaders ecrivent `layout(binding=2)`
+  # tout court. Un D3 qui ne compte que les declarations QUALIFIEES par un set
+  # annonce « aucun shader ne declare ce slot » alors qu'une famille entiere le
+  # declare — il ACCUSE. On les extrait donc a part, et on les NOMME dans le
+  # message : le lecteur sait exactement ce qui est su et ce qui ne l'est pas.
+  grep -rhoP 'layout\s*\(\s*binding\s*=\s*\d+\s*\)[^;{]*' Resources Kernel 2>/dev/null     | sed 's/[[:space:]]\+/ /g'     | awk '{
+        s = $0
+        if (match(s, /binding *= *[0-9]+/)) { bd = substr(s, RSTART, RLENGTH); gsub(/[^0-9]/, "", bd) }
+        r = s; sub(/^[^)]*\)[ ]*/, "", r)
+        n = split(r, w, " ")
+        id = (n >= 1 ? w[n] : "?")
+        if (bd != "" && id != "") printf "%s|%s\n", bd, id
+      }' | sort -u > "$TMP/d3_sanset.txt"
+fi
+
+# =============================================================================
 # 4. LES PASSES SUR LE CORPUS — deux greps, et pas un par symbole
 # =============================================================================
 # Mesure du 2026-08-22 : les prototypes relisaient tout le depot UNE FOIS PAR
@@ -299,13 +408,22 @@ awk -v fchamps="$TMP/champs.txt" -v fvoies="$TMP/voies.txt" \
     -v fvirt="$TMP/virtuelles.txt" -v fdrap="$TMP/drapeaux.txt" \
     -v fnomme="$TMP/nomme.txt" -v fentete1="${ENTETES_D1[0]}" '
   # ---- decoupage camelCase / snake_case en jetons minuscules ---------------
-  function jetons(s,   i, c, mot, out) {
-    out = " "; mot = ""
+  # Decoupage camelCase / snake_case en jetons minuscules.
+  # ⚠️ DEFAUT MESURE LE 2026-08-22 : la premiere version coupait a CHAQUE
+  # majuscule. Sur un nom en CAPITALES — NK_BIND_IBL_IRRADIANCE — elle rendait
+  # vingt-deux jetons d un seul caractere, tous rejetes par le seuil de cinq.
+  # Resultat : D3 ne rapprochait RIEN, et son silence ressemblait trait pour
+  # trait a « il n y a rien a signaler ».
+  # La regle juste est celle de camelCase : une majuscule ouvre un jeton
+  # seulement si le caractere PRECEDENT etait minuscule ou chiffre.
+  function jetons(s,   i, c, p, mot, out) {
+    out = " "; mot = ""; p = ""
     for (i = 1; i <= length(s); i++) {
       c = substr(s, i, 1)
-      if (c ~ /[A-Z]/) { if (mot != "") out = out tolower(mot) " "; mot = c }
-      else if (c == "_") { if (mot != "") out = out tolower(mot) " "; mot = "" }
+      if (c == "_") { if (mot != "") out = out tolower(mot) " "; mot = ""; p = c; continue }
+      if (c ~ /[A-Z]/ && p ~ /[a-z0-9]/) { if (mot != "") out = out tolower(mot) " "; mot = c }
       else mot = mot c
+      p = c
     }
     if (mot != "") out = out tolower(mot) " "
     return out
@@ -500,6 +618,99 @@ awk -v fchamps="$TMP/champs.txt" -v fvoies="$TMP/voies.txt" \
     }
   }
 ' "$TMP/hits.txt" | sort > "$TMP/detectes.txt"
+
+# =============================================================================
+# 5bis. D3 — le C++ LIE, les shaders ECHANTILLONNENT : confrontation
+# =============================================================================
+D3_INFOS="$TMP/d3_infos.txt"
+: > "$D3_INFOS"
+if [ -s "$TMP/d3_cpp.txt" ] && [ -s "$TMP/d3_shaders.txt" ]; then
+  awk -v fsh="$TMP/d3_shaders.txt" -v fsanset="$TMP/d3_sanset.txt" -v finfos="$D3_INFOS" '
+    # Meme correction que pour D1/D2 : une majuscule n ouvre un jeton que si le
+    # caractere precedent etait minuscule ou chiffre. Sans ca,
+    # NK_BIND_IBL_IRRADIANCE se decoupe en 22 jetons d un caractere et D3 reste
+    # muet — un silence qui ressemble a « rien a signaler ».
+    function jetons(s,   i, c, p, mot, out) {
+      out = " "; mot = ""; p = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "_") { if (mot != "") out = out tolower(mot) " "; mot = ""; p = c; continue }
+        if (c ~ /[A-Z]/ && p ~ /[a-z0-9]/) { if (mot != "") out = out tolower(mot) " "; mot = c }
+        else mot = mot c
+        p = c
+      }
+      if (mot != "") out = out tolower(mot) " "
+      return out
+    }
+    function partage(a, b,   n, i, t, ja, jb) {
+      ja = jetons(a); jb = jetons(b)
+      n = split(ja, t, " ")
+      for (i = 1; i <= n; i++) {
+        if (t[i] == "" || length(t[i]) < 5) continue
+        if (index(jb, " " t[i] " ") > 0) return t[i]
+      }
+      return ""
+    }
+    BEGIN {
+      FS = "|"
+      while ((getline l < fsanset) > 0) {
+        split(l, a, "|")
+        sanset[a[1]] = sanset[a[1]] (sanset[a[1]] == "" ? "" : ", ") a[2]
+      }
+      close(fsanset)
+      while ((getline l < fsh) > 0) {
+        split(l, a, "|")
+        cle = a[1] "|" a[2]
+        decl[cle] = decl[cle] (decl[cle] == "" ? "" : ", ") a[3] " " a[4]
+        nb[cle]++
+        nid++; id_set[nid] = a[1]; id_bind[nid] = a[2]; id_nom[nid] = a[4]
+      }
+      close(fsh)
+    }
+    {
+      st = $1; bd = $2; nom = $3
+      cle = st "|" bd
+      if (nb[cle] == 0) {
+        # LE SEUL VERDICT DE D3, et il est exact : le C++ pousse une ressource
+        # vers un slot qu AUCUN shader du corpus ne declare.
+        sup = (sanset[bd] != ""                ? " — MAIS des shaders SANS set declarent binding=" bd " : " sanset[bd]                  " (OpenGL n a pas de sets ; l outil ne peut pas dire si c est le meme slot)"                : " — et aucune declaration SANS set ne porte ce numero non plus")
+        printf "D3|NkResources::%s|%s:set=%s,binding=%s|sans-promesse|-|le C++ LIE ce slot ; aucun shader QUALIFIE par un set ne le declare%s\n",
+               nom, "Kernel/Runtime/NKRenderer/src/NKRenderer/Core/NkResources.h", st, bd, sup
+        next
+      }
+      # INFORMATION, PAS VERDICT : un identifiant de shader qui partage un jeton
+      # porteur avec CE binding, mais vit a un AUTRE slot. Ca ne prouve rien —
+      # ca montre ou regarder.
+      for (i = 1; i <= nid; i++) {
+        if (id_set[i] == st && id_bind[i] == bd) continue
+        j = partage(nom, id_nom[i])
+        if (j == "") continue
+        # ON NE PARLE QUE SI LE SLOT DU C++ PORTE AUTRE CHOSE. Si le meme jeton
+        # se retrouve deja dans ce que ce slot declare, il n y a rien a montrer :
+        # le nom vit ailleurs AUSSI, c est tout. Sans ce filtre, l information
+        # sortait 32 lignes dont la plupart ne montraient rien — et une
+        # information qu on ne lit plus vaut un silence.
+        occupe = 0
+        m = split(decl[cle], dd, ", ")
+        for (q = 1; q <= m; q++) {
+          nn = dd[q]; sub(/^[^ ]+ /, "", nn)
+          if (partage(nom, nn) != "") { occupe = 1; break }
+        }
+        if (occupe) continue
+        if (j != "")
+          # PARENTHESES OBLIGATOIRES : printf fmt, a, b >> f se lit
+          # « printf fmt, a, (b >> f) » — le dernier argument est pris pour une
+          # comparaison et le fichier reste VIDE. Un rapport vide se lit comme
+          # « rien a signaler » : la forme de mensonge la plus courante de ce
+          # chantier, obtenue ici par une paire de parentheses absentes.
+          printf("%s (set=%s,binding=%s)  <->  %s (set=%s,binding=%s)  jeton commun: %s ; ici le slot du C++ porte: %s\n",
+                 nom, st, bd, id_nom[i], id_set[i], id_bind[i], j, decl[cle]) >> finfos
+      }
+    }
+  ' "$TMP/d3_cpp.txt" | sort >> "$TMP/detectes.txt"
+  sort -u "$D3_INFOS" -o "$D3_INFOS" 2>/dev/null || true
+  sort "$TMP/detectes.txt" -o "$TMP/detectes.txt"
+fi
 
 NB_DET=$(grep -c '' < "$TMP/detectes.txt")
 
@@ -737,6 +948,20 @@ if [ "$CLIQUET_ROMPU" -eq 1 ]; then
   dire2 "[cap]     DELIBERE qui apparait dans un diff. C'est tout l'interet du cliquet :"
   dire2 "[cap]     il ne s'oppose pas a la decision, il s'oppose a la derive silencieuse."
   RC=4
+fi
+
+# -- D3 : ce qui se ressemble et ne vit pas au meme endroit ------------------
+# ⚠️ INFORMATION, JAMAIS VERDICT. Un commentaire qui ment sur un numero de
+# binding peut etre le commentaire qui a tort OU le code ; trancher demande de
+# savoir ce que la CARTE lit, et rien ici ne le mesure. Ce bloc montre ou
+# regarder, il ne dit pas qui a raison.
+if [ -s "${D3_INFOS:-/dev/null}" ]; then
+  dire ""
+  dire "-- D3 : meme nom, slot different (information, pas verdict) -----------"
+  while IFS= read -r l; do [ -n "$l" ] && dire "    $l"; done < "$D3_INFOS"
+  dire "    Ces couples partagent un jeton porteur et ne vivent pas au meme"
+  dire "    (set, binding). Ca ne prouve rien — ca dit ou regarder. Trancher"
+  dire "    demande de mesurer ce que la carte lit ; ce n'est pas fait ici."
 fi
 
 if [ "$CLIQUET_LACHE" -eq 1 ]; then

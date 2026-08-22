@@ -215,3 +215,5 @@ NkVertexAttribute::location                  | D2  | vision-assumee  |         |
 NkVertexAttribute::semanticIdx               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkVertexSoftware::clipW                      | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkVertexSoftware::clipZ                      | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkResources::NK_BIND_TEX_NORMAL              | D3  | implementee     |         | le detecteur ne voit que les declarations QUALIFIEES par un set. La lecture existe : les shaders GL declarent 'sampler2D tNormal' en 'layout(binding=2)' sans set (OpenGL n'a pas de descriptor sets). Verifie a la main le 22/08.
+NkResources::NK_BIND_PP_INPUT                | D3  | implementee     |         | idem : aucun shader QUALIFIE ne declare set=3, mais les passes plein ecran GL declarent leur entree en 'layout(binding=0)' (tSrc, tHDR, tLDR, tCurrent). Le set 3 n'existe que du cote Vulkan/DX.
