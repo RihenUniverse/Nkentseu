@@ -2483,3 +2483,67 @@ l'autre***.
 
 📌 Écrit ici et dans `NkMatGraphTypes.h` parce qu'**une limite écrite se corrige ;
 une limite sue se transmet en s'effaçant**.
+
+## ✅ (b1) — la sortie nommée PAR PIXEL, vers une seconde cible de rendu (2026-08-22)
+
+L'étage `par_pixel_cible` est **construit**. Format signé par Rodolf :
+**`R16G16B16A16_FLOAT`, 8 o/px** — RGB = la valeur, **A = la validité**.
+
+Preuve : `Applications/NkMatGraphCheck` — **116 cas, 0 échec, 26 mutations sur 26
+détectées**. Tout se mesure **sans GPU**, sur le NkSL émis, parce que la propriété
+qui compte est syntaxique : la sortie est-elle déclarée, est-elle **écrite**, et
+avec quel alpha.
+
+### Le contrat, en une ligne
+
+> **RGB = la valeur de la sortie résolue ; A = 1 si ce pixel la porte, 0 sinon.
+> Quand `A == 0`, RGB n'a aucun sens et le lecteur n'a pas le droit de le lire.**
+
+⚠️ **Tout matériau déclare ET écrit la seconde cible**, y compris celui qui n'a
+aucune sortie nommée — parce qu'**une sortie MRT non écrite sur un pixel couvert
+est INDÉFINIE**, ni conservée, ni nulle. Celui qui n'a rien à y mettre écrit
+`(0,0,0,0)`.
+
+Un matériau d'étage **(a)** écrit **zéro lui aussi** : (a) est une constante
+calculée sur le processeur, lui faire payer une écriture par pixel viderait
+l'argument « quasi gratuit ».
+
+### 🔴 Le même piège, découvert un étage plus haut
+
+`NkMatSortieMateriau::valeur[3]` est la valeur **processeur**. Une sortie (b1)
+n'en a aucune — sa valeur naît dans le shader. Le tableau restait donc **à zéro**,
+et ce zéro **se lit exactement comme « la valeur vaut zéro »**.
+
+C'est le canal alpha, transposé du tampon vers la structure C++ — et il entrait
+**par la porte de derrière**. Réparé de la même façon : un drapeau
+`valeurConnue`. Un lecteur qui l'ignore lit `false` et doit s'en occuper ; il ne
+peut pas se tromper en silence.
+
+📌 **Et deux étapes de la passe des sorties étaient devenues fausses en silence.**
+Le refus « ta sortie dépend du pixel » et l'évaluation processeur s'appliquaient à
+**tous** les étages — implicitement correct tant qu'un seul étage existait. Le
+message disait déjà « est déclarée `par_materiau` », mais **le code ne le
+vérifiait pas** : (b1) est par pixel *par définition*, le refuser pour cette
+raison aurait refusé l'étage entier.
+
+> **Une condition implicitement vraie parce qu'il n'existe qu'un seul cas devient
+> fausse le jour où le second arrive — et elle ne prévient pas.**
+
+### Les refus, nommés
+
+- une sortie **demandée mais absente** du graphe → erreur qui **la nomme**.
+  ⚠️ Rendre un tampon vide serait le repli plausible : il se lirait comme « ce
+  matériau ne porte pas cette valeur », **indiscernable du cas légitime**.
+- **plusieurs** sorties `par_pixel_cible` et **aucune** demandée → refus. Prendre
+  « la première » rendrait une valeur crédible issue d'une sortie que personne n'a
+  demandée. Un **témoin** vérifie que la même scène compile dès qu'on nomme la
+  sortie voulue.
+
+### Reste à faire pour (b1)
+
+La preuve de **rendu** n'est pas atteinte : tout ce qui précède se mesure sur la
+source émise. Manquent la création de la cible `R16G16B16A16_FLOAT` côté RHI, son
+effacement à `(0,0,0,0)`, et une lecture réelle depuis la carte. **Le domaine
+déclaré par sortie** (borné / non borné) et la **promotion 32 bits nommée** ne
+sont pas non plus construits — ils le seront quand une sortie réelle en aura
+besoin, et pas avant.
