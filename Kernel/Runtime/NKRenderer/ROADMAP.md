@@ -1456,7 +1456,7 @@ Preuve : `Applications/NkMatGraphCheck` — **application** console, **35 cas, 0
 | nœud `ColorRamp` | ✅ 2026-08-22 | la première propriété à **charge utile variable** |
 | nœuds `Image Texture` · `Texture Coordinate` · `Mapping` | ✅ 2026-08-22 | **aucun binding neuf** — voir ci-dessous, la mesure a changé la réponse |
 | **variables exposées** (paramètres pilotables depuis le code) | ❌ | **le prochain**, et le point où le chantier devient une API publique |
-| `Normal Map` · `Bump` (fin du rang 1) | ❌ | demandent une convention d'axes à poser une fois |
+| `Normal Map` · `Bump` · `Separate XYZ` | ✅ 2026-08-22 | **rang 1 complet** — convention tranchée, voir ci-dessous |
 | canevas d'édition | ❌ | couche 2, `NKEditorKit`, partagé — pas ce chantier |
 
 **Le NkSL émis COMPILE sur les quatre backends** (GL, Vulkan, DX11, DX12), vérifié
@@ -1522,6 +1522,93 @@ naturelle quand on traite une **liste** comme une **paire** — rendrait du roug
 interpolé avec du rouge. **Les deux résultats sont des couleurs plausibles ;
 seul le canal où tombe l'écart les distingue.** Mesuré : `(52, 180, 52)`, écart
 sur le vert = 128, exactement l'arrêt du milieu.
+
+#### 🗿 Le relief — convention tranchée, et la normale qui **voyage** (2026-08-22)
+
+**Convention interne : OpenGL, `+Y` vers le haut** (« vert vers le haut »). Une
+carte DirectX (`-Y`) se convertit **à l'import, jamais dans le shader**. Trois
+raisons : Blender emploie cette convention et Rodolf construit sur les siennes —
+diverger produirait des reliefs **inversés** en important son propre travail,
+avec un symptôme notoirement difficile à diagnostiquer (l'image reste plausible,
+elle est juste creuse là où elle devrait être bombée) ; Vulkan et OpenGL sont les
+deux backends validés ; et convertir à l'import évite de payer **par pixel** tout
+en rendant l'état de la texture **visible dans la donnée**.
+
+⚠️ **Le drapeau de provenance existe dès maintenant, bien que rien ne le consomme
+encore.** L'ajouter après coup obligerait à **deviner** la convention des textures
+déjà importées — et les deux hypothèses donnent une image plausible, donc le
+doute serait indécidable.
+
+**Le cas qui décide est une ABSENCE d'effet** : les shaders émis pour `opengl`,
+`directx` et *sans convention* sont **identiques au caractère près** (2806 o
+chacun). La tentation naturelle — retourner Y par pixel — marche, coûte à chaque
+fragment, et rend l'état de la donnée invisible ; seule l'égalité des textes la
+dénonce. Une mutation qui traite la convention dans le shader met ce cas au rouge.
+
+##### La normale voyage — un `shader` porte désormais **cinq** composantes
+
+⚠️ **Avant le 22/08 le puits recalculait `normalize(vNormal)`** : tout travail de
+relief en amont était jeté **en silence**, le shader compilait, l'image restait
+plausible, et le nœud n'aurait servi à rien. *Un nœud dont la sortie n'est lue
+par personne est pire qu'un nœud absent : il donne l'illusion que la capacité
+existe.* La normale a donc rejoint albedo/metallic/roughness/emission, et le
+puits éclaire avec celle du graphe. Le cas vérifie **les deux maillons de la
+chaîne** (Normal Map → Principled → puits) **et une absence** — le puits ne doit
+plus recalculer la géométrique.
+
+Une prise `normal` non câblée vaut la **normale géométrique**, pas le noir : un
+vecteur nul serait une direction indéfinie. Ce n'est pas un repli plausible,
+c'est le comportement **défini** de la prise.
+
+##### Base tangente : par dérivées d'écran, et seulement si utile
+
+Le vertex engendré ne fournit **aucune tangente** ; s'en passer n'est pas un
+choix mais la seule voie honnête. On emploie le **cadre cotangent de Schuler**,
+déjà utilisé par `pbr.frag.nksl` et pour la raison écrite là-bas : les tangentes
+de sommet peuvent être nulles ou désalignées des UV, et le relief part alors dans
+une direction **arbitraire par face**. Elle n'est émise que si un `Normal Map`
+la réclame — un shader qui la calculerait sans s'en servir paierait deux paires
+de dérivées à chaque pixel pour rien, et le cas le vérifie **dans les deux sens**.
+
+##### La preuve de rendu — l'éclairage est **étalonné**, jamais réimplanté
+
+C'est la réponse au piège habituel : pour savoir de quel côté une bosse doit
+s'éclairer, on ne recalcule pas l'ombrage — **on le mesure**. Le même shader, le
+même éclairage, mais une normale **imposée** via un nœud `RGB` donne les couleurs
+de référence.
+
+| rendu | pixel | ce que ça établit |
+|---|---|---|
+| étalon, normale vers **−x** | 129 | le côté clair |
+| étalon, normale vers **+x** | 82 | le côté sombre |
+| carte **plate** (0,5 ; 0,5 ; 1) | 121 | **exactement** la normale géométrique, 3 canaux au bit |
+| `Bump` force **+1** | **129** | tombe sur l'étalon −x |
+| `Bump` force **−1** | **82** | tombe sur l'étalon +x |
+| carte **penchée** (0,75 ; 0,5 ; 1) | **82** | tombe sur l'étalon +x |
+
+⚠️ **L'appariement est ORIENTÉ, et il doit l'être.** Une première version
+acceptait « chacun tombe sur l'un des deux étalons », dans n'importe quel ordre —
+une **inversion globale** du signe l'aurait donc passée au vert, puisque les deux
+résultats se contentent d'échanger. Le sens se **déduit du graphe** : la hauteur
+vaut `u`, qui croît avec `+x`, son gradient pointe vers `+x`, et la formule
+incline la normale à l'**opposé** du gradient. Une force positive doit donc
+rendre l'étalon `−x`. La mutation qui inverse le signe tombe.
+
+⚠️ **Et la carte plate ne suffit pas** — c'est une mutation qui l'a montré. Avec
+un texel neutre la normale tangente vaut `(0, 0, 1)`, donc **T et B sont
+multipliés par zéro** : une base tangente cassée est **invisible**. D'où le cas de
+la carte **penchée**, qui la fait intervenir. Sous la mutation, elle rend 145
+(côté clair, donc le mauvais) au lieu de 82.
+
+##### Deux notes de mise en œuvre
+
+- `Separate XYZ` a été ajouté **avec** le relief, pas après : sans lui aucun
+  scalaire **variable** n'existe dans un graphe, et `Bump` n'aurait pu être
+  mesuré que sur son absence d'effet.
+- Le déterminant du repère est **gardé** : une division nue produirait un NaN sur
+  un triangle dégénéré ou vu par la tranche — même raison que la division du nœud
+  `Math`, et même conséquence (un défaut qui change d'aspect d'un backend à
+  l'autre fait accuser la machine).
 
 #### 🖼️ `Image Texture` — livré, et **sans toucher au layout partagé**
 
