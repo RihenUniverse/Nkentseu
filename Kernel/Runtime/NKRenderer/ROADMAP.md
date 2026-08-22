@@ -1458,7 +1458,7 @@ Preuve : `Applications/NkMatGraphCheck` — **application** console, **35 cas, 0
 | **variables exposées — ENTRÉES** | ✅ 2026-08-22 | l'API publique du moteur ; ⚠️ preuve de **rendu** non atteinte, voir ci-dessous |
 | variables exposées — **sorties** | ❌ | en attente d'une décision de Rodolf : par pixel ou par matériau |
 | **rang 2** — `Noise` · `Gradient` · `Checker` | ✅ 2026-08-22 | procédural : **zéro slot de texture** |
-| rang 2 — `Voronoi` · `Wave` · `Brick` | ❌ | même moule, rien de nouveau à décider |
+| **rang 2** — `Voronoi` · `Wave` · `Brick` | ✅ 2026-08-22 | **rang 2 complet** — 22 prototypes |
 | `Normal Map` · `Bump` · `Separate XYZ` | ✅ 2026-08-22 | **rang 1 complet** — convention tranchée, voir ci-dessous |
 | canevas d'édition | ❌ | couche 2, `NKEditorKit`, partagé — pas ce chantier |
 
@@ -1526,6 +1526,32 @@ interpolé avec du rouge. **Les deux résultats sont des couleurs plausibles ;
 seul le canal où tombe l'écart les distingue.** Mesuré : `(52, 180, 52)`, écart
 sur le vert = 128, exactement l'arrêt du milieu.
 
+#### ⚠️ Trois faits mesurés qui affaiblissent une garantie qu'on employait (2026-08-22)
+
+Ils sont regroupés ici parce qu'ils portent tous sur **la valeur de nos preuves**,
+pas sur une fonctionnalité.
+
+**1. « Ça compile sur les 4 backends » ne garantit PAS que les fonctions appelées
+existent.** Mesuré : une mutation retirant `Voronoi` de la liste des nœuds qui
+réclament les briques de bruit produit un shader appelant `NkHash22` **sans que
+`NkHash22` soit déclarée** — et `GL=ok VK=ok DX11=ok DX12=ok`. Le frontend NkSL
+ne rejette pas l'appel d'une fonction inconnue. Toute assertion du dépôt qui se
+repose sur « les quatre backends acceptent » doit donc être lue comme *plus
+faible qu'elle n'en a l'air*, et complétée par une vérification de **présence des
+dépendances** quand le shader en a.
+
+**2. Un tampon dimensionné « généreusement » est une bombe à retardement quand ce
+qu'il mesure grandit par conception.** Le cas du menu de la bibliothèque écrivait
+dans `const NkMatNodeProto *menu[16]`, et la requête rend le **compte réel** : à
+17 prototypes proposables, l'itération sortait du tableau — segfault. Le cas
+était pourtant le bon, il grandissait avec le système : c'est précisément ce qui
+l'a fait déborder. Dimensionner sur ce qui grandit, pas sur un nombre choisi.
+
+**3. `NkFormat` tronque en silence sur un indice positionnel hors ordre.** Une
+chaîne employant `{6}` avant `{5}` s'est trouvée coupée juste après `{6}`, sans
+erreur ni avertissement. La ligne de résultat était incomplète dans plusieurs
+rapports avant qu'on ne le remarque. **Employer les indices dans l'ordre.**
+
 #### 🎨 Rang 2 — le procédural, et une contrainte du dialecte qu'il a révélée
 
 `Noise Texture`, `Gradient Texture`, `Checker Texture`. Leur intérêt n'est pas
@@ -1567,6 +1593,22 @@ passera au rouge — et ce sera le bon moment pour supprimer la recopie.
   échapperait.
 - **Les briques de bruit ne sont émises que si un nœud les réclame**, vérifié
   dans les deux sens.
+
+##### Les trois derniers : `Voronoi`, `Wave`, `Brick`
+
+- **Voronoi** déroule un voisinage `3x3` **littéral**. Une borne connue à la
+  compilation est ce qui permet à tous les backends de dérouler la boucle ; un
+  rayon variable ferait un shader qui compile ici et pas ailleurs — le défaut le
+  plus pénible, parce qu'il fait accuser la machine. Il réutilise `NkHash22`,
+  déjà recopiée et déjà gardée.
+- **Wave** vaut `0,5 + 0,5·sin(x·échelle·2π)` : période `1/échelle`, borné dans
+  [0,1] **sans clamp**. Un sinus brut sortirait de [0,1] et un `clamp`
+  écraserait les creux au lieu de les rendre.
+- **Brick** décale les joints d'une demi-brique **une rangée sur deux**. Sans ce
+  décalage on obtient un **quadrillage** — un mur parfaitement plausible, et
+  faux. Le cas vérifie que le décalage est calculé **et employé** : un décalage
+  calculé mais jamais lu donnerait exactement ce quadrillage, et la seule
+  vérification de présence passerait.
 
 ##### La preuve de rendu : un calcul, pas une relation
 
