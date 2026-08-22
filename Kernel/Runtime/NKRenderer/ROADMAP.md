@@ -2486,6 +2486,21 @@ une limite sue se transmet en s'effaçant**.
 
 ## ✅ (b1) — la sortie nommée PAR PIXEL, vers une seconde cible de rendu (2026-08-22)
 
+> ### ⚠️ PORTÉE — à lire avant le compte de cas
+>
+> **(b1) est prouvé jusqu'au NkSL émis, et pas au-delà. Aucune image n'a été
+> rendue, aucune valeur relue depuis la carte. Manquent : la cible
+> `R16G16B16A16_FLOAT` côté RHI, son effacement à `(0,0,0,0)`, et une lecture
+> réelle.**
+>
+> Sans cette phrase, « 116 cas, 0 échec, 26 mutations sur 26 » se lit comme « la
+> seconde cible fonctionne ». **Elle ne fonctionne pas : elle est correctement
+> décrite.** C'est beaucoup, ce n'est pas la même chose — et c'est précisément
+> l'écart qu'on passe des nuits à traquer ailleurs.
+>
+> 📌 La même phrase s'imprime **avec le compte**, à la fin de `NkMatGraphCheck`.
+> Rangée seulement ici, elle serait vraie et jamais lue.
+
 L'étage `par_pixel_cible` est **construit**. Format signé par Rodolf :
 **`R16G16B16A16_FLOAT`, 8 o/px** — RGB = la valeur, **A = la validité**.
 
@@ -2515,7 +2530,16 @@ n'en a aucune — sa valeur naît dans le shader. Le tableau restait donc **à z
 et ce zéro **se lit exactement comme « la valeur vaut zéro »**.
 
 C'est le canal alpha, transposé du tampon vers la structure C++ — et il entrait
-**par la porte de derrière**. Réparé de la même façon : un drapeau
+**par la porte de derrière**, dans le code écrit pour le corriger ailleurs.
+
+> **Que la même faute change d'étage sans changer de forme est ce qui la rend
+> générale : ce n'est pas un défaut du tampon, c'est l'absence de distinction
+> entre « rien » et « zéro », partout où elle n'est pas explicitement portée.**
+
+Le zéro est toujours disponible, toujours plausible, et ne se signale jamais. Le
+cœur le fait déjà bien pour les valeurs de graphe — « jamais renseigné » a **une
+seule** représentation, `type == NK_TYPE_INVALID`. C'est la même règle, et elle
+était déjà écrite dans `NkNodeGraph.h`. Réparé de la même façon : un drapeau
 `valeurConnue`. Un lecteur qui l'ignore lit `false` et doit s'en occuper ; il ne
 peut pas se tromper en silence.
 

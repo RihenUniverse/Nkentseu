@@ -12,6 +12,23 @@
 // device (c'est ce que fait deja NkSLCheck). Le banc reste donc rapide et
 // utilisable partout.
 //
+// ═════════════════════════════════════════════════════════════════════════════
+// ⚠️⚠️ CE QUE CE BANC NE PROUVE PAS — A LIRE AVANT SON COMPTE DE CAS ⚠️⚠️
+//
+//   (b1) EST PROUVE JUSQU'AU NkSL EMIS, ET PAS AU-DELA. AUCUNE IMAGE N'A ETE
+//   RENDUE, AUCUNE VALEUR RELUE DEPUIS LA CARTE. MANQUENT : LA CIBLE
+//   R16G16B16A16_FLOAT COTE RHI, SON EFFACEMENT A (0,0,0,0), ET UNE LECTURE
+//   REELLE.
+//
+// Sans cette phrase, « 116 cas, 0 echec, 26 mutations sur 26 » se lit comme
+// « la seconde cible fonctionne ». Elle ne fonctionne pas : ELLE EST
+// CORRECTEMENT DECRITE. C'est beaucoup, ce n'est pas la meme chose.
+//
+// La meme reserve vaut pour tout ce banc : il mesure des STRUCTURES DE DONNEES
+// et du TEXTE DE SHADER. Les cas « rendu/… » qui prouvent des pixels vivent
+// dans NkMatGraphDemo, qui a besoin d'un GPU.
+// ═════════════════════════════════════════════════════════════════════════════
+//
 // CE QUE CHAQUE CAS DOIT ETRE : un cas qui DISCRIMINE. Il ne confirme pas que ca
 // marche, il echouerait si l'implantation etait fausse D'UNE FACON PRECISE, et
 // cette facon est ecrite a cote du cas. Un cas qui ne peut pas surprendre n'est
@@ -59,6 +76,43 @@
 // Meme famille, par l'autre bout (Q38 s3) : un harnais de mutation qui restaure
 // le fichier SANS reconstruire laisse le binaire MUTE en place, et la course
 // suivante rend ROUGE sur une source saine.
+//
+// REGLE 3 — « RIEN » ET « ZERO » SONT DEUX ETATS, ET RIEN NE LES DISTINGUE TOUT
+//           SEUL
+//
+// Rencontre DEUX FOIS le meme jour, a deux etages differents, sous la meme
+// forme :
+//   - dans le tampon : un materiau qui ne porte pas la sortie y laisse des zeros,
+//     indiscernables d'une valeur qui vaut zero -> le canal A ;
+//   - dans la structure C++ : `NkMatSortieMateriau::valeur[3]` reste a zero pour
+//     une sortie (b1), qui n'a AUCUNE valeur processeur -> le drapeau
+//     `valeurConnue`.
+//
+// ⚠️ La seconde a ete ecrite EN CORRIGEANT LA PREMIERE. Que la meme faute change
+// d'etage sans changer de forme est ce qui la rend generale : ce n'est pas un
+// defaut du tampon, c'est L'ABSENCE DE DISTINCTION ENTRE « RIEN » ET « ZERO »,
+// partout ou elle n'est pas EXPLICITEMENT PORTEE. Le zero est toujours
+// disponible, toujours plausible, et ne se signale jamais.
+//   -> Demande-toi : ce zero veut-il dire « la valeur est zero » ou « il n'y a
+//      pas de valeur » ? Si les deux sont possibles, il manque un porteur.
+// (Le coeur le fait deja pour les valeurs de graphe : « jamais renseigne » a UNE
+// SEULE representation, `type == NK_TYPE_INVALID`. C'est la meme regle.)
+//
+// REGLE 4 — UNE CONDITION IMPLICITEMENT VRAIE PARCE QU'IL N'EXISTE QU'UN SEUL
+//           CAS DEVIENT FAUSSE QUAND LE SECOND ARRIVE, ET ELLE NE PREVIENT PAS
+//
+// Le refus « ta sortie depend du pixel » et l'evaluation processeur
+// s'appliquaient a TOUS les etages de sortie. C'etait correct tant qu'un seul
+// etage etait implemente. Le jour ou (b1) est arrive -- par pixel PAR
+// DEFINITION -- la condition est devenue fausse sans qu'une ligne change.
+//
+// 📌 ET LE DETAIL QUI LA REND RECONNAISSABLE : le message disait DEJA « est
+// declaree par_materiau ». Le code ne le verifiait pas. C'est la huitieme fois
+// dans ce chantier que le NOM et l'USAGE divergent -- et l'une des rares ou le
+// nom etait JUSTE : la prose portait l'intention exacte, le code ne la portait
+// pas.
+//   -> Demande-toi, en ajoutant un second cas a ce qui n'en avait qu'un : quelles
+//      conditions etaient vraies parce qu'il n'y en avait qu'un ?
 // ═════════════════════════════════════════════════════════════════════════════
 // =============================================================================
 #include "NKRenderer/Materials/Graph/NkMatGraphTypes.h"
@@ -5405,5 +5459,19 @@ int main() {
 	CasBriquesJointsDecales();
 
 	logger.Info("\n-- {0} cas, {1} echec(s) --", gCas, gEchecs);
+
+	// ⚠️ CETTE PORTEE S'IMPRIME AVEC LE COMPTE, ET CE N'EST PAS DECORATIF.
+	//
+	// « 116 cas, 0 echec, 26 mutations sur 26 » se lit spontanement comme « la
+	// seconde cible fonctionne ». Elle ne fonctionne pas : ELLE EST CORRECTEMENT
+	// DECRITE. C'est beaucoup, ce n'est pas la meme chose, et c'est exactement
+	// l'ecart qu'on passe des nuits a traquer ailleurs.
+	//
+	// La phrase est donc collee au chiffre qu'elle qualifie. Rangee dans une
+	// ROADMAP ou un rapport, elle serait vraie et jamais lue.
+	logger.Info("   PORTEE : (b1) est prouve jusqu'au NkSL EMIS, et pas au-dela.");
+	logger.Info("   Aucune image n'a ete rendue, aucune valeur relue depuis la carte.");
+	logger.Info("   Manquent : la cible R16G16B16A16_FLOAT cote RHI, son effacement a");
+	logger.Info("   (0,0,0,0), et une lecture reelle.");
 	return gEchecs == 0 ? 0 : 1;
 }
