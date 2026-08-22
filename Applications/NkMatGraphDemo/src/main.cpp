@@ -403,6 +403,30 @@ static bool GrapheMelangeCouleur(const char *operation, float32 fac, NkString &o
 	return r.ok;
 }
 
+// Le graphe qui prouve qu'une charge utile VARIABLE atteint le GPU :
+//     Value(fac) --> ColorRamp --> Emission --> sortie
+// La rampe recoit N arrets ; l'emission garde albedo = 0 et metallic = 0, donc
+// l'invariant achromatique tient et la soustraction de deux canaux elimine le
+// terme d'eclairage inconnu.
+static bool GrapheRampe(const float32 *arrets, uint32 nbReels, float32 fac, NkString &out) {
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
+	const NkNodeId ramp = NkMatAddNode(g, NK_MN_COLOR_RAMP);
+	const NkNodeId val = NkMatAddNode(g, NK_MN_VALUE);
+	g.Connect(emis, "emission", sortie, "surface");
+	g.Connect(ramp, "color", emis, "color");
+	g.Connect(val, "value", ramp, "fac");
+	g.SetProp(ramp, NK_MPROP_STOPS, NkValueVec(t.ramp, arrets, nbReels));
+	g.SetProp(ramp, NK_MPROP_INTERP, NkValueText(t.ramp, "lineaire"));
+	g.SetProp(val, NK_MPROP_VALUE, NkValueReal(t.real, fac));
+	g.SetSocketDefault(emis, "strength", NkSocketDir::Input, NkValueReal(t.real, 1.f));
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	out = r.source;
+	return r.ok;
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -537,7 +561,44 @@ int main() {
 					 dR, dV, kEcartAttendu, NkString(dR == 2 * dRefR ? "oui" : "NON")));
 	}
 
-	// ── 7. le fond de repli n'a jamais ete lu ────────────────────────────
+	// ── 7. ColorRamp : la charge VARIABLE atteint le GPU ─────────────────
+	{
+		// Deux arrets : rouge a 0, vert a 1. Trois lectures.
+		const float32 deux[8] = {0.f, kE, 0.f, 0.f, 1.f, 0.f, kE, 0.f};
+		uint8 a0[4] = {}, a1[4] = {}, am[4] = {};
+		const bool c0 = GrapheRampe(deux, 8, 0.f, src) && ctx.RendreEtLire(src, "matgraph_ramp0", a0);
+		const bool c1 = GrapheRampe(deux, 8, 1.f, src) && ctx.RendreEtLire(src, "matgraph_ramp1", a1);
+		const bool cm = GrapheRampe(deux, 8, 0.5f, src) && ctx.RendreEtLire(src, "matgraph_rampm", am);
+		const bool bornes = (a0[0] - a0[2] == kEcartAttendu) && a0[1] == a0[2] &&
+							(a1[1] - a1[2] == kEcartAttendu) && a1[0] == a1[2];
+		const bool milieu = am[0] == am[1] && (am[0] - am[2]) == kEcartAttendu / 2;
+		Cas("rendu/rampe-deux-arrets", c0 && c1 && cm && bornes && milieu,
+			NkFormat("fac=0 ({0},{1},{2}) | fac=1 ({3},{4},{5}) | fac=0,5 ({6},{7},{8}) | bornes={9} milieu={10}",
+					 a0[0], a0[1], a0[2], a1[0], a1[1], a1[2], am[0], am[1], am[2], bornes ? 1 : 0,
+					 milieu ? 1 : 0));
+	}
+	{
+		// ⚠️ LE CAS QUI PROUVE LA CHARGE VARIABLE, ET LUI SEUL.
+		// Trois arrets : rouge a 0, VERT AU MILIEU, rouge a 1. A fac=0,5 la
+		// couleur doit valoir EXACTEMENT l'arret du milieu — vert plein.
+		//
+		// Un emetteur qui ne lirait que le PREMIER et le DERNIER arret — l'erreur
+		// naturelle quand on traite une liste comme une paire — rendrait du rouge
+		// interpole avec du rouge, donc (E, 0, 0) : R==128 et V==B. Les deux
+		// resultats sont des couleurs parfaitement plausibles ; seul le canal ou
+		// tombe l'ecart les distingue.
+		const float32 trois[12] = {0.f, kE, 0.f, 0.f, 0.5f, 0.f, kE, 0.f, 1.f, kE, 0.f, 0.f};
+		uint8 px[4] = {};
+		const bool c = GrapheRampe(trois, 12, 0.5f, src) && ctx.RendreEtLire(src, "matgraph_ramp3", px);
+		const int32 dV = (int32)px[1] - (int32)px[2];
+		const bool arretDuMilieuHonore = px[0] == px[2] && dV == kEcartAttendu;
+		Cas("rendu/rampe-arret-du-milieu-honore", c && arretDuMilieuHonore,
+			NkFormat("pixel=({0},{1},{2}) | R==B : {3} | ecart V-B={4} (attendu {5} : l'arret du milieu, pas une "
+					 "interpolation des bords)",
+					 px[0], px[1], px[2], NkString(px[0] == px[2] ? "oui" : "NON"), dV, kEcartAttendu));
+	}
+
+	// ── 8. le fond de repli n'a jamais ete lu ────────────────────────────
 	{
 		// ⚠️ LE CAS QUI EMPECHE DE SE REJOUIR TROP VITE. Si le trace avait
 		// echoue sans le dire, on lirait le MAGENTA d'effacement. Comme il est

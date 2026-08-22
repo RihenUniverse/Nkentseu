@@ -69,15 +69,34 @@ namespace nkentseu {
 			static const char *const NK_MT_VECTOR = "mat.vecteur";
 			static const char *const NK_MT_COLOR = "mat.couleur";
 			static const char *const NK_MT_SHADER = "mat.shader";
+			// ⚠️ UN TYPE DE VALEUR QUI N'EST LE TYPE D'AUCUNE PRISE, et c'est
+			// legitime. La condition posee sur les proprietes est que leur
+			// `NkTypeId` vienne DU REGISTRE — pas qu'il soit porte par une prise.
+			// Une rampe ne se branche pas : elle se REGLE. Elle a pourtant besoin
+			// d'un type, sans quoi le coeur ne pourrait ni la comparer ni la
+			// valider, et on aurait rouvert la porte de derriere du garde-fou n°1.
+			static const char *const NK_MT_RAMP = "mat.rampe";
+
+			// Quatre reels par arret : c'est ecrit ici parce que le compilateur,
+			// le banc et l'interface doivent decouper le tableau de la MEME
+			// facon. Un decoupage suppose a trois endroits est un decoupage qui
+			// divergera.
+			static const uint32 NK_RAMP_REELS_PAR_ARRET = 4;
+			// ⚠️ PLAFOND. Une charge variable sans borne est une invitation : un
+			// fichier annoncant dix mille arrets deroulerait dix mille `mix` dans
+			// le shader, qui ne compilerait plus — et l'erreur accuserait le
+			// backend. On borne ici, et le refus dira le compte.
+			static const uint32 NK_RAMP_ARRETS_MAX = 32;
 
 			struct NkMatTypes {
 					NkTypeId real = graph::NK_TYPE_INVALID;
 					NkTypeId vector = graph::NK_TYPE_INVALID;
 					NkTypeId color = graph::NK_TYPE_INVALID;
 					NkTypeId shader = graph::NK_TYPE_INVALID;
+					NkTypeId ramp = graph::NK_TYPE_INVALID;
 
 					bool Valid() const {
-						return real && vector && color && shader;
+						return real && vector && color && shader && ramp;
 					}
 			};
 
@@ -102,6 +121,7 @@ namespace nkentseu {
 				t.vector = g.RegisterType(NK_MT_VECTOR);
 				t.color = g.RegisterType(NK_MT_COLOR);
 				t.shader = g.RegisterType(NK_MT_SHADER);
+				t.ramp = g.RegisterType(NK_MT_RAMP);
 				g.AllowConversion(t.real, t.vector);
 				g.AllowConversion(t.real, t.color);
 				g.AllowConversion(t.vector, t.color);
@@ -130,12 +150,115 @@ namespace nkentseu {
 				};
 				static const uint32 kOpsMathCount = 7;
 
+				// Interpolations de rampe. Meme discipline que les operations :
+				// des MOTS, une seule table, et un mode inconnu est REFUSE.
+				static const NkMatOperation kInterps[] = {
+					{"lineaire", "Linear"},
+					{"constante", "Constant"},
+				};
+				static const uint32 kInterpsCount = 2;
+
 				static const NkMatOperation kOpsMix[] = {
 					{"melanger", "Mix"},		{"multiplier", "Multiply"}, {"ajouter", "Add"},
 					{"soustraire", "Subtract"}, {"eclaircir", "Lighten"},	{"assombrir", "Darken"},
 				};
 				static const uint32 kOpsMixCount = 6;
 			} // namespace detail
+
+			inline uint32 NkMatInterpCount() {
+				return detail::kInterpsCount;
+			}
+
+			inline const NkMatOperation *NkMatInterpAt(uint32 i) {
+				return i < detail::kInterpsCount ? &detail::kInterps[i] : nullptr;
+			}
+
+			inline int32 NkMatTrouveInterp(const char *cle) {
+				if (!cle)
+					return -1;
+				for (uint32 i = 0; i < detail::kInterpsCount; ++i) {
+					const char *a = detail::kInterps[i].cle;
+					const char *b = cle;
+					while (*a && *a == *b) {
+						++a;
+						++b;
+					}
+					if (!*a && !*b)
+						return (int32)i;
+				}
+				return -1;
+			}
+
+			// ── UNE RAMPE, LUE ET VALIDEE AU MEME ENDROIT ────────────────────
+			// Le compilateur ET le banc passent par ici : un decoupage duplique
+			// finirait par diverger, et c'est le compilateur qui aurait raison
+			// sans que personne le sache.
+			enum class NkMatRampeErreur : uint8 {
+				Ok = 0,
+				Absente,	  ///< pas de propriete : cas LEGITIME, rampe par defaut
+				MalFormee,	  ///< le compte de reels n'est pas un multiple de 4
+				Vide,		  ///< zero arret
+				TropDArrets,  ///< au-dela du plafond
+				NonTriee,	  ///< positions dans le DESORDRE : il faut les reordonner
+				// ⚠️ DEUX ARRETS A LA MEME POSITION EST UN AUTRE DEFAUT, et il se
+				// repare autrement : le desordre se corrige en reordonnant, une
+				// egalite en DEPLACANT un arret. Un message commun obligerait
+				// l'auteur a comprendre lui-meme lequel des deux il a sous les
+				// yeux. Separe apres qu'un cas de banc l'a exige.
+				PositionsEgales,
+			};
+
+			inline NkMatRampeErreur NkMatLisRampe(const NkGraphValue *v, uint32 *outArrets) {
+				if (outArrets)
+					*outArrets = 0;
+				if (!v || !v->IsSet())
+					return NkMatRampeErreur::Absente;
+				const uint32 n = (uint32)v->numbers.Size();
+				if (n % NK_RAMP_REELS_PAR_ARRET != 0)
+					return NkMatRampeErreur::MalFormee;
+				const uint32 arrets = n / NK_RAMP_REELS_PAR_ARRET;
+				if (arrets == 0)
+					return NkMatRampeErreur::Vide;
+				if (arrets > NK_RAMP_ARRETS_MAX)
+					return NkMatRampeErreur::TropDArrets;
+				// ⚠️ POSITIONS CROISSANTES. Deux arrets a la meme position font
+				// diviser par zero dans l'interpolation ; des positions dans le
+				// desordre rendent une rampe qui a l'air de marcher et qui lit
+				// les couleurs dans le mauvais ordre. On REFUSE plutot que de
+				// trier en silence : trier changerait le fichier de l'auteur sans
+				// le lui dire.
+				for (uint32 i = 1; i < arrets; ++i) {
+					const float32 avant = v->numbers[(i - 1) * NK_RAMP_REELS_PAR_ARRET];
+					const float32 ici = v->numbers[i * NK_RAMP_REELS_PAR_ARRET];
+					if (ici < avant)
+						return NkMatRampeErreur::NonTriee;
+					if (ici == avant)
+						return NkMatRampeErreur::PositionsEgales;
+				}
+				if (outArrets)
+					*outArrets = arrets;
+				return NkMatRampeErreur::Ok;
+			}
+
+			inline const char *NkMatRampeErreurNom(NkMatRampeErreur e) {
+				switch (e) {
+					case NkMatRampeErreur::Ok:
+						return "ok";
+					case NkMatRampeErreur::Absente:
+						return "absente";
+					case NkMatRampeErreur::MalFormee:
+						return "mal-formee";
+					case NkMatRampeErreur::Vide:
+						return "vide";
+					case NkMatRampeErreur::TropDArrets:
+						return "trop-d-arrets";
+					case NkMatRampeErreur::NonTriee:
+						return "positions-dans-le-desordre";
+					case NkMatRampeErreur::PositionsEgales:
+						return "deux-arrets-a-la-meme-position";
+				}
+				return "?";
+			}
 
 			inline uint32 NkMatOperationCount(bool pourMelangeCouleur) {
 				return pourMelangeCouleur ? detail::kOpsMixCount : detail::kOpsMathCount;
@@ -239,6 +362,14 @@ namespace nkentseu {
 			// alors a calculer autre chose SANS que rien ne le dise.
 			static const char *const NK_MPROP_OPERATION = "operation";
 
+			// ColorRamp : la PREMIERE propriete a charge utile VARIABLE. Ses
+			// arrets sont N groupes de quatre reels — position, r, v, b — dans un
+			// seul `NkGraphValue`. Jusqu'ici toutes les charges etaient de taille
+			// fixe (un reel, trois, quatre) ; celle-ci est ce qui eprouve
+			// vraiment le sac de proprietes.
+			static const char *const NK_MN_COLOR_RAMP = "mat.rampe_couleur";
+			static const char *const NK_MPROP_STOPS = "arrets";
+			static const char *const NK_MPROP_INTERP = "interpolation";
 			namespace detail {
 
 				// Principled REDUIT a ce qui a un sens dans un rasteriseur, et
@@ -297,6 +428,11 @@ namespace nkentseu {
 					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
 				};
 
+				static const NkMatSocketDecl kColorRamp[] = {
+					{"fac", NK_MT_REAL, NkSocketDir::Input, false},
+					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
+				};
+
 				static const NkMatSocketDecl kMath[] = {
 					{"a", NK_MT_REAL, NkSocketDir::Input, false},
 					{"b", NK_MT_REAL, NkSocketDir::Input, false},
@@ -323,8 +459,9 @@ namespace nkentseu {
 					{NK_MN_RGB, "RGB", kRGB, 1},
 					{NK_MN_MATH, "Math", kMath, 3},
 					{NK_MN_MIX_COLOR, "Mix Color", kMixColor, 4},
+					{NK_MN_COLOR_RAMP, "ColorRamp", kColorRamp, 2},
 				};
-				static const uint32 kProtoCount = 9;
+				static const uint32 kProtoCount = 10;
 
 			} // namespace detail
 

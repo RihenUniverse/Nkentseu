@@ -375,11 +375,17 @@ namespace nkentseu {
 								return r;
 							}
 						}
-						// ⚠️ LE POINTEUR EST VERIFIE, PAS SUPPOSE. Une mutation qui
-						// retirait le refus ci-dessus laissait `iop` a -1, et ce
-						// `->cle` dereferencait un pointeur NUL : le banc mourait
-						// au lieu d'echouer. Un code qui ne peut se tromper QUE
-						// par un plantage n'est pas robuste, il est chanceux.
+						// ⚠️ LE POINTEUR EST VERIFIE, PAS SUPPOSE.
+						//
+						//     UN CODE QUI NE PEUT SE TROMPER QUE PAR UN PLANTAGE
+						//     N'EST PAS ROBUSTE, IL EST CHANCEUX.
+						//
+						// Trouve par une mutation, le 2026-08-22 : en retirant le
+						// refus ci-dessus, `iop` restait a -1 et ce `->cle`
+						// dereferencait un pointeur NUL. Le banc MOURAIT au lieu
+						// d'echouer — donc la mutation etait bien tuee, mais par
+						// un segfault et non par le cas prevu. La difference
+						// compte : un plantage ne dit pas CE QUI est faux.
 						const NkMatOperation *opd =
 							(iop >= 0) ? NkMatOperationAt(couleur, (uint32)iop) : nullptr;
 						if (!opd) {
@@ -414,11 +420,17 @@ namespace nkentseu {
 								ecrisB();
 							} else if (detail::OpEst(op, "diviser")) {
 								// ⚠️ DIVISION PAR ZERO : on rend 0, comme Blender.
-								// Laisser passer une division nue produirait un
-								// NaN qui contamine tout le reste du graphe, et
-								// qui se voit comme un pixel noir ou blanc selon
-								// le backend — donc un defaut qui change d'aspect
-								// d'une machine a l'autre.
+								//
+								// NE RETIRE PAS CETTE GARDE EN LA PRENANT POUR DE
+								// LA TIMIDITE. Une division nue produit un NaN ;
+								// le NaN CONTAMINE tout l'aval du graphe, et il se
+								// voit comme un pixel noir ICI et blanc LA selon
+								// le backend. Un defaut qui change d'aspect d'une
+								// machine a l'autre FAIT ACCUSER LA MACHINE — on
+								// cherche alors le pilote, la carte, le systeme,
+								// et jamais la ligne de shader qui divise par
+								// zero. C'est le cout reel de cette garde
+								// absente : des heures passees au mauvais etage.
 								s.Append("((");
 								ecrisB();
 								s.Append(") == 0.0 ? 0.0 : (");
@@ -487,6 +499,130 @@ namespace nkentseu {
 							s.Append(", 0.0, 1.0))");
 						}
 						s.Append(";\n");
+					} else if (t == NkString(NK_MN_COLOR_RAMP)) {
+						// ── LA PREMIERE PROPRIETE A CHARGE UTILE VARIABLE ─────
+						// N arrets, quatre reels chacun. Le decoupage passe par
+						// `NkMatLisRampe`, partage avec le banc : un decoupage
+						// duplique finirait par diverger, et c'est le compilateur
+						// qui aurait raison sans que personne le sache.
+						const NkGraphValue *ps = g.FindProp(n->id, NK_MPROP_STOPS);
+						uint32 arrets = 0;
+						const NkMatRampeErreur re = NkMatLisRampe(ps, &arrets);
+
+						// La rampe par defaut de Blender : noir -> blanc. C'est le
+						// cas LEGITIME d'une propriete absente — le noeud vient
+						// d'etre pose. Toute AUTRE erreur est un refus.
+						static const float32 kDefaut[8] = {0.f, 0.f, 0.f, 0.f, 1.f, 1.f, 1.f, 1.f};
+						const float32 *st = kDefaut;
+						if (re == NkMatRampeErreur::Absente) {
+							arrets = 2;
+						} else if (re != NkMatRampeErreur::Ok) {
+							r.error = NkString("rampe invalide sur ");
+							r.error.Append(n->type);
+							r.error.Append(" : ");
+							r.error.Append(NkMatRampeErreurNom(re));
+							if (re == NkMatRampeErreur::TropDArrets) {
+								// ⚠️ LE REFUS DIT COMBIEN. « trop d'arrets » seul
+								// oblige l'auteur a deviner ce qu'il doit retirer.
+								r.error.Append(" (");
+								detail::PutU(r.error, (uint32)ps->numbers.Size() / NK_RAMP_REELS_PAR_ARRET);
+								r.error.Append(" demandes, plafond ");
+								detail::PutU(r.error, NK_RAMP_ARRETS_MAX);
+								r.error.Append(")");
+							}
+							r.source = NkString("");
+							return r;
+						} else {
+							st = ps->numbers.Data();
+						}
+
+						// Le mode d'interpolation, meme discipline que les
+						// operations : un mot, et un mot inconnu est refuse.
+						const NkGraphValue *pi = g.FindProp(n->id, NK_MPROP_INTERP);
+						int32 ii = 0;
+						if (pi && pi->IsSet()) {
+							ii = NkMatTrouveInterp(pi->text.CStr());
+							if (ii < 0) {
+								r.error = NkString("interpolation inconnue sur ");
+								r.error.Append(n->type);
+								r.error.Append(" : ");
+								r.error.Append(pi->text);
+								r.source = NkString("");
+								return r;
+							}
+						}
+						const NkMatOperation *id = NkMatInterpAt((uint32)ii);
+						if (!id) {
+							// Meme raison qu'ailleurs dans ce fichier : un code qui
+							// ne peut se tromper que par un plantage n'est pas
+							// robuste, il est chanceux.
+							r.error = NkString("interpolation hors table");
+							r.source = NkString("");
+							return r;
+						}
+						const bool constante = detail::OpEst(id->cle, "constante");
+
+						// Le facteur, borne : une rampe est definie sur [0,1], et
+						// extrapoler au-dela donnerait des couleurs que l'auteur
+						// n'a jamais choisies.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "f");
+						s.Append(" = clamp(");
+						ecrisEntree(*n, "fac", "float", nullptr);
+						s.Append(", 0.0, 1.0);\n");
+
+						// On part du PREMIER arret, puis on empile les suivants.
+						// Deroule a la compilation : pas de boucle, pas d'index
+						// dynamique — le shader reste lisible et aucun backend
+						// n'a besoin d'indexation dynamique de tableau.
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "val");
+						s.Append(" = vec3(");
+						for (uint32 c = 0; c < 3; ++c) {
+							if (c)
+								s.Append(", ");
+							detail::PutLit(s, st[1 + c]);
+						}
+						s.Append(");\n");
+
+						for (uint32 k = 1; k < arrets; ++k) {
+							const float32 p0 = st[(k - 1) * NK_RAMP_REELS_PAR_ARRET];
+							const float32 p1 = st[k * NK_RAMP_REELS_PAR_ARRET];
+							s.Append("    ");
+							detail::PutNom(s, n->id, "val");
+							s.Append(" = mix(");
+							detail::PutNom(s, n->id, "val");
+							s.Append(", vec3(");
+							for (uint32 c = 0; c < 3; ++c) {
+								if (c)
+									s.Append(", ");
+								detail::PutLit(s, st[k * NK_RAMP_REELS_PAR_ARRET + 1 + c]);
+							}
+							s.Append("), ");
+							if (constante) {
+								// Palier : la couleur bascule d'un coup a la
+								// position de l'arret.
+								s.Append("step(");
+								detail::PutLit(s, p1);
+								s.Append(", ");
+								detail::PutNom(s, n->id, "f");
+								s.Append(")");
+							} else {
+								// Lineaire. Le denominateur est calcule ICI, a la
+								// compilation, et `NkMatLisRampe` a deja garanti
+								// qu'il est strictement positif — les positions
+								// egales sont refusees en amont. Il n'y a donc
+								// aucune division a garder dans le shader.
+								s.Append("clamp((");
+								detail::PutNom(s, n->id, "f");
+								s.Append(" - ");
+								detail::PutLit(s, p0);
+								s.Append(") * ");
+								detail::PutLit(s, 1.f / (p1 - p0));
+								s.Append(", 0.0, 1.0)");
+							}
+							s.Append(");\n");
+						}
 					} else if (t == NkString(NK_MN_OUTPUT)) {
 						// ── LE PUITS : ombrage puis ecriture ────────────────
 						// Le modele d'eclairage est celui de LayeredV1, a

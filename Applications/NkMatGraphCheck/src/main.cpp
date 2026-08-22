@@ -1377,13 +1377,15 @@ static void CasMenuPriseCouleurEtReelle() {
 	// Ce qui produit une COULEUR ou peut s'y convertir : RGB, Mix Color, et
 	// Value (un reel se diffuse en gris). Math aussi, pour la meme raison.
 	const bool couleurOk = DansLeMenu(mc, nc, NK_MN_RGB) && DansLeMenu(mc, nc, NK_MN_VALUE) &&
-						   DansLeMenu(mc, nc, NK_MN_MIX_COLOR) && DansLeMenu(mc, nc, NK_MN_MATH);
+						   DansLeMenu(mc, nc, NK_MN_MIX_COLOR) && DansLeMenu(mc, nc, NK_MN_MATH) &&
+						   DansLeMenu(mc, nc, NK_MN_COLOR_RAMP);
 	// Ce qui produit un REEL : Value et Math. Ni RGB ni Mix Color, parce que
 	// `couleur -> reel` n'est PAS declaree — et c'est la tout le cas.
 	const bool reelOk = DansLeMenu(mr, nr, NK_MN_VALUE) && DansLeMenu(mr, nr, NK_MN_MATH) &&
-						!DansLeMenu(mr, nr, NK_MN_RGB) && !DansLeMenu(mr, nr, NK_MN_MIX_COLOR);
-	Cas("biblio/menu-asymetrique-couleur-reel", nc == 4 && nr == 2 && couleurOk && reelOk,
-		NkFormat("base_color : {0} propositions (RGB+MixColor+Value+Math, ok={1}) | roughness : {2} (Value+Math "
+						!DansLeMenu(mr, nr, NK_MN_RGB) && !DansLeMenu(mr, nr, NK_MN_MIX_COLOR) &&
+						!DansLeMenu(mr, nr, NK_MN_COLOR_RAMP);
+	Cas("biblio/menu-asymetrique-couleur-reel", nc == 5 && nr == 2 && couleurOk && reelOk,
+		NkFormat("base_color : {0} propositions (RGB+MixColor+ColorRamp+Value+Math, ok={1}) | roughness : {2} (Value+Math "
 				 "SEULS, RGB et MixColor doivent etre absents, ok={3})",
 				 nc, couleurOk ? 1 : 0, nr, reelOk ? 1 : 0));
 }
@@ -1582,6 +1584,179 @@ static void CasDivisionParZeroGardee() {
 		NkFormat("emis={0} | {1}| garde presente dans le code emis={2}", r.ok ? 1 : 0, be, garde ? 1 : 0));
 }
 
+
+// ── ColorRamp : la premiere propriete a charge utile VARIABLE ────────────────
+
+// Monte un graphe `ColorRamp -> base_color` et rend le resultat de compilation.
+static NkMatCompileResult CompileRampe(NkNodeGraph &g, const NkMatTypes &t, const float32 *arrets, uint32 nbReels,
+									   const char *interp) {
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId ramp = NkMatAddNode(g, NK_MN_COLOR_RAMP);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	g.Connect(ramp, "color", bsdf, "base_color");
+	if (arrets)
+		g.SetProp(ramp, NK_MPROP_STOPS, NkValueVec(t.ramp, arrets, nbReels));
+	if (interp)
+		g.SetProp(ramp, NK_MPROP_INTERP, NkValueText(t.ramp, interp));
+	return NkMatCompileToNkSL(g);
+}
+
+static void CasRampeChargeVariable() {
+	// LE CAS QUI EPROUVE LE SAC DE PROPRIETES. Jusqu'ici toutes les charges
+	// utiles etaient de taille FIXE : un reel, trois, quatre. Une rampe en porte
+	// 4xN, et N vient du fichier.
+	//
+	// DISCRIMINE : on compte les mix que la rampe emet. Une rampe a N arrets en
+	// produit exactement N-1. Un emetteur qui n'en produirait qu'un — le premier
+	// et le dernier arret, en ignorant ceux du milieu — donnerait un shader qui
+	// compile et une rampe FAUSSE. Le compte est verifie pour 2, 3 et 5 arrets :
+	// une seule taille ne prouverait rien d'une charge variable.
+	const float32 a2[8] = {0.f, 1.f, 0.f, 0.f, 1.f, 0.f, 0.f, 1.f};
+	const float32 a3[12] = {0.f, 1.f, 0.f, 0.f, 0.5f, 0.f, 1.f, 0.f, 1.f, 0.f, 0.f, 1.f};
+	const float32 a5[20] = {0.f, 1.f, 0.f, 0.f, 0.25f, 1.f, 1.f, 0.f, 0.5f, 0.f,
+							1.f, 0.f, 0.75f, 0.f, 1.f, 1.f, 1.f, 0.f, 0.f, 1.f};
+	struct Jeu {
+			const float32 *st;
+			uint32 n;
+			uint32 arrets;
+	};
+	const Jeu jeux[3] = {{a2, 8, 2}, {a3, 12, 3}, {a5, 20, 5}};
+	uint32 bons = 0;
+	NkString detail;
+	for (uint32 j = 0; j < 3; ++j) {
+		NkNodeGraph g;
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		NkMatCompileResult r = CompileRampe(g, t, jeux[j].st, jeux[j].n, "lineaire");
+		uint32 nbMix = 0;
+		if (r.ok) {
+			const char *q = r.source.CStr();
+			while (*q) {
+				if (q[0] == 'm' && q[1] == 'i' && q[2] == 'x' && q[3] == '(')
+					++nbMix;
+				++q;
+			}
+		}
+		// Le puits emet DEUX mix pour son propre compte (specExp, specColor) :
+		// c'est la lecon d'hier, ou compter tous les mix du shader mesurait le
+		// modele d'eclairage en meme temps que le noeud.
+		const uint32 attendus = jeux[j].arrets - 1u + 2u;
+		NkString be, err;
+		const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+		if (r.ok && ok == 4 && nbMix == attendus)
+			++bons;
+		detail.Append(NkFormat("{0} arrets->{1} mix (attendu {2}) ", jeux[j].arrets, nbMix, attendus));
+	}
+	Cas("colorramp/charge-utile-variable", bons == 3, detail);
+}
+
+static void CasRampeRefusNommes() {
+	// QUATRE malformations, QUATRE messages distincts, et AUCUN shader emis.
+	// DISCRIMINE : un compilateur qui rendrait le meme message pour tout
+	// passerait un test qui ne compterait que les echecs. Et le cinquieme cas —
+	// la propriete ABSENTE — doit au contraire COMPILER : c'est le voisin
+	// legitime (le noeud vient d'etre pose), et le confondre avec une erreur
+	// serait aussi faux que l'inverse.
+	const float32 malForme[3] = {0.f, 1.f, 0.f};
+	const float32 desordre[8] = {1.f, 1.f, 0.f, 0.f, 0.f, 0.f, 0.f, 1.f};
+	const float32 egales[8] = {0.5f, 1.f, 0.f, 0.f, 0.5f, 0.f, 0.f, 1.f};
+	float32 trop[(NK_RAMP_ARRETS_MAX + 1) * 4];
+	for (uint32 i = 0; i <= NK_RAMP_ARRETS_MAX; ++i) {
+		trop[i * 4 + 0] = (float32)i * 0.001f;
+		trop[i * 4 + 1] = 1.f;
+		trop[i * 4 + 2] = 0.f;
+		trop[i * 4 + 3] = 0.f;
+	}
+	NkString m[4];
+	bool emisVide = true;
+	const float32 *jeux[4] = {malForme, desordre, egales, trop};
+	const uint32 tailles[4] = {3, 8, 8, (NK_RAMP_ARRETS_MAX + 1) * 4};
+	for (uint32 j = 0; j < 4; ++j) {
+		NkNodeGraph g;
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		NkMatCompileResult r = CompileRampe(g, t, jeux[j], tailles[j], "lineaire");
+		m[j] = r.ok ? NkString("A COMPILE (ne devait pas)") : r.error;
+		if (r.source.Size() != 0)
+			emisVide = false;
+	}
+	NkNodeGraph g2;
+	const NkMatTypes t2 = NkMatRegisterTypes(g2);
+	NkMatCompileResult absente = CompileRampe(g2, t2, nullptr, 0, nullptr);
+	// ⚠️ LE REFUS DOIT DIRE LE COMPTE. Sans le nombre, l'auteur doit deviner
+	// combien d'arrets retirer.
+	const bool ditLeCompte = Apres(m[3], "33 demandes, plafond 32") > 0;
+	const bool distincts = !(m[0] == m[1]) && !(m[1] == m[2]) && !(m[2] == m[3]) && !(m[0] == m[3]);
+	Cas("colorramp/refus-nommes-et-distincts", distincts && emisVide && absente.ok && ditLeCompte,
+		NkFormat("[{0}] [{1}] [{2}] [{3}] | distincts={4} rien emis={5} absente compile={6} plafond dit le "
+				 "compte={7}",
+				 m[0], m[1], m[2], m[3], distincts ? 1 : 0, emisVide ? 1 : 0, absente.ok ? 1 : 0,
+				 ditLeCompte ? 1 : 0));
+}
+
+static void CasRampeInterpolation() {
+	// Les deux interpolations emettent des codes DIFFERENTS — step pour la
+	// constante, une pente pre-calculee pour la lineaire — et les deux compilent.
+	// Une interpolation inconnue est refusee en la nommant, meme discipline que
+	// les operations.
+	//
+	// ⚠️ Et un point qui merite d'etre verifie : la rampe lineaire ne contient
+	// AUCUNE division dans le shader. Le denominateur est calcule a la
+	// compilation, et NkMatLisRampe a deja garanti qu'il est non nul en refusant
+	// les positions egales. Une division laissee dans le shader serait une garde
+	// a maintenir pour rien.
+	const float32 a[8] = {0.f, 1.f, 0.f, 0.f, 1.f, 0.f, 0.f, 1.f};
+	NkNodeGraph g1;
+	const NkMatTypes t1 = NkMatRegisterTypes(g1);
+	NkMatCompileResult lin = CompileRampe(g1, t1, a, 8, "lineaire");
+	NkNodeGraph g2;
+	const NkMatTypes t2 = NkMatRegisterTypes(g2);
+	NkMatCompileResult cst = CompileRampe(g2, t2, a, 8, "constante");
+	NkNodeGraph g3;
+	const NkMatTypes t3 = NkMatRegisterTypes(g3);
+	NkMatCompileResult inc = CompileRampe(g3, t3, a, 8, "spline_de_bezier_cubique");
+
+	NkString be1, be2, e1, e2;
+	const uint32 ok1 = lin.ok ? CompileSurLesBackends(lin.source, be1, &e1) : 0u;
+	const uint32 ok2 = cst.ok ? CompileSurLesBackends(cst.source, be2, &e2) : 0u;
+	const bool pasDeStepEnLineaire = lin.ok && !ContientSansCasse(lin.source, "step(");
+	const bool stepEnConstante = cst.ok && ContientSansCasse(cst.source, "step(");
+	const bool nomme = !inc.ok && Apres(inc.error, "spline_de_bezier_cubique") > 0;
+	Cas("colorramp/interpolations-et-refus",
+		lin.ok && cst.ok && ok1 == 4 && ok2 == 4 && pasDeStepEnLineaire && stepEnConstante && nomme,
+		NkFormat("lineaire {0}| constante {1}| step absent en lineaire={2} present en constante={3} | inconnue "
+				 "refusee en la nommant={4}",
+				 be1, be2, pasDeStepEnLineaire ? 1 : 0, stepEnConstante ? 1 : 0, nomme ? 1 : 0));
+}
+
+static void CasRampeAllerRetourFichier() {
+	// ⚠️ LA CHARGE VARIABLE DOIT SURVIVRE AU FICHIER, et c'est le vrai test du
+	// sac de proprietes : jusqu'ici l'aller-retour ne portait que des charges de
+	// taille fixe. On compare les textes ET on recompile le graphe relu : les
+	// deux shaders doivent etre identiques au caractere pres. Une charge tronquee
+	// donnerait une rampe plus courte, qui compile parfaitement.
+	const float32 a5[20] = {0.f, 1.f, 0.f, 0.f, 0.25f, 1.f, 1.f, 0.f, 0.5f, 0.f,
+							1.f, 0.f, 0.75f, 0.f, 1.f, 1.f, 1.f, 0.f, 0.f, 1.f};
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	NkMatCompileResult direct = CompileRampe(g, t, a5, 20, "lineaire");
+	NkString fichier;
+	g.Serialize(fichier);
+	NkNodeGraph g2;
+	const bool relu = g2.Deserialize(fichier.CStr());
+	NkMatCompileResult apres = NkMatCompileToNkSL(g2);
+	const bool meme = direct.ok && apres.ok && (direct.source == apres.source);
+	const NkGraphValue *v = nullptr;
+	for (uint32 i = 0; i < g2.RawNodeCount(); ++i) {
+		const NkNode *nd = g2.RawNodeAt(i);
+		if (nd && nd->alive && nd->type == NkString(NK_MN_COLOR_RAMP))
+			v = g2.FindProp(nd->id, NK_MPROP_STOPS);
+	}
+	const bool taille = v && v->numbers.Size() == 20;
+	Cas("colorramp/charge-variable-survit-au-fichier", relu && meme && taille,
+		NkFormat("relu={0} shader identique={1} | reels retrouves={2} (20 attendus) | fichier de {3} o",
+				 relu ? 1 : 0, meme ? 1 : 0, v ? (uint32)v->numbers.Size() : 0u, (uint32)fichier.Size()));
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -1652,6 +1827,12 @@ int main() {
 	CasOperationInconnueRefusee();
 	CasToutesLesOperationsCompilent();
 	CasDivisionParZeroGardee();
+
+	// -- ColorRamp : la premiere charge utile VARIABLE --------------------
+	CasRampeChargeVariable();
+	CasRampeRefusNommes();
+	CasRampeInterpolation();
+	CasRampeAllerRetourFichier();
 
 	logger.Info("\n-- {0} cas, {1} echec(s) --", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;
