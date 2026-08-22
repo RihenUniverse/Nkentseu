@@ -1716,6 +1716,278 @@ namespace nkentseu {
 							s.Append(kAxes[a]);
 							s.Append(";\n");
 						}
+					} else if (t == NkString(NK_MN_MAP_RANGE)) {
+						// Le mode de bornage, un MOT. Absent = `serre`, le defaut de Blender :
+						// une valeur qui sort de sa plage sans prevenir donne des couleurs que
+						// personne n a choisies. Un mot INCONNU est refuse en le nommant.
+						const NkGraphValue *pb = g.FindProp(n->id, NK_MPROP_BORNAGE);
+						int32 ib = 0;
+						if (pb && pb->IsSet()) {
+							ib = NkMatTrouveBornage(pb->text.CStr());
+							if (ib < 0) {
+								r.error = NkString("bornage inconnu sur ");
+								r.error.Append(n->type);
+								r.error.Append(" : ");
+								r.error.Append(pb->text);
+								r.source = NkString("");
+								return r;
+							}
+						}
+						const NkMatOperation *ob = NkMatBornageAt((uint32)ib);
+						if (!ob) {
+							r.error = NkString("bornage hors table");
+							r.source = NkString("");
+							return r;
+						}
+						const bool serre = detail::OpEst(ob->cle, "serre");
+						// ⚠️ LA DIVISION EST GARDEE, et ce n'est pas de la timidite.
+						// Si `from_min == from_max` la plage d'entree est vide : une
+						// division nue rendrait un NaN, et un NaN CONTAMINE tout
+						// l'aval en se voyant noir ici et blanc la selon le backend.
+						// Blender rend `to_min` dans ce cas ; on fait pareil, et le
+						// resultat reste une valeur que l'auteur a choisie.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "den");
+						s.Append(" = (");
+						ecrisEntree(*n, "from_max", "float", nullptr);
+						s.Append(") - (");
+						ecrisEntree(*n, "from_min", "float", nullptr);
+						s.Append(");\n");
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "t");
+						s.Append(" = (abs(");
+						detail::PutNom(s, n->id, "den");
+						s.Append(") < 1e-8) ? 0.0 : ((");
+						ecrisEntree(*n, "value", "float", nullptr);
+						s.Append(") - (");
+						ecrisEntree(*n, "from_min", "float", nullptr);
+						s.Append(")) / ");
+						detail::PutNom(s, n->id, "den");
+						s.Append(";\n");
+						if (serre) {
+							s.Append("    ");
+							detail::PutNom(s, n->id, "t");
+							s.Append(" = clamp(");
+							detail::PutNom(s, n->id, "t");
+							s.Append(", 0.0, 1.0);\n");
+						}
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "result");
+						s.Append(" = mix(");
+						ecrisEntree(*n, "to_min", "float", nullptr);
+						s.Append(", ");
+						ecrisEntree(*n, "to_max", "float", nullptr);
+						s.Append(", ");
+						detail::PutNom(s, n->id, "t");
+						s.Append(");\n");
+					} else if (t == NkString(NK_MN_CLAMP)) {
+						// ⚠️ `clamp(v, min, max)` est INDEFINI en GLSL quand
+						// min > max, et chaque pilote choisit sa reponse. On passe
+						// donc par min/max explicites : le resultat est le meme
+						// quand les bornes sont dans l'ordre, et il est DEFINI
+						// quand elles ne le sont pas.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "result");
+						s.Append(" = min(max((");
+						ecrisEntree(*n, "value", "float", nullptr);
+						s.Append("), (");
+						ecrisEntree(*n, "min", "float", nullptr);
+						s.Append(")), (");
+						ecrisEntree(*n, "max", "float", nullptr);
+						s.Append("));\n");
+					} else if (t == NkString(NK_MN_COMBINE_XYZ)) {
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "vector");
+						s.Append(" = vec3((");
+						ecrisEntree(*n, "x", "float", nullptr);
+						s.Append("), (");
+						ecrisEntree(*n, "y", "float", nullptr);
+						s.Append("), (");
+						ecrisEntree(*n, "z", "float", nullptr);
+						s.Append("));\n");
+					} else if (t == NkString(NK_MN_VECTOR_MATH)) {
+						// L operation, un MOT. Absente = `ajouter`. Inconnue = REFUS qui la
+						// nomme, jamais un repli sur la premiere de la table : un graphe relu
+						// d un fichier ecrit par une version plus recente calculerait alors
+						// autre chose que ce que son auteur a vu, sans un mot.
+						const NkGraphValue *pv = g.FindProp(n->id, NK_MPROP_OPERATION);
+						int32 iv2 = 0;
+						if (pv && pv->IsSet()) {
+							iv2 = NkMatTrouveOpVecteur(pv->text.CStr());
+							if (iv2 < 0) {
+								r.error = NkString("operation vectorielle inconnue sur ");
+								r.error.Append(n->type);
+								r.error.Append(" : ");
+								r.error.Append(pv->text);
+								r.source = NkString("");
+								return r;
+							}
+						}
+						const NkMatOperation *ov = NkMatOpVecteurAt((uint32)iv2);
+						if (!ov) {
+							r.error = NkString("operation vectorielle hors table");
+							r.source = NkString("");
+							return r;
+						}
+						const char *opv = ov->cle;
+						// 🔴 LA PRISE LUE DOIT S ACCORDER AVEC L OPERATION.
+						//
+						// Trois des douze operations rendent un SCALAIRE. La bibliotheque, elle,
+						// propose les deux prises sans connaitre l operation -- elle ne peut pas
+						// la connaitre, le menu se calcule avant que l auteur choisisse. Rien
+						// n empeche donc de brancher `vector` apres un `longueur`.
+						//
+						// Le shader, lui, compilerait : la prise inutilisee porte le neutre. Et
+						// c est exactement ce qui rend le cas dangereux -- l auteur lirait un
+						// vecteur NUL parfaitement plausible au lieu d une erreur. On refuse, en
+						// nommant l operation ET la prise, parce que « ca ne marche pas » sur un
+						// graphe de trente noeuds ne se debogue pas.
+						{
+							const bool scalaire = NkMatOpVecteurRendUnScalaire((uint32)iv2);
+							for (uint32 li = 0; li < g.LinkCount(); ++li) {
+								const graph::NkLink *lk = g.LinkAt(li);
+								if (!lk || lk->fromNode != n->id)
+									continue;
+								const int32 fs = lk->fromSocket;
+								if (fs < 0 || fs >= (int32)n->sockets.Size())
+									continue;
+								const NkString &nomPrise = n->sockets[(uint32)fs].name;
+								const bool litVecteur = (nomPrise == NkString("vector"));
+								const bool litValeur = (nomPrise == NkString("value"));
+								if ((scalaire && litVecteur) || (!scalaire && litValeur)) {
+									r.error = NkString("prise mal accordee sur mat.math_vecteur : l operation « ");
+									r.error.Append(opv);
+									r.error.Append(scalaire ? " » rend un REEL, la prise « " : " » rend un VECTEUR, la prise « ");
+									r.error.Append(nomPrise);
+									r.error.Append(" » ne peut pas etre lue");
+									r.source = NkString("");
+									return r;
+								}
+							}
+						}
+						// ⚠️ LES DEUX PRISES SONT TOUJOURS DECLAREES, meme celle
+						// que l'operation ne remplit pas.
+						//
+						// Le graphe autorise un lien vers `value` apres un
+						// `normaliser`, et vers `vector` apres un `longueur` : la
+						// bibliotheque ne connait pas l'operation quand elle
+						// propose ses prises. Emettre seulement la prise « utile »
+						// laisserait le consommateur lire une locale JAMAIS
+						// DECLAREE, et l'erreur accuserait le generateur.
+						//
+						// La prise inutilisee recoit donc le NEUTRE de son type, et
+						// la validation refuse le montage plus haut en le nommant.
+						// Deux gardes valent mieux qu'une quand la premiere est une
+						// erreur d'auteur : elle arrivera.
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "vector");
+						s.Append(" = ");
+						if (detail::OpEst(opv, "ajouter")) {
+							s.Append("(");
+							ecrisEntree(*n, "a", "vec3", nullptr);
+							s.Append(") + (");
+							ecrisEntree(*n, "b", "vec3", nullptr);
+							s.Append(")");
+						} else if (detail::OpEst(opv, "soustraire")) {
+							s.Append("(");
+							ecrisEntree(*n, "a", "vec3", nullptr);
+							s.Append(") - (");
+							ecrisEntree(*n, "b", "vec3", nullptr);
+							s.Append(")");
+						} else if (detail::OpEst(opv, "multiplier")) {
+							s.Append("(");
+							ecrisEntree(*n, "a", "vec3", nullptr);
+							s.Append(") * (");
+							ecrisEntree(*n, "b", "vec3", nullptr);
+							s.Append(")");
+						} else if (detail::OpEst(opv, "diviser")) {
+							// Meme garde que `Math` : composante par composante, un
+							// zero rend zero et non un NaN.
+							s.Append("vec3(0.0)");
+							s.Append(";\n");
+							static const char *const kC[3] = {"x", "y", "z"};
+							for (uint32 c = 0; c < 3; ++c) {
+								s.Append("    ");
+								detail::PutNom(s, n->id, "vector");
+								s.Append(".");
+								s.Append(kC[c]);
+								s.Append(" = (abs((");
+								ecrisEntree(*n, "b", "vec3", nullptr);
+								s.Append(").");
+								s.Append(kC[c]);
+								s.Append(") < 1e-8) ? 0.0 : (");
+								ecrisEntree(*n, "a", "vec3", nullptr);
+								s.Append(").");
+								s.Append(kC[c]);
+								s.Append(" / (");
+								ecrisEntree(*n, "b", "vec3", nullptr);
+								s.Append(").");
+								s.Append(kC[c]);
+								s.Append(";\n");
+							}
+						} else if (detail::OpEst(opv, "produit_vectoriel")) {
+							s.Append("cross(");
+							ecrisEntree(*n, "a", "vec3", nullptr);
+							s.Append(", ");
+							ecrisEntree(*n, "b", "vec3", nullptr);
+							s.Append(")");
+						} else if (detail::OpEst(opv, "normaliser")) {
+							// ⚠️ `normalize(vec3(0))` rend un NaN. La garde vaut
+							// pour la meme raison que la division : le vecteur nul
+							// n'est pas un cas tordu, c'est le DEFAUT d'une prise
+							// jamais renseignee.
+							s.Append("(length(");
+							ecrisEntree(*n, "a", "vec3", nullptr);
+							s.Append(") < 1e-8) ? vec3(0.0) : normalize(");
+							ecrisEntree(*n, "a", "vec3", nullptr);
+							s.Append(")");
+						} else if (detail::OpEst(opv, "absolu")) {
+							s.Append("abs(");
+							ecrisEntree(*n, "a", "vec3", nullptr);
+							s.Append(")");
+						} else if (detail::OpEst(opv, "minimum")) {
+							s.Append("min(");
+							ecrisEntree(*n, "a", "vec3", nullptr);
+							s.Append(", ");
+							ecrisEntree(*n, "b", "vec3", nullptr);
+							s.Append(")");
+						} else if (detail::OpEst(opv, "maximum")) {
+							s.Append("max(");
+							ecrisEntree(*n, "a", "vec3", nullptr);
+							s.Append(", ");
+							ecrisEntree(*n, "b", "vec3", nullptr);
+							s.Append(")");
+						} else {
+							// Les trois operations scalaires : la prise vectorielle
+							// recoit le neutre, JAMAIS une valeur inventee.
+							s.Append("vec3(0.0)");
+						}
+						if (!detail::OpEst(opv, "diviser"))
+							s.Append(";\n");
+
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "value");
+						s.Append(" = ");
+						if (detail::OpEst(opv, "produit_scalaire")) {
+							s.Append("dot(");
+							ecrisEntree(*n, "a", "vec3", nullptr);
+							s.Append(", ");
+							ecrisEntree(*n, "b", "vec3", nullptr);
+							s.Append(")");
+						} else if (detail::OpEst(opv, "longueur")) {
+							s.Append("length(");
+							ecrisEntree(*n, "a", "vec3", nullptr);
+							s.Append(")");
+						} else if (detail::OpEst(opv, "distance")) {
+							s.Append("distance(");
+							ecrisEntree(*n, "a", "vec3", nullptr);
+							s.Append(", ");
+							ecrisEntree(*n, "b", "vec3", nullptr);
+							s.Append(")");
+						} else {
+							s.Append("0.0");
+						}
+						s.Append(";\n");
 					} else if (t == NkString(NK_MN_NORMAL_MAP)) {
 						// ⚠️ AUCUNE CONVERSION DE CONVENTION ICI, ET C'EST LE
 						// POINT. Une carte DirectX se convertit A L'IMPORT. Le

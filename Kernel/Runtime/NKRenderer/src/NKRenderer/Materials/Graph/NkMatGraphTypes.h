@@ -189,12 +189,99 @@ namespace nkentseu {
 				};
 				static const uint32 kInterpsCount = 2;
 
+				// Modes de bornage. `serre` ramene dans la plage de sortie, `libre`
+				// laisse extrapoler. Le defaut de Blender est SERRE pour `Map Range`
+				// et on le suit : une valeur qui sort de sa plage sans prevenir donne
+				// des couleurs que personne n a choisies.
+				static const NkMatOperation kBornages[] = {
+					{"serre", "Clamp"},
+					{"libre", "Unclamped"},
+				};
+				static const uint32 kBornagesCount = 2;
+
+				// Operations vectorielles. ⚠️ TROIS D ENTRE ELLES RENDENT UN SCALAIRE
+				// et non un vecteur -- produit scalaire, longueur, distance. C est
+				// pourquoi `Vector Math` porte DEUX prises de sortie comme chez Blender,
+				// et pourquoi le compilateur doit refuser de lire la mauvaise : brancher
+				// `vector` apres un produit scalaire rendrait un vecteur invente.
+				static const NkMatOperation kOpsVecteur[] = {
+					{"ajouter", "Add"},           {"soustraire", "Subtract"},
+					{"multiplier", "Multiply"},   {"diviser", "Divide"},
+					{"produit_vectoriel", "Cross Product"}, {"normaliser", "Normalize"},
+					{"absolu", "Absolute"},       {"minimum", "Minimum"},
+					{"maximum", "Maximum"},
+					// Les trois qui rendent un SCALAIRE :
+					{"produit_scalaire", "Dot Product"}, {"longueur", "Length"},
+					{"distance", "Distance"},
+				};
+				static const uint32 kOpsVecteurCount = 12;
+				// Rang, dans la table ci-dessus, a partir duquel la sortie est SCALAIRE.
+				// Range ici et non deduit d une liste de noms recopiee ailleurs : deux
+				// listes de la meme chose divergent des qu on ajoute une operation.
+				static const uint32 kOpsVecteurPremierScalaire = 9;
+
 				static const NkMatOperation kOpsMix[] = {
 					{"melanger", "Mix"},		{"multiplier", "Multiply"}, {"ajouter", "Add"},
 					{"soustraire", "Subtract"}, {"eclaircir", "Lighten"},	{"assombrir", "Darken"},
 				};
 				static const uint32 kOpsMixCount = 6;
 			} // namespace detail
+
+			inline uint32 NkMatBornageCount() {
+				return detail::kBornagesCount;
+			}
+
+			inline const NkMatOperation *NkMatBornageAt(uint32 i) {
+				return i < detail::kBornagesCount ? &detail::kBornages[i] : nullptr;
+			}
+
+			inline int32 NkMatTrouveBornage(const char *cle) {
+				if (!cle)
+					return -1;
+				for (uint32 i = 0; i < detail::kBornagesCount; ++i) {
+					const char *a = detail::kBornages[i].cle;
+					const char *b = cle;
+					while (*a && *a == *b) {
+						++a;
+						++b;
+					}
+					if (!*a && !*b)
+						return (int32)i;
+				}
+				return -1;
+			}
+
+			inline uint32 NkMatOpVecteurCount() {
+				return detail::kOpsVecteurCount;
+			}
+
+			inline const NkMatOperation *NkMatOpVecteurAt(uint32 i) {
+				return i < detail::kOpsVecteurCount ? &detail::kOpsVecteur[i] : nullptr;
+			}
+
+			inline int32 NkMatTrouveOpVecteur(const char *cle) {
+				if (!cle)
+					return -1;
+				for (uint32 i = 0; i < detail::kOpsVecteurCount; ++i) {
+					const char *a = detail::kOpsVecteur[i].cle;
+					const char *b = cle;
+					while (*a && *a == *b) {
+						++a;
+						++b;
+					}
+					if (!*a && !*b)
+						return (int32)i;
+				}
+				return -1;
+			}
+
+			// ⚠️ LA SEULE SOURCE de « cette operation rend-elle un scalaire ? ».
+			// Le compilateur ET le banc l interrogent ici. Une seconde liste de noms
+			// recopiee ailleurs divergerait a la premiere operation ajoutee, et le
+			// shader lirait alors un vecteur la ou il y a un reel.
+			inline bool NkMatOpVecteurRendUnScalaire(uint32 rang) {
+				return rang >= detail::kOpsVecteurPremierScalaire && rang < detail::kOpsVecteurCount;
+			}
 
 			inline uint32 NkMatTypeOndeCount() {
 				return detail::kTypesOndeCount;
@@ -706,6 +793,22 @@ namespace nkentseu {
 				return nullptr;
 			}
 
+			// ── RANG 3 : L OUTILLAGE ─────────────────────────────────────────
+			//
+			// Ces noeuds ne fabriquent aucune apparence : ils REMODELENT une valeur
+			// qui existe deja. C est ce qui rend un graphe reellement utilisable --
+			// sans eux, la sortie d un bruit ou d une texture arrive telle quelle et
+			// l auteur n a aucun moyen de la recadrer sans passer par trois `Math`.
+			static const char *const NK_MN_MAP_RANGE = "mat.plage";
+			static const char *const NK_MN_CLAMP = "mat.borner";
+			static const char *const NK_MN_COMBINE_XYZ = "mat.combiner_xyz";
+			static const char *const NK_MN_VECTOR_MATH = "mat.math_vecteur";
+			// Le mode de bornage de `Map Range` et de `Clamp`. Un MOT, comme partout :
+			// un booleen aurait suffi pour deux etats, mais Blender en a quatre pour
+			// `Clamp` (min/max, plage) et le jour ou on en ajoutera un, un booleen
+			// devrait etre remplace -- pas etendu.
+			static const char *const NK_MPROP_BORNAGE = "bornage";
+
 			// Le type de degrade, meme discipline que les operations : un MOT.
 			static const char *const NK_MPROP_TYPE = "type";
 			static const char *const NK_MPROP_STOPS = "arrets";
@@ -823,6 +926,47 @@ namespace nkentseu {
 					{"x", NK_MT_REAL, NkSocketDir::Output, false},
 					{"y", NK_MT_REAL, NkSocketDir::Output, false},
 					{"z", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+
+				// ── RANG 3 ────────────────────────────────────────────────────
+				// Map Range : recadre une valeur d une plage vers une autre.
+				static const NkMatSocketDecl kMapRange[] = {
+					{"value", NK_MT_REAL, NkSocketDir::Input, false},
+					{"from_min", NK_MT_REAL, NkSocketDir::Input, false},
+					{"from_max", NK_MT_REAL, NkSocketDir::Input, false},
+					{"to_min", NK_MT_REAL, NkSocketDir::Input, false},
+					{"to_max", NK_MT_REAL, NkSocketDir::Input, false},
+					{"result", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+
+				// Clamp : borne une valeur. Trivial, et c est justement pour ca qu il
+				// existe -- l ecrire a la main demande deux `Math` imbriques.
+				static const NkMatSocketDecl kClamp[] = {
+					{"value", NK_MT_REAL, NkSocketDir::Input, false},
+					{"min", NK_MT_REAL, NkSocketDir::Input, false},
+					{"max", NK_MT_REAL, NkSocketDir::Input, false},
+					{"result", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+
+				// Combine XYZ : le pendant de Separate XYZ. Sans lui, trois scalaires
+				// calcules separement ne peuvent JAMAIS redevenir un vecteur, et la
+				// moitie des montages de Blender sont impossibles.
+				static const NkMatSocketDecl kCombineXYZ[] = {
+					{"x", NK_MT_REAL, NkSocketDir::Input, false},
+					{"y", NK_MT_REAL, NkSocketDir::Input, false},
+					{"z", NK_MT_REAL, NkSocketDir::Input, false},
+					{"vector", NK_MT_VECTOR, NkSocketDir::Output, false},
+				};
+
+				// ⚠️ Vector Math a DEUX sorties, et ce n est pas un confort : trois de
+				// ses douze operations rendent un SCALAIRE (produit scalaire, longueur,
+				// distance). Une seule prise vectorielle obligerait a inventer un
+				// vecteur pour ces trois-la, et l auteur lirait une valeur credible.
+				static const NkMatSocketDecl kVectorMath[] = {
+					{"a", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"b", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"vector", NK_MT_VECTOR, NkSocketDir::Output, false},
+					{"value", NK_MT_REAL, NkSocketDir::Output, false},
 				};
 
 				// Noise : `detail` pilote le nombre d'octaves. DEUX sorties, comme
@@ -949,10 +1093,16 @@ namespace nkentseu {
 					{NK_MN_VORONOI, "Voronoi Texture", kVoronoi, 4, true},
 					{NK_MN_WAVE, "Wave Texture", kWave, 4, true},
 					{NK_MN_BRICK, "Brick Texture", kBrick, 7, true},
+					// Rang 3 : de l outillage pur. Aucun n est une source par pixel --
+					// ils remodelent ce qu on leur donne.
+					{NK_MN_MAP_RANGE, "Map Range", kMapRange, 6, false},
+					{NK_MN_CLAMP, "Clamp", kClamp, 4, false},
+					{NK_MN_COMBINE_XYZ, "Combine XYZ", kCombineXYZ, 4, false},
+					{NK_MN_VECTOR_MATH, "Vector Math", kVectorMath, 4, false},
 					// Un puits, jamais une source : il ne fabrique aucune valeur.
 					{NK_MN_OUTPUT_VALUE, "Named Output", kOutputValue, 2, false},
 				};
-				static const uint32 kProtoCount = 23;
+				static const uint32 kProtoCount = 27;
 
 			} // namespace detail
 

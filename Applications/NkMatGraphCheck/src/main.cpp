@@ -1452,10 +1452,27 @@ static void CasMenuPriseCouleurEtReelle() {
 						// les deux menus, par deux prises differentes.
 						DansLeMenu(mr, nr, NK_MN_NOISE) && DansLeMenu(mr, nr, NK_MN_GRADIENT) &&
 						DansLeMenu(mr, nr, NK_MN_WAVE) && DansLeMenu(mr, nr, NK_MN_VORONOI);
-	Cas("biblio/menu-asymetrique-couleur-reel", nc == 17 && nr == 10 && couleurOk && reelOk,
-		NkFormat("base_color : {0} propositions (RGB+MixColor+ColorRamp+ImageTex+Value+Math+coord+mappage, ok={1}) | roughness : {2} (Value+Math "
-				 "SEULS, RGB et MixColor doivent etre absents, ok={3})",
-				 nc, couleurOk ? 1 : 0, nr, reelOk ? 1 : 0));
+	// ⚠️ PAS DE COMPTE FIGE ICI, ET C EST UNE CORRECTION.
+	//
+	// Ce cas exigeait `nc == 17 && nr == 10`. Il est tombe le jour ou le rang 3
+	// a ajoute quatre noeuds -- alors que RIEN de ce qu il mesure n avait bouge.
+	// Un controle qui mesure une collection QUI GRANDIT PAR CONCEPTION ne doit
+	// pas porter sa taille : il oblige alors a mettre un nombre a jour a chaque
+	// ajout, et ce geste mecanique finit par se faire sans regarder -- on
+	// recopie le nouveau chiffre, y compris le jour ou il est faux.
+	//
+	// La RELATION, elle, survit : le menu reel est STRICTEMENT INCLUS dans le
+	// menu couleur. Tout ce qui produit un reel se convertit en couleur (la
+	// conversion est declaree), l inverse est faux -- et c est tout le sujet du
+	// cas. Elle grandit toute seule avec la bibliotheque.
+	bool inclusion = nr > 0 && nc > nr;
+	for (uint32 i = 0; i < nr && inclusion; ++i)
+		inclusion = DansLeMenu(mc, nc, mr[i]->key);
+	Cas("biblio/menu-asymetrique-couleur-reel", inclusion && couleurOk && reelOk,
+		NkFormat("base_color : {0} propositions (ok={1}) | roughness : {2} (Value+Math, RGB et MixColor "
+				 "ABSENTS, ok={3}) | menu reel strictement inclus dans le menu couleur={4} (relation, "
+				 "pas un compte)",
+				 nc, couleurOk ? 1 : 0, nr, reelOk ? 1 : 0, inclusion ? 1 : 0));
 }
 
 static void CasMenuPriseInconnue() {
@@ -3273,6 +3290,183 @@ static void CasSortieDivisionParZero() {
 				 so ? so->valeur[0] : -1.f, nan ? 1 : 0, gardeDansLeShader ? 1 : 0));
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  RANG 3 : L'OUTILLAGE
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Monte un noeud du rang 3 vers une prise du Principled, compile, rend le tout.
+static NkMatCompileResult CompileOutil(const char *cle, const char *prise, const char *cible,
+									   const char *propCle, const char *propVal) {
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	const NkNodeId bsdf = MonteUnPrincipled(g, t, &out);
+	const NkNodeId n = NkMatAddNode(g, cle);
+	if (propCle && propVal)
+		g.SetProp(n, propCle, NkValueText(t.real, propVal));
+	g.Connect(n, prise, bsdf, cible);
+	return NkMatCompileToNkSL(g);
+}
+
+static void CasMapRangeEtBornage() {
+	// ⚠️ L'ATTENDU EST L'ARITHMETIQUE, PAS UNE RESSEMBLANCE. `Map Range` doit
+	// emettre une interpolation entre ses deux bornes de sortie, et surtout une
+	// GARDE sur la plage d'entree vide : `from_min == from_max` donnerait un NaN,
+	// et un NaN contamine tout l'aval en se voyant noir ici et blanc la selon le
+	// backend — un defaut qui fait accuser la machine.
+	NkMatCompileResult r = CompileOutil(NK_MN_MAP_RANGE, "result", "roughness", nullptr, nullptr);
+	const bool garde = r.ok && Apres(r.source, "1e-8") > 0;
+	const bool interpole = r.ok && Apres(r.source, "mix(") > 0;
+	// DISCRIMINE le mode : `serre` (defaut) DOIT poser un clamp, `libre` NON.
+	// Verifier seulement que le defaut compile laisserait passer un mode qui ne
+	// changerait rien — et un mode qui ne change rien est un mode absent.
+	NkMatCompileResult rs = CompileOutil(NK_MN_MAP_RANGE, "result", "roughness", NK_MPROP_BORNAGE, "serre");
+	NkMatCompileResult rl = CompileOutil(NK_MN_MAP_RANGE, "result", "roughness", NK_MPROP_BORNAGE, "libre");
+	const bool serreBorne = rs.ok && Apres(rs.source, "clamp(") > 0;
+	const bool libreNeBornePas = rl.ok && Apres(rl.source, "clamp(") < 0;
+	// Le defaut ABSENT doit valoir `serre`, comme chez Blender.
+	const bool defautEstSerre = r.ok && Apres(r.source, "clamp(") > 0;
+	NkMatCompileResult ri = CompileOutil(NK_MN_MAP_RANGE, "result", "roughness", NK_MPROP_BORNAGE, "elastique");
+	const bool refuseNomme = !ri.ok && Apres(ri.error, "elastique") > 0;
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	Cas("outil/plage-garde-et-bornage",
+		r.ok && ok == 5 && garde && interpole && serreBorne && libreNeBornePas && defautEstSerre && refuseNomme,
+		NkFormat("{0}| garde de plage vide={1} | interpolation={2} | serre borne={3} | libre ne borne "
+				 "PAS={4} | defaut absent = serre={5} | mode inconnu refuse en le nommant={6}",
+				 be, garde ? 1 : 0, interpole ? 1 : 0, serreBorne ? 1 : 0, libreNeBornePas ? 1 : 0,
+				 defautEstSerre ? 1 : 0, refuseNomme ? 1 : 0));
+}
+
+static void CasClampBornesInversees() {
+	// ⚠️ `clamp(v, min, max)` est INDEFINI en GLSL quand min > max, et chaque
+	// pilote choisit sa reponse. Un materiau aux bornes inversees rendrait alors
+	// une chose sur une machine et une autre ailleurs — encore un defaut qui
+	// fait accuser la carte.
+	//
+	// DISCRIMINE : on exige que le code emis N'EMPLOIE PAS `clamp(` mais la
+	// paire min/max. Verifier seulement « ca compile » laisserait passer le
+	// `clamp` nu, qui compile parfaitement.
+	NkMatCompileResult r = CompileOutil(NK_MN_CLAMP, "result", "roughness", nullptr, nullptr);
+	const bool paire = r.ok && Apres(r.source, "min(max(") > 0;
+	const bool pasDeClampNu = r.ok && Apres(r.source, "clamp(") < 0;
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	Cas("outil/borner-defini-meme-bornes-inversees", r.ok && ok == 5 && paire && pasDeClampNu,
+		NkFormat("{0}| emploie min(max(...))={1} | n emploie PAS clamp( nu={2} (indefini si min > max)", be,
+				 paire ? 1 : 0, pasDeClampNu ? 1 : 0));
+}
+
+static void CasCombineXYZ() {
+	// Le pendant de Separate XYZ. DISCRIMINE par l'ALLER-RETOUR : on separe un
+	// vecteur puis on le recombine, et les trois composantes doivent voyager
+	// SEPAREMENT — un Combine qui lirait trois fois la meme prise compilerait
+	// et rendrait un gris parfaitement plausible.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	const NkNodeId bsdf = MonteUnPrincipled(g, t, &out);
+	const NkNodeId sep = NkMatAddNode(g, NK_MN_SEPARATE_XYZ);
+	const NkNodeId com = NkMatAddNode(g, NK_MN_COMBINE_XYZ);
+	const float32 v[3] = {0.25f, 0.5f, 0.75f};
+	g.SetSocketDefault(sep, "vector", NkSocketDir::Input, NkValueVec(t.vector, v, 3));
+	g.Connect(sep, "x", com, "x");
+	g.Connect(sep, "y", com, "y");
+	g.Connect(sep, "z", com, "z");
+	g.Connect(com, "vector", bsdf, "base_color");
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	if (getenv("NK_DUMP_COMB") && r.ok) {
+		FILE *f = fopen("mesures_matgraph/combine.nksl", "wb");
+		if (f) { fwrite(r.source.CStr(), 1, (size_t)r.source.Size(), f); fclose(f); }
+	}
+	// ⚠️ ON LIT LA LIGNE DU COMBINE, PAS TOUTE LA SOURCE.
+	//
+	// Premiere version de ce cas : « _x, _y et _z apparaissent dans la
+	// source ». Elle a SURVECU a la mutation qui fait lire trois fois la
+	// prise `x` au Combine — parce que les trois locales viennent du
+	// SEPARATE, qui les emet de toute facon. Le cas verifiait la presence de
+	// trois NOMS, jamais leur USAGE. Quatrieme occurrence de cette faute dans
+	// le chantier, et la plus facile a commettre : les noms etaient bien la.
+	//
+	// Les trois motifs ci-dessous n existent QUE dans l appel du Combine :
+	// « vec3((n3_x), (n3_y), (n3_z)) ». Une prise lue deux fois casse au
+	// moins l un des trois.
+	const bool trois = r.ok && Apres(r.source, "_x), (") > 0 && Apres(r.source, "_y), (") > 0 &&
+			   Apres(r.source, "_z))") > 0;
+	const bool combine = r.ok && Apres(r.source, "vec3((") > 0;
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	Cas("outil/combiner-xyz-aller-retour", r.ok && ok == 5 && trois && combine,
+		NkFormat("{0}| les trois composantes voyagent separement={1} | recombinaison emise={2}", be,
+				 trois ? 1 : 0, combine ? 1 : 0));
+}
+
+static void CasVectorMathOperationsEtAccord() {
+	// Les douze operations compilent, ET la prise lue doit s'accorder avec
+	// l'operation : trois d'entre elles rendent un SCALAIRE.
+	uint32 bons = 0;
+	NkString detail;
+	for (uint32 i = 0; i < NkMatOpVecteurCount(); ++i) {
+		const NkMatOperation *op = NkMatOpVecteurAt(i);
+		const bool scalaire = NkMatOpVecteurRendUnScalaire(i);
+		NkMatCompileResult r = CompileOutil(NK_MN_VECTOR_MATH, scalaire ? "value" : "vector",
+											scalaire ? "roughness" : "base_color", NK_MPROP_OPERATION, op->cle);
+		NkString be, err;
+		const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+		if (r.ok && ok == 5)
+			++bons;
+		else
+			detail.Append(NkFormat("[{0} KO : {1}] ", NkString(op->cle), r.ok ? be : r.error));
+	}
+	// 🔴 LE CONTROLE QUI COMPTE : lire la MAUVAISE prise doit etre REFUSE, en
+	// nommant l'operation ET la prise. Sans ce refus le shader compilerait — la
+	// prise inutilisee porte le neutre — et l'auteur lirait un vecteur NUL
+	// parfaitement plausible, sur un graphe de trente noeuds.
+	NkMatCompileResult mauvais1 =
+		CompileOutil(NK_MN_VECTOR_MATH, "vector", "base_color", NK_MPROP_OPERATION, "longueur");
+	NkMatCompileResult mauvais2 =
+		CompileOutil(NK_MN_VECTOR_MATH, "value", "roughness", NK_MPROP_OPERATION, "normaliser");
+	const bool refus1 =
+		!mauvais1.ok && Apres(mauvais1.error, "longueur") > 0 && Apres(mauvais1.error, "vector") > 0;
+	const bool refus2 =
+		!mauvais2.ok && Apres(mauvais2.error, "normaliser") > 0 && Apres(mauvais2.error, "value") > 0;
+	NkMatCompileResult inc =
+		CompileOutil(NK_MN_VECTOR_MATH, "vector", "base_color", NK_MPROP_OPERATION, "produit_mixte");
+	const bool refusInc = !inc.ok && Apres(inc.error, "produit_mixte") > 0;
+	Cas("outil/math-vecteur-operations-et-accord-de-prise",
+		bons == NkMatOpVecteurCount() && refus1 && refus2 && refusInc,
+		NkFormat("{0}/{1} operations compilent sur les 5 verdicts | {2}| lire vector apres longueur REFUSE "
+				 "en le nommant={3} | lire value apres normaliser REFUSE={4} | operation inconnue refusee "
+				 "en la nommant={5}",
+				 bons, NkMatOpVecteurCount(), detail, refus1 ? 1 : 0, refus2 ? 1 : 0, refusInc ? 1 : 0));
+}
+
+static void CasVectorMathGardesNaN() {
+	// Deux gardes que rien d'autre ne couvre, meme raison d'etre que la division
+	// de `Math` : un NaN CONTAMINE tout l'aval et change d'aspect d'un backend a
+	// l'autre, ce qui fait chercher la panne dans le pilote pendant des heures.
+	//
+	//   - `normalize(vec3(0))` rend un NaN. Et le vecteur nul n'est pas un cas
+	//     tordu : c'est le DEFAUT d'une prise jamais renseignee.
+	//   - la division vectorielle par zero, composante par composante.
+	NkMatCompileResult rn =
+		CompileOutil(NK_MN_VECTOR_MATH, "vector", "base_color", NK_MPROP_OPERATION, "normaliser");
+	NkMatCompileResult rd =
+		CompileOutil(NK_MN_VECTOR_MATH, "vector", "base_color", NK_MPROP_OPERATION, "diviser");
+	const bool gardeNorm = rn.ok && Apres(rn.source, "length(") > 0 && Apres(rn.source, "1e-8") > 0;
+	const bool gardeDiv = rd.ok && Apres(rd.source, "1e-8") > 0;
+	// ⚠️ TEMOIN OBLIGATOIRE : une operation SANS garde ne doit PAS en porter une.
+	// Sans lui, un generateur qui emettrait `1e-8` partout passerait les deux
+	// controles ci-dessus sans rien garder du tout.
+	NkMatCompileResult ra =
+		CompileOutil(NK_MN_VECTOR_MATH, "vector", "base_color", NK_MPROP_OPERATION, "ajouter");
+	const bool ajouterSansGarde = ra.ok && Apres(ra.source, "1e-8") < 0;
+	Cas("outil/math-vecteur-gardes-de-NaN", gardeNorm && gardeDiv && ajouterSansGarde,
+		NkFormat("normaliser garde le vecteur nul={0} | diviser garde le zero={1} | TEMOIN : ajouter ne "
+				 "porte AUCUNE garde={2} (sinon le controle passerait avec des gardes partout)",
+				 gardeNorm ? 1 : 0, gardeDiv ? 1 : 0, ajouterSansGarde ? 1 : 0));
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -3387,6 +3581,11 @@ int main() {
 	CasSortieSourcesEtNoms();
 	CasSortiePlusieursEtGraphesExistants();
 	CasSortieDivisionParZero();
+	CasMapRangeEtBornage();
+	CasClampBornesInversees();
+	CasCombineXYZ();
+	CasVectorMathOperationsEtAccord();
+	CasVectorMathGardesNaN();
 	CasProceduralCompile();
 	CasBriquesRecopieesVerbatim();
 	CasBriquesSeulementSiUtiles();
