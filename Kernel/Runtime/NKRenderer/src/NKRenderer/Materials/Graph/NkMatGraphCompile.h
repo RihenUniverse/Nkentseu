@@ -734,12 +734,12 @@ namespace nkentseu {
 						// aurait raison sans que personne le sache.
 						const NkGraphValue *ps = g->FindProp(n->id, NK_MPROP_STOPS);
 						uint32 arrets = 0;
-						const NkMatRampeErreur re = NkMatLisRampe(ps, &arrets);
+						const NkMatPointsErreur re = NkMatLisRampe(ps, &arrets);
 						static const float32 kDefaut[8] = {0.f, 0.f, 0.f, 0.f, 1.f, 1.f, 1.f, 1.f};
 						const float32 *st = kDefaut;
-						if (re == NkMatRampeErreur::Absente)
+						if (re == NkMatPointsErreur::Absente)
 							arrets = 2;
-						else if (re != NkMatRampeErreur::Ok)
+						else if (re != NkMatPointsErreur::Ok)
 							return Echoue("rampe invalide a l evaluation", n);
 						else
 							st = ps->numbers.Data();
@@ -768,6 +768,71 @@ namespace nkentseu {
 							for (uint32 c = 0; c < 3; ++c)
 								out.v[c] = NkMatMixF(out.v[c], st[k * NK_RAMP_REELS_PAR_ARRET + 1 + c], w);
 						}
+						return true;
+					}
+
+					if (ty == NkString(NK_MN_FLOAT_CURVE)) {
+						NkMatValeurCPU vin;
+						if (!Entree(*n, "value", 1, vin))
+							return false;
+						// ⚠️ MEME DECOUPAGE QUE LE SHADER, PAR LE MEME APPEL.
+						// Redecouper les points a la main ici serait la divergence
+						// annoncee -- et cette fois elle serait DOUBLE, puisque la
+						// rampe et la courbe partagent deja la lecture.
+						const NkGraphValue *pp = g->FindProp(n->id, NK_MPROP_POINTS);
+						uint32 pts = 0;
+						const NkMatPointsErreur ce = NkMatLisCourbe(pp, &pts);
+						static const float32 kDiag[4] = {0.f, 0.f, 1.f, 1.f};
+						const float32 *cp = kDiag;
+						if (ce == NkMatPointsErreur::Absente)
+							pts = 2;
+						else if (ce != NkMatPointsErreur::Ok)
+							return Echoue("courbe invalide a l evaluation", n);
+						else
+							cp = pp->numbers.Data();
+
+						const NkGraphValue *pi = g->FindProp(n->id, NK_MPROP_INTERP);
+						int32 ii = 0;
+						if (pi && pi->IsSet()) {
+							ii = NkMatTrouveInterp(pi->text.CStr());
+							if (ii < 0)
+								return Echoue("interpolation inconnue a l evaluation", n);
+						}
+						const NkMatOperation *idc = NkMatInterpAt((uint32)ii);
+						if (!idc)
+							return Echoue("interpolation hors table a l evaluation", n);
+						const bool constanteC = OpEst(idc->cle, "constante");
+
+						const float32 cx = NkMatClampF(vin.v[0], cp[0],
+													   cp[(pts - 1) * NK_CURVE_REELS_PAR_POINT]);
+						float32 cy = cp[1];
+						for (uint32 k = 1; k < pts; ++k) {
+							const float32 x0 = cp[(k - 1) * NK_CURVE_REELS_PAR_POINT];
+							const float32 x1 = cp[k * NK_CURVE_REELS_PAR_POINT];
+							const float32 w = constanteC ? (cx >= x1 ? 1.f : 0.f)
+														 : NkMatClampF((cx - x0) / (x1 - x0), 0.f, 1.f);
+							cy = NkMatMixF(cy, cp[k * NK_CURVE_REELS_PAR_POINT + 1], w);
+						}
+
+						// Le meme defaut de `fac` qu au shader, pour la meme
+						// raison -- et surtout LU AU MEME ENDROIT : un neutre a 1
+						// ici et a 0 la-bas rendrait le processeur et le pixel
+						// discordants sur un noeud fraichement pose.
+						float32 f = 1.f;
+						{
+							const int32 iv = n->FindSocket("fac", NkSocketDir::Input);
+							const bool cable = iv >= 0 && g->IncomingOf(n->id, iv) != nullptr;
+							const NkGraphValue *d =
+								iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+							if (cable || (d && d->IsSet())) {
+								NkMatValeurCPU fv;
+								if (!Entree(*n, "fac", 1, fv))
+									return false;
+								f = NkMatClampF(fv.v[0], 0.f, 1.f);
+							}
+						}
+						out.n = 1;
+						out.v[0] = NkMatMixF(vin.v[0], cy, f);
 						return true;
 					}
 
@@ -1505,21 +1570,21 @@ namespace nkentseu {
 						// qui aurait raison sans que personne le sache.
 						const NkGraphValue *ps = g.FindProp(n->id, NK_MPROP_STOPS);
 						uint32 arrets = 0;
-						const NkMatRampeErreur re = NkMatLisRampe(ps, &arrets);
+						const NkMatPointsErreur re = NkMatLisRampe(ps, &arrets);
 
 						// La rampe par defaut de Blender : noir -> blanc. C'est le
 						// cas LEGITIME d'une propriete absente — le noeud vient
 						// d'etre pose. Toute AUTRE erreur est un refus.
 						static const float32 kDefaut[8] = {0.f, 0.f, 0.f, 0.f, 1.f, 1.f, 1.f, 1.f};
 						const float32 *st = kDefaut;
-						if (re == NkMatRampeErreur::Absente) {
+						if (re == NkMatPointsErreur::Absente) {
 							arrets = 2;
-						} else if (re != NkMatRampeErreur::Ok) {
+						} else if (re != NkMatPointsErreur::Ok) {
 							r.error = NkString("rampe invalide sur ");
 							r.error.Append(n->type);
 							r.error.Append(" : ");
 							r.error.Append(NkMatRampeErreurNom(re));
-							if (re == NkMatRampeErreur::TropDArrets) {
+							if (re == NkMatPointsErreur::TropDElements) {
 								// ⚠️ LE REFUS DIT COMBIEN. « trop d'arrets » seul
 								// oblige l'auteur a deviner ce qu'il doit retirer.
 								r.error.Append(" (");
@@ -1621,6 +1686,154 @@ namespace nkentseu {
 							}
 							s.Append(");\n");
 						}
+					} else if (t == NkString(NK_MN_FLOAT_CURVE)) {
+						// ── LA SECONDE CHARGE VARIABLE, ET ELLE A UN AUTRE PAS ─
+						// N points, DEUX reels chacun. Le decoupage passe par
+						// `NkMatLisCourbe`, qui appelle la MEME lecture que la
+						// rampe avec un pas different : c est la raison d etre du
+						// parametre. Recopier la lecture ici aurait marche
+						// aujourd hui et diverge au prochain durcissement.
+						const NkGraphValue *pp = g.FindProp(n->id, NK_MPROP_POINTS);
+						uint32 pts = 0;
+						const NkMatPointsErreur ce = NkMatLisCourbe(pp, &pts);
+
+						// La courbe par defaut de Blender : la DIAGONALE, (0,0) ->
+						// (1,1). C est le cas LEGITIME d une propriete absente --
+						// le noeud vient d etre pose et ne doit rien changer.
+						static const float32 kDiag[4] = {0.f, 0.f, 1.f, 1.f};
+						const float32 *cp = kDiag;
+						if (ce == NkMatPointsErreur::Absente) {
+							pts = 2;
+						} else if (ce != NkMatPointsErreur::Ok) {
+							r.error = NkString("courbe invalide sur ");
+							r.error.Append(n->type);
+							r.error.Append(" : ");
+							r.error.Append(NkMatCourbeErreurNom(ce));
+							if (ce == NkMatPointsErreur::TropDElements) {
+								// ⚠️ LE REFUS DIT COMBIEN, meme raison que la
+								// rampe : « trop de points » seul oblige l auteur
+								// a deviner ce qu il doit retirer.
+								r.error.Append(" (");
+								detail::PutU(r.error, (uint32)pp->numbers.Size() / NK_CURVE_REELS_PAR_POINT);
+								r.error.Append(" demandes, plafond ");
+								detail::PutU(r.error, NK_CURVE_POINTS_MAX);
+								r.error.Append(")");
+							}
+							r.source = NkString("");
+							return r;
+						} else {
+							cp = pp->numbers.Data();
+						}
+
+						// Le mode d interpolation : la MEME table que la rampe.
+						// Une seconde table « interpolations de courbe » aurait le
+						// meme contenu et divergerait au premier ajout.
+						const NkGraphValue *pi = g.FindProp(n->id, NK_MPROP_INTERP);
+						int32 ii = 0;
+						if (pi && pi->IsSet()) {
+							ii = NkMatTrouveInterp(pi->text.CStr());
+							if (ii < 0) {
+								r.error = NkString("interpolation inconnue sur ");
+								r.error.Append(n->type);
+								r.error.Append(" : ");
+								r.error.Append(pi->text);
+								r.source = NkString("");
+								return r;
+							}
+						}
+						const NkMatOperation *idc = NkMatInterpAt((uint32)ii);
+						if (!idc) {
+							r.error = NkString("interpolation hors table");
+							r.source = NkString("");
+							return r;
+						}
+						const bool constanteC = detail::OpEst(idc->cle, "constante");
+
+						// ⚠️ L ABSCISSE EST BORNEE AU DOMAINE DESSINE, pas a [0,1].
+						// Une courbe peut tres bien avoir ete dessinee sur [0, 5] ;
+						// borner a [0,1] ecraserait les quatre cinquiemes de son
+						// trace en silence. Extrapoler au-dela du dernier point
+						// donnerait, lui, des valeurs que l auteur n a jamais
+						// tracees : on tient la derniere.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "cx");
+						s.Append(" = clamp(");
+						ecrisEntree(*n, "value", "float", nullptr);
+						s.Append(", ");
+						detail::PutLit(s, cp[0]);
+						s.Append(", ");
+						detail::PutLit(s, cp[(pts - 1) * NK_CURVE_REELS_PAR_POINT]);
+						s.Append(");\n");
+
+						// Deroule a la compilation, comme la rampe : pas de boucle,
+						// pas d index dynamique, aucun backend n en a besoin.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "cy");
+						s.Append(" = ");
+						detail::PutLit(s, cp[1]);
+						s.Append(";\n");
+
+						for (uint32 k = 1; k < pts; ++k) {
+							const float32 x0 = cp[(k - 1) * NK_CURVE_REELS_PAR_POINT];
+							const float32 x1 = cp[k * NK_CURVE_REELS_PAR_POINT];
+							s.Append("    ");
+							detail::PutNom(s, n->id, "cy");
+							s.Append(" = mix(");
+							detail::PutNom(s, n->id, "cy");
+							s.Append(", ");
+							detail::PutLit(s, cp[k * NK_CURVE_REELS_PAR_POINT + 1]);
+							s.Append(", ");
+							if (constanteC) {
+								s.Append("step(");
+								detail::PutLit(s, x1);
+								s.Append(", ");
+								detail::PutNom(s, n->id, "cx");
+								s.Append(")");
+							} else {
+								// La pente est calculee ICI, a la compilation, et
+								// `NkMatLisCourbe` a deja garanti que le
+								// denominateur est strictement positif -- les
+								// positions egales sont refusees en amont. Aucune
+								// division ne reste dans le shader.
+								s.Append("clamp((");
+								detail::PutNom(s, n->id, "cx");
+								s.Append(" - ");
+								detail::PutLit(s, x0);
+								s.Append(") * ");
+								detail::PutLit(s, 1.f / (x1 - x0));
+								s.Append(", 0.0, 1.0)");
+							}
+							s.Append(");\n");
+						}
+
+						// ⚠️ `fac` VAUT 1 QUAND PERSONNE NE LE RENSEIGNE, et c est
+						// le contraire du repli habituel. Le neutre arithmetique
+						// serait 0 -- et a 0 ce noeud rend son entree telle quelle.
+						// L auteur poserait un Float Curve, dessinerait sa courbe,
+						// et ne verrait RIEN changer, sans le moindre message.
+						// Meme raison que l echelle a 1 du Mapping : le neutre
+						// d un noeud n est pas le zero de son operation.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "value");
+						s.Append(" = mix(");
+						ecrisEntree(*n, "value", "float", nullptr);
+						s.Append(", ");
+						detail::PutNom(s, n->id, "cy");
+						s.Append(", ");
+						{
+							const int32 iv = n->FindSocket("fac", NkSocketDir::Input);
+							const bool cable = iv >= 0 && g.IncomingOf(n->id, iv);
+							const NkGraphValue *d =
+								iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+							if (cable || (d && d->IsSet())) {
+								s.Append("clamp(");
+								ecrisEntree(*n, "fac", "float", nullptr);
+								s.Append(", 0.0, 1.0)");
+							} else {
+								s.Append("1.0"); // la courbe s applique
+							}
+						}
+						s.Append(");\n");
 					} else if (t == NkString(NK_MN_TEX_COORD)) {
 						// L'UV du maillage, sans calcul. `vUV` est une varying, et
 						// on est dans l'ENTREE : la contrainte du dialecte (jamais

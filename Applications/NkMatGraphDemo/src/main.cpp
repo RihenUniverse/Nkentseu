@@ -433,6 +433,39 @@ static bool GrapheRampe(const float32 *arrets, uint32 nbReels, float32 fac, NkSt
 	return r.ok;
 }
 
+
+// Le graphe qui prouve que la SECONDE charge variable atteint le GPU, et que la
+// valeur remodelee traverse bien un noeud du rang 3 avant d'arriver au pixel :
+//     Value(x) --> Float Curve --> Combine XYZ (canal VERT) --> Emission
+// Le rouge et le bleu du Combine restent a zero : l'invariant achromatique tient
+// et la soustraction de deux canaux elimine le terme d'eclairage inconnu.
+//
+// ⚠️ C'est aussi le PREMIER passage au pixel d'un noeud du rang 3 -- les quatre
+// autres n'etaient prouves que sur la source emise. Une valeur juste dans le
+// texte du shader et fausse a l'ecran resterait invisible.
+static bool GrapheCourbe(const float32 *pts, uint32 nbReels, float32 x, NkString &out) {
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
+	const NkNodeId comb = NkMatAddNode(g, NK_MN_COMBINE_XYZ);
+	const NkNodeId courbe = NkMatAddNode(g, NK_MN_FLOAT_CURVE);
+	const NkNodeId val = NkMatAddNode(g, NK_MN_VALUE);
+	g.Connect(emis, "emission", sortie, "surface");
+	g.Connect(comb, "vector", emis, "color");
+	g.Connect(courbe, "value", comb, "y");
+	g.Connect(val, "value", courbe, "value");
+	g.SetSocketDefault(comb, "x", NkSocketDir::Input, NkValueReal(t.real, 0.f));
+	g.SetSocketDefault(comb, "z", NkSocketDir::Input, NkValueReal(t.real, 0.f));
+	g.SetProp(courbe, NK_MPROP_POINTS, NkValueVec(t.curve, pts, nbReels));
+	g.SetProp(courbe, NK_MPROP_INTERP, NkValueText(t.curve, "lineaire"));
+	g.SetProp(val, NK_MPROP_VALUE, NkValueReal(t.real, x));
+	g.SetSocketDefault(emis, "strength", NkSocketDir::Input, NkValueReal(t.real, 1.f));
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	out = r.source;
+	return r.ok;
+}
+
 // Un Principled gris dont la NORMALE est imposee directement, en passant par un
 // noeud `RGB` : c'est l'ETALON. Il donne, avec le meme eclairage et le meme
 // shader, la couleur que produit une normale connue — sans que le banc ait a
@@ -1244,6 +1277,35 @@ int main() {
 			NkFormat("pixel=({0},{1},{2}) | R==B : {3} | ecart V-B={4} (attendu {5} : l'arret du milieu, pas une "
 					 "interpolation des bords)",
 					 px[0], px[1], px[2], NkString(px[0] == px[2] ? "oui" : "NON"), dV, kEcartAttendu));
+	}
+
+
+	// ── 7bis. Float Curve : la SECONDE charge variable atteint le GPU ─────
+	{
+		// ⚠️ LE POINT DU MILIEU, AU PIXEL. Trois points : 0 en x=0, kE en x=0,5,
+		// 0 en x=1. Lue en 0,5 la courbe doit rendre EXACTEMENT kE sur le canal
+		// vert -- donc un ecart V-B de 128.
+		//
+		// Un emetteur qui ne lirait que le PREMIER et le DERNIER point -- l'erreur
+		// naturelle quand on traite une liste comme une paire -- interpolerait 0
+		// avec 0 et rendrait du NOIR : ecart 0. Les deux images sont plausibles,
+		// seul l'ecart les distingue. C'est le pendant exact de
+		// `rendu/rampe-arret-du-milieu-honore`, une charge variable plus loin.
+		const float32 troisP[6] = {0.f, 0.f, 0.5f, kE, 1.f, 0.f};
+		uint8 pm[4] = {}, p0[4] = {};
+		const bool cm = GrapheCourbe(troisP, 6, 0.5f, src) && ctx.RendreEtLire(src, "matgraph_courbem", pm);
+		// TEMOIN : lue en 0, la MEME courbe rend 0. Sans ce second tir, un
+		// emetteur qui rendrait kE partout -- en ignorant l'abscisse -- passerait
+		// le premier tir et serait faux partout ailleurs.
+		const bool c0 = GrapheCourbe(troisP, 6, 0.f, src) && ctx.RendreEtLire(src, "matgraph_courbe0", p0);
+		const int32 dV = (int32)pm[1] - (int32)pm[2];
+		const int32 dV0 = (int32)p0[1] - (int32)p0[2];
+		const bool milieuHonore = pm[0] == pm[2] && dV == kEcartAttendu;
+		const bool temoinNoir = p0[0] == p0[2] && dV0 == 0;
+		Cas("rendu/courbe-point-du-milieu-honore", cm && c0 && milieuHonore && temoinNoir,
+			NkFormat("x=0,5 ({0},{1},{2}) ecart V-B={3} (attendu {4} : le point du milieu, pas une "
+					 "interpolation des bords) | TEMOIN x=0 ({5},{6},{7}) ecart={8} (attendu 0)",
+					 pm[0], pm[1], pm[2], dV, kEcartAttendu, p0[0], p0[1], p0[2], dV0));
 	}
 
 	// ── 8. le relief : la carte plate, puis le SENS de la bosse ─────────

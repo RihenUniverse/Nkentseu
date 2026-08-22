@@ -76,6 +76,13 @@ namespace nkentseu {
 			// d'un type, sans quoi le coeur ne pourrait ni la comparer ni la
 			// valider, et on aurait rouvert la porte de derriere du garde-fou n°1.
 			static const char *const NK_MT_RAMP = "mat.rampe";
+			// ⚠️ ET UN TYPE DISTINCT POUR LA COURBE, PAS `mat.rampe` REEMPLOYE.
+			// Les deux charges sont des reels tries par position, mais elles n ont
+			// ni le meme pas ni le meme sens : reemployer le type de la rampe
+			// laisserait le coeur accepter une rampe la ou une courbe est
+			// attendue -- 4 reels par element lus comme 2, donc une courbe a
+			// deux fois trop de points, parfaitement plausible et jamais signalee.
+			static const char *const NK_MT_CURVE = "mat.courbe";
 
 			// Quatre reels par arret : c'est ecrit ici parce que le compilateur,
 			// le banc et l'interface doivent decouper le tableau de la MEME
@@ -87,6 +94,26 @@ namespace nkentseu {
 			// le shader, qui ne compilerait plus — et l'erreur accuserait le
 			// backend. On borne ici, et le refus dira le compte.
 			static const uint32 NK_RAMP_ARRETS_MAX = 32;
+			// ⚠️ UN arret suffit a une rampe : elle rend cette couleur partout, et
+			// c est un resultat DEFINI, pas un piege. Le minimum n est donc pas le
+			// meme pour tout le monde -- voir la courbe juste en dessous.
+			static const uint32 NK_RAMP_ARRETS_MIN = 1;
+
+			// ── LA COURBE REELLE : LA MEME FAMILLE DE CHARGE, UN AUTRE PAS ────
+			// Deux reels par point -- position, valeur. La rampe en met quatre
+			// (position, r, v, b). C est la SEULE difference de forme, et c est
+			// exactement pourquoi la lecture ci-dessous est PARAMETREE par le pas
+			// au lieu d etre recopiee : deux lectures d un meme genre de tableau
+			// finissent par ne plus lire la meme chose.
+			static const uint32 NK_CURVE_REELS_PAR_POINT = 2;
+			static const uint32 NK_CURVE_POINTS_MAX = 32;
+			// ⚠️ DEUX POINTS AU MINIMUM, et c est une VRAIE difference avec la
+			// rampe, pas un alignement par gout. Une courbe a un seul point rend
+			// sa valeur partout : l auteur a dessine une courbe et obtient une
+			// constante. Ca compile, ca rend, et rien ne dit que le noeud n a
+			// servi a rien. La rampe a un arret, elle, ANNONCE une couleur unie --
+			// on voit tout de suite ce qu on a demande.
+			static const uint32 NK_CURVE_POINTS_MIN = 2;
 
 			struct NkMatTypes {
 					NkTypeId real = graph::NK_TYPE_INVALID;
@@ -94,9 +121,10 @@ namespace nkentseu {
 					NkTypeId color = graph::NK_TYPE_INVALID;
 					NkTypeId shader = graph::NK_TYPE_INVALID;
 					NkTypeId ramp = graph::NK_TYPE_INVALID;
+					NkTypeId curve = graph::NK_TYPE_INVALID;
 
 					bool Valid() const {
-						return real && vector && color && shader && ramp;
+						return real && vector && color && shader && ramp && curve;
 					}
 			};
 
@@ -122,6 +150,7 @@ namespace nkentseu {
 				t.color = g.RegisterType(NK_MT_COLOR);
 				t.shader = g.RegisterType(NK_MT_SHADER);
 				t.ramp = g.RegisterType(NK_MT_RAMP);
+				t.curve = g.RegisterType(NK_MT_CURVE);
 				g.AllowConversion(t.real, t.vector);
 				g.AllowConversion(t.real, t.color);
 				g.AllowConversion(t.vector, t.color);
@@ -379,73 +408,133 @@ namespace nkentseu {
 				return -1;
 			}
 
-			// ── UNE RAMPE, LUE ET VALIDEE AU MEME ENDROIT ────────────────────
-			// Le compilateur ET le banc passent par ici : un decoupage duplique
-			// finirait par diverger, et c'est le compilateur qui aurait raison
-			// sans que personne le sache.
-			enum class NkMatRampeErreur : uint8 {
+			// ── DES POINTS TRIES, LUS ET VALIDES AU MEME ENDROIT ─────────────
+			// Le compilateur ET le banc passent par ici, pour la rampe COMME pour
+			// la courbe : un decoupage duplique finirait par diverger, et c est le
+			// compilateur qui aurait raison sans que personne le sache.
+			//
+			// ⚠️ POURQUOI UNE SEULE LECTURE POUR DEUX NOEUDS. La rampe range
+			// quatre reels par arret, la courbe deux par point ; tout le RESTE est
+			// identique -- multiple du pas, compte non nul, plafond, positions
+			// strictement croissantes. Recopier la fonction en changeant le 4 en 2
+			// aurait marche le premier jour ; le defaut arrive au TROISIEME
+			// noeud a charge variable, quand une regle ajoutee d un cote ne l est
+			// pas de l autre. Le pas, le plancher et le plafond sont donc des
+			// PARAMETRES, et il n existe qu une lecture.
+			enum class NkMatPointsErreur : uint8 {
 				Ok = 0,
-				Absente,	  ///< pas de propriete : cas LEGITIME, rampe par defaut
-				MalFormee,	  ///< le compte de reels n'est pas un multiple de 4
-				Vide,		  ///< zero arret
-				TropDArrets,  ///< au-dela du plafond
+				Absente,	  ///< pas de propriete : cas LEGITIME, valeur par defaut
+				MalFormee,	  ///< le compte de reels n est pas un multiple du pas
+				Vide,		  ///< zero element
+				PasAssez,	  ///< au moins un, mais sous le plancher du noeud
+				TropDElements,	  ///< au-dela du plafond
 				NonTriee,	  ///< positions dans le DESORDRE : il faut les reordonner
-				// ⚠️ DEUX ARRETS A LA MEME POSITION EST UN AUTRE DEFAUT, et il se
+				// ⚠️ DEUX ELEMENTS A LA MEME POSITION EST UN AUTRE DEFAUT, et il se
 				// repare autrement : le desordre se corrige en reordonnant, une
-				// egalite en DEPLACANT un arret. Un message commun obligerait
-				// l'auteur a comprendre lui-meme lequel des deux il a sous les
-				// yeux. Separe apres qu'un cas de banc l'a exige.
+				// egalite en DEPLACANT un element. Un message commun obligerait
+				// l auteur a comprendre lui-meme lequel des deux il a sous les
+				// yeux. Separe apres qu un cas de banc l a exige.
 				PositionsEgales,
 			};
 
-			inline NkMatRampeErreur NkMatLisRampe(const NkGraphValue *v, uint32 *outArrets) {
-				if (outArrets)
-					*outArrets = 0;
+			inline NkMatPointsErreur NkMatLisPointsTries(const NkGraphValue *v, uint32 pas, uint32 mini,
+														 uint32 maxi, uint32 *outCompte) {
+				if (outCompte)
+					*outCompte = 0;
 				if (!v || !v->IsSet())
-					return NkMatRampeErreur::Absente;
+					return NkMatPointsErreur::Absente;
+				if (pas == 0)
+					return NkMatPointsErreur::MalFormee;
 				const uint32 n = (uint32)v->numbers.Size();
-				if (n % NK_RAMP_REELS_PAR_ARRET != 0)
-					return NkMatRampeErreur::MalFormee;
-				const uint32 arrets = n / NK_RAMP_REELS_PAR_ARRET;
-				if (arrets == 0)
-					return NkMatRampeErreur::Vide;
-				if (arrets > NK_RAMP_ARRETS_MAX)
-					return NkMatRampeErreur::TropDArrets;
-				// ⚠️ POSITIONS CROISSANTES. Deux arrets a la meme position font
-				// diviser par zero dans l'interpolation ; des positions dans le
-				// desordre rendent une rampe qui a l'air de marcher et qui lit
-				// les couleurs dans le mauvais ordre. On REFUSE plutot que de
-				// trier en silence : trier changerait le fichier de l'auteur sans
-				// le lui dire.
-				for (uint32 i = 1; i < arrets; ++i) {
-					const float32 avant = v->numbers[(i - 1) * NK_RAMP_REELS_PAR_ARRET];
-					const float32 ici = v->numbers[i * NK_RAMP_REELS_PAR_ARRET];
+				if (n % pas != 0)
+					return NkMatPointsErreur::MalFormee;
+				const uint32 compte = n / pas;
+				if (compte == 0)
+					return NkMatPointsErreur::Vide;
+				if (compte < mini)
+					return NkMatPointsErreur::PasAssez;
+				if (compte > maxi)
+					return NkMatPointsErreur::TropDElements;
+				// ⚠️ POSITIONS CROISSANTES. Deux elements a la meme position font
+				// diviser par zero dans l interpolation ; des positions dans le
+				// desordre rendent une rampe (ou une courbe) qui a l air de
+				// marcher et qui lit ses valeurs dans le mauvais ordre. On REFUSE
+				// plutot que de trier en silence : trier changerait le fichier de
+				// l auteur sans le lui dire.
+				for (uint32 i = 1; i < compte; ++i) {
+					const float32 avant = v->numbers[(i - 1) * pas];
+					const float32 ici = v->numbers[i * pas];
 					if (ici < avant)
-						return NkMatRampeErreur::NonTriee;
+						return NkMatPointsErreur::NonTriee;
 					if (ici == avant)
-						return NkMatRampeErreur::PositionsEgales;
+						return NkMatPointsErreur::PositionsEgales;
 				}
-				if (outArrets)
-					*outArrets = arrets;
-				return NkMatRampeErreur::Ok;
+				if (outCompte)
+					*outCompte = compte;
+				return NkMatPointsErreur::Ok;
 			}
 
-			inline const char *NkMatRampeErreurNom(NkMatRampeErreur e) {
+			// Les deux appels nommes. Ils ne REFONT rien : ils fixent le pas, le
+			// plancher et le plafond de leur noeud, une seule fois chacun.
+			inline NkMatPointsErreur NkMatLisRampe(const NkGraphValue *v, uint32 *outArrets) {
+				return NkMatLisPointsTries(v, NK_RAMP_REELS_PAR_ARRET, NK_RAMP_ARRETS_MIN,
+										   NK_RAMP_ARRETS_MAX, outArrets);
+			}
+
+			inline NkMatPointsErreur NkMatLisCourbe(const NkGraphValue *v, uint32 *outPoints) {
+				return NkMatLisPointsTries(v, NK_CURVE_REELS_PAR_POINT, NK_CURVE_POINTS_MIN,
+										   NK_CURVE_POINTS_MAX, outPoints);
+			}
+
+			// ⚠️ DEUX VOCABULAIRES, UNE SEULE CLASSIFICATION. Ce qui ne doit pas
+			// etre duplique, c est la REGLE ; les mots que l auteur lit, eux,
+			// doivent parler de SON noeud. « deux arrets a la meme position » ne
+			// veut rien dire devant une courbe, et « elements » ne veut rien dire
+			// tout court.
+			inline const char *NkMatRampeErreurNom(NkMatPointsErreur e) {
 				switch (e) {
-					case NkMatRampeErreur::Ok:
+					case NkMatPointsErreur::Ok:
 						return "ok";
-					case NkMatRampeErreur::Absente:
+					case NkMatPointsErreur::Absente:
 						return "absente";
-					case NkMatRampeErreur::MalFormee:
+					case NkMatPointsErreur::MalFormee:
 						return "mal-formee";
-					case NkMatRampeErreur::Vide:
+					case NkMatPointsErreur::Vide:
 						return "vide";
-					case NkMatRampeErreur::TropDArrets:
+					case NkMatPointsErreur::PasAssez:
+						// Inatteignable pour la rampe : son plancher est 1, et zero
+						// arret sort deja en `Vide`. On la nomme quand meme -- un
+						// `switch` qui retombe sur « ? » le jour ou le plancher
+						// change afficherait un point d interrogation a l auteur.
+						return "pas-assez-d-arrets";
+					case NkMatPointsErreur::TropDElements:
 						return "trop-d-arrets";
-					case NkMatRampeErreur::NonTriee:
+					case NkMatPointsErreur::NonTriee:
 						return "positions-dans-le-desordre";
-					case NkMatRampeErreur::PositionsEgales:
+					case NkMatPointsErreur::PositionsEgales:
 						return "deux-arrets-a-la-meme-position";
+				}
+				return "?";
+			}
+
+			inline const char *NkMatCourbeErreurNom(NkMatPointsErreur e) {
+				switch (e) {
+					case NkMatPointsErreur::Ok:
+						return "ok";
+					case NkMatPointsErreur::Absente:
+						return "absente";
+					case NkMatPointsErreur::MalFormee:
+						return "mal-formee";
+					case NkMatPointsErreur::Vide:
+						return "vide";
+					case NkMatPointsErreur::PasAssez:
+						return "un-seul-point-donc-une-constante";
+					case NkMatPointsErreur::TropDElements:
+						return "trop-de-points";
+					case NkMatPointsErreur::NonTriee:
+						return "positions-dans-le-desordre";
+					case NkMatPointsErreur::PositionsEgales:
+						return "deux-points-a-la-meme-position";
 				}
 				return "?";
 			}
@@ -803,6 +892,15 @@ namespace nkentseu {
 			static const char *const NK_MN_CLAMP = "mat.borner";
 			static const char *const NK_MN_COMBINE_XYZ = "mat.combiner_xyz";
 			static const char *const NK_MN_VECTOR_MATH = "mat.math_vecteur";
+			// ⚠️ LE SEUL DU RANG A PORTER UNE CHARGE VARIABLE, comme ColorRamp.
+			// Les quatre autres se reglent avec un mot ou rien ; celui-ci porte N
+			// points venus du fichier. C est pour ca qu il ferme le rang plutot
+			// que de l ouvrir : il eprouve le sac de proprietes une seconde fois,
+			// avec un PAS different -- et c est cette difference de pas qui a
+			// force la lecture a devenir parametree au lieu d etre recopiee.
+			static const char *const NK_MN_FLOAT_CURVE = "mat.courbe_reelle";
+			// Les points : N groupes de deux reels -- position, valeur.
+			static const char *const NK_MPROP_POINTS = "points";
 			// Le mode de bornage de `Map Range` et de `Clamp`. Un MOT, comme partout :
 			// un booleen aurait suffi pour deux etats, mais Blender en a quatre pour
 			// `Clamp` (min/max, plage) et le jour ou on en ajoutera un, un booleen
@@ -958,6 +1056,20 @@ namespace nkentseu {
 					{"vector", NK_MT_VECTOR, NkSocketDir::Output, false},
 				};
 
+				// Float Curve : remodele une valeur en la faisant passer par une
+				// courbe DESSINEE. `fac` melange l entree et le resultat, comme
+				// chez Blender -- a 0 le noeud est transparent, a 1 la courbe
+				// s applique entierement.
+				//
+				// Deux prises nommees `value`, une par direction : c est le nom de
+				// Blender des deux cotes, et les rendre differentes obligerait un
+				// futur import a traduire un nom sur deux.
+				static const NkMatSocketDecl kFloatCurve[] = {
+					{"fac", NK_MT_REAL, NkSocketDir::Input, false},
+					{"value", NK_MT_REAL, NkSocketDir::Input, false},
+					{"value", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+
 				// ⚠️ Vector Math a DEUX sorties, et ce n est pas un confort : trois de
 				// ses douze operations rendent un SCALAIRE (produit scalaire, longueur,
 				// distance). Une seule prise vectorielle obligerait a inventer un
@@ -1099,10 +1211,12 @@ namespace nkentseu {
 					{NK_MN_CLAMP, "Clamp", kClamp, 4, false},
 					{NK_MN_COMBINE_XYZ, "Combine XYZ", kCombineXYZ, 4, false},
 					{NK_MN_VECTOR_MATH, "Vector Math", kVectorMath, 4, false},
+					// Charge variable, mais pas une source : il remodele: `false`.
+					{NK_MN_FLOAT_CURVE, "Float Curve", kFloatCurve, 3, false},
 					// Un puits, jamais une source : il ne fabrique aucune valeur.
 					{NK_MN_OUTPUT_VALUE, "Named Output", kOutputValue, 2, false},
 				};
-				static const uint32 kProtoCount = 27;
+				static const uint32 kProtoCount = 28;
 
 			} // namespace detail
 

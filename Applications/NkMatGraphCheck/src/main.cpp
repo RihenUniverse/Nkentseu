@@ -3467,6 +3467,260 @@ static void CasVectorMathGardesNaN() {
 				 gardeNorm ? 1 : 0, gardeDiv ? 1 : 0, ajouterSansGarde ? 1 : 0));
 }
 
+
+// ── FLOAT CURVE : LA SECONDE CHARGE VARIABLE, ET LE SEUL DU RANG A EN PORTER ──
+
+static NkMatCompileResult CompileCourbe(NkNodeGraph &g, const NkMatTypes &t, const float32 *pts,
+										uint32 nbReels, const char *interp, const float32 *fac) {
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId c = NkMatAddNode(g, NK_MN_FLOAT_CURVE);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	g.Connect(c, "value", bsdf, "roughness");
+	if (pts)
+		g.SetProp(c, NK_MPROP_POINTS, NkValueVec(t.curve, pts, nbReels));
+	if (interp)
+		g.SetProp(c, NK_MPROP_INTERP, NkValueText(t.curve, interp));
+	if (fac)
+		g.SetSocketDefault(c, "fac", NkSocketDir::Input, NkValueReal(t.real, *fac));
+	return NkMatCompileToNkSL(g);
+}
+
+static void CasCourbeChargeVariable() {
+	// LA SECONDE CHARGE VARIABLE, ET ELLE A UN AUTRE PAS. La rampe range quatre
+	// reels par arret, celle-ci deux par point -- c est cette difference qui a
+	// force la lecture a devenir PARAMETREE plutot que recopiee.
+	//
+	// DISCRIMINE : on compte les mix. Une courbe a N points en produit N-1, plus
+	// UN pour le melange par `fac`. Un emetteur qui ne verrait que le premier et
+	// le dernier point donnerait un shader qui compile et une courbe FAUSSE. Le
+	// compte est verifie pour 2, 3 et 5 points : une seule taille ne prouverait
+	// rien d une charge variable.
+	const float32 p2[4] = {0.f, 0.f, 1.f, 1.f};
+	const float32 p3[6] = {0.f, 0.f, 0.5f, 0.9f, 1.f, 1.f};
+	const float32 p5[10] = {0.f, 0.f, 0.25f, 0.6f, 0.5f, 0.3f, 0.75f, 0.8f, 1.f, 1.f};
+	struct Jeu {
+			const float32 *p;
+			uint32 n;
+			uint32 pts;
+	};
+	const Jeu jeux[3] = {{p2, 4, 2}, {p3, 6, 3}, {p5, 10, 5}};
+	uint32 bons = 0;
+	NkString detail;
+	for (uint32 j = 0; j < 3; ++j) {
+		NkNodeGraph g;
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		NkMatCompileResult r = CompileCourbe(g, t, jeux[j].p, jeux[j].n, "lineaire", nullptr);
+		uint32 nbMix = 0;
+		if (r.ok) {
+			const char *q = r.source.CStr();
+			while (*q) {
+				if (q[0] == 'm' && q[1] == 'i' && q[2] == 'x' && q[3] == '(')
+					++nbMix;
+				++q;
+			}
+		}
+		// N-1 pour la courbe, +1 pour le melange par `fac`, +2 pour le puits
+		// (specExp, specColor) : la lecon d avant-hier, ou compter tous les mix
+		// du shader mesurait le modele d eclairage en meme temps que le noeud.
+		const uint32 attendus = jeux[j].pts - 1u + 1u + 2u;
+		NkString be, err;
+		const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+		if (r.ok && ok == 5 && nbMix == attendus)
+			++bons;
+		detail.Append(NkFormat("{0} points->{1} mix (attendu {2}) ", jeux[j].pts, nbMix, attendus));
+	}
+	Cas("courbe/charge-utile-variable-au-pas-de-deux", bons == 3, detail);
+}
+
+static void CasCourbeRefusNommes() {
+	// CINQ malformations, CINQ messages distincts, et AUCUN shader emis. La
+	// cinquieme n existe PAS pour la rampe : un seul point. Une rampe a un arret
+	// ANNONCE une couleur unie ; une courbe a un point rend une CONSTANTE alors
+	// que l auteur croit avoir dessine un trace.
+	//
+	// Et le sixieme cas -- la propriete ABSENTE -- doit au contraire COMPILER :
+	// c est le voisin legitime (le noeud vient d etre pose).
+	const float32 malForme[3] = {0.f, 0.f, 1.f};
+	const float32 unSeul[2] = {0.f, 0.5f};
+	const float32 desordre[4] = {1.f, 1.f, 0.f, 0.f};
+	const float32 egales[4] = {0.5f, 0.f, 0.5f, 1.f};
+	float32 trop[(NK_CURVE_POINTS_MAX + 1) * 2];
+	for (uint32 i = 0; i <= NK_CURVE_POINTS_MAX; ++i) {
+		trop[i * 2 + 0] = (float32)i * 0.001f;
+		trop[i * 2 + 1] = 0.5f;
+	}
+	NkString m[5];
+	bool emisVide = true;
+	const float32 *jeux[5] = {malForme, unSeul, desordre, egales, trop};
+	const uint32 tailles[5] = {3, 2, 4, 4, (NK_CURVE_POINTS_MAX + 1) * 2};
+	for (uint32 j = 0; j < 5; ++j) {
+		NkNodeGraph g;
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		NkMatCompileResult r = CompileCourbe(g, t, jeux[j], tailles[j], "lineaire", nullptr);
+		m[j] = r.ok ? NkString("A COMPILE (ne devait pas)") : r.error;
+		if (r.source.Size() != 0)
+			emisVide = false;
+	}
+	NkNodeGraph g2;
+	const NkMatTypes t2 = NkMatRegisterTypes(g2);
+	NkMatCompileResult absente = CompileCourbe(g2, t2, nullptr, 0, nullptr, nullptr);
+	const bool ditLeCompte = Apres(m[4], "33 demandes, plafond 32") > 0;
+	// Cinq messages deux a deux differents. Un compilateur qui rendrait le meme
+	// message pour tout passerait un test qui ne compterait que les echecs.
+	bool distincts = true;
+	for (uint32 a = 0; a < 5; ++a)
+		for (uint32 b = a + 1; b < 5; ++b)
+			if (m[a] == m[b])
+				distincts = false;
+	Cas("courbe/refus-nommes-et-distincts", distincts && emisVide && absente.ok && ditLeCompte,
+		NkFormat("[{0}] [{1}] [{2}] [{3}] [{4}] | distincts={5} rien emis={6} absente compile={7} plafond "
+				 "dit le compte={8}",
+				 m[0], m[1], m[2], m[3], m[4], distincts ? 1 : 0, emisVide ? 1 : 0, absente.ok ? 1 : 0,
+				 ditLeCompte ? 1 : 0));
+}
+
+static void CasCourbeDomaineDessine() {
+	// 🔴 LE CAS QUI ATTRAPE L ERREUR LA PLUS TENTANTE. Une courbe se BORNE, sinon
+	// elle extrapole vers des valeurs que l auteur n a jamais tracees. Mais la
+	// borner a [0,1] -- le reflexe, parce que la rampe juste a cote est definie
+	// la -- ECRASERAIT en silence les quatre cinquiemes d une courbe dessinee
+	// sur [0,5]. Le shader compilerait, rendrait, et serait faux.
+	//
+	// DISCRIMINE : la borne haute emise doit etre 5, jamais 1.0.
+	const float32 large[6] = {0.f, 0.f, 2.5f, 1.f, 5.f, 0.2f};
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	NkMatCompileResult r = CompileCourbe(g, t, large, 6, "lineaire", nullptr);
+	const bool borneHaute = r.ok && Apres(r.source, "5.0)") > 0;
+	// Et le processeur doit s accorder : lue en 9, hors du domaine, la courbe
+	// TIENT son dernier point, elle ne repart pas vers l infini.
+	NkNodeGraph g2;
+	const NkMatTypes t2 = NkMatRegisterTypes(g2);
+	NkNodeId o2;
+	MonteUnPrincipled(g2, t2, &o2);
+	const NkNodeId c2 = NkMatAddNode(g2, NK_MN_FLOAT_CURVE);
+	g2.SetProp(c2, NK_MPROP_POINTS, NkValueVec(t2.curve, large, 6));
+	g2.SetSocketDefault(c2, "value", NkSocketDir::Input, NkValueReal(t2.real, 9.f));
+	const NkNodeId s2 = PoseSortie(g2, t2, "hors_domaine", "par_materiau");
+	g2.Connect(c2, "value", s2, "value");
+	NkMatCompileResult r2 = NkMatCompileToNkSL(g2);
+	const NkMatSortieMateriau *so = r2.ok ? r2.TrouveSortie("hors_domaine") : nullptr;
+	const bool tientLeDernier = so && Proche(so->valeur[0], 0.2f);
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	Cas("courbe/domaine-dessine-et-non-zero-un", r.ok && ok == 5 && borneHaute && tientLeDernier,
+		NkFormat("{0}| borne au domaine DESSINE (5, pas 1)={1} | lue en 9 -> {2} (attendu 0.2 : on tient le "
+				 "dernier point)",
+				 be, borneHaute ? 1 : 0, so ? so->valeur[0] : -1.f));
+}
+
+static void CasCourbeFacNeutreEstUn() {
+	// 🔴 LE NEUTRE D UN NOEUD N EST PAS LE ZERO DE SON OPERATION.
+	//
+	// `fac` melange l entree et le resultat de la courbe. Le repli arithmetique
+	// serait 0 -- et a 0 ce noeud rend son entree TELLE QUELLE. L auteur poserait
+	// un Float Curve, dessinerait son trace, et ne verrait RIEN changer, sans le
+	// moindre message. Meme raison que l echelle a 1 du Mapping.
+	//
+	// DISCRIMINE PAR LA VALEUR, PAS PAR LE TEXTE : on lit ce que l evaluateur
+	// rend. Une courbe qui envoie 0.5 sur 0.9, entree 0.5, `fac` NON RENSEIGNE.
+	// Attendu 0.9 (la courbe s applique) et non 0.5 (le noeud transparent).
+	const float32 p[6] = {0.f, 0.f, 0.5f, 0.9f, 1.f, 1.f};
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId o;
+	MonteUnPrincipled(g, t, &o);
+	const NkNodeId c = NkMatAddNode(g, NK_MN_FLOAT_CURVE);
+	g.SetProp(c, NK_MPROP_POINTS, NkValueVec(t.curve, p, 6));
+	g.SetSocketDefault(c, "value", NkSocketDir::Input, NkValueReal(t.real, 0.5f));
+	const NkNodeId s = PoseSortie(g, t, "applique", "par_materiau");
+	g.Connect(c, "value", s, "value");
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkMatSortieMateriau *so = r.ok ? r.TrouveSortie("applique") : nullptr;
+	const bool applique = so && Proche(so->valeur[0], 0.9f);
+
+	// TEMOIN : `fac` a 0 doit au contraire rendre l entree intacte. Sans ce
+	// second tir, un evaluateur qui IGNORERAIT `fac` -- toujours la courbe --
+	// passerait le premier et serait faux des que l auteur regle le melange.
+	NkNodeGraph g0;
+	const NkMatTypes t0 = NkMatRegisterTypes(g0);
+	NkNodeId o0;
+	MonteUnPrincipled(g0, t0, &o0);
+	const NkNodeId c0 = NkMatAddNode(g0, NK_MN_FLOAT_CURVE);
+	g0.SetProp(c0, NK_MPROP_POINTS, NkValueVec(t0.curve, p, 6));
+	g0.SetSocketDefault(c0, "value", NkSocketDir::Input, NkValueReal(t0.real, 0.5f));
+	g0.SetSocketDefault(c0, "fac", NkSocketDir::Input, NkValueReal(t0.real, 0.f));
+	const NkNodeId s0 = PoseSortie(g0, t0, "transparent", "par_materiau");
+	g0.Connect(c0, "value", s0, "value");
+	NkMatCompileResult r0 = NkMatCompileToNkSL(g0);
+	const NkMatSortieMateriau *so0 = r0.ok ? r0.TrouveSortie("transparent") : nullptr;
+	const bool transparent = so0 && Proche(so0->valeur[0], 0.5f);
+
+	// Et le SHADER doit porter le meme neutre que le processeur. Un 1.0 ici et
+	// un 0.0 la-bas rendrait le pixel et le code de jeu discordants sur un noeud
+	// fraichement pose -- le pire des defauts, parce que les deux sont plausibles.
+	NkNodeGraph gs;
+	const NkMatTypes ts = NkMatRegisterTypes(gs);
+	NkMatCompileResult rs = CompileCourbe(gs, ts, p, 6, "lineaire", nullptr);
+	// ⚠️ ON LIT LA LIGNE DU MELANGE, PAS TOUTE LA SOURCE. Premiere version de
+	// cette verification : « , 1.0); apparait dans la source ». Elle a SURVECU a
+	// la mutation qui met le neutre du shader a 0 -- parce que « , 1.0); » se
+	// trouve ailleurs dans le shader, dans le puits et chez les voisins. Le
+	// controle verifiait la presence d une CHAINE, jamais son EMPLOI.
+	//
+	// CINQUIEME occurrence de cette faute dans le chantier, et je l ai commise
+	// le lendemain du jour ou je l ai ecrite noir sur blanc. La retenir ne suffit
+	// visiblement pas : ce qui l attrape, c est la mutation, pas la vigilance.
+	//
+	// `_cy, 1.0);` n existe QUE dans le melange final du Float Curve. Dans
+	// l echelle des segments, `_cy` est toujours suivi d une virgule puis d un
+	// autre argument -- jamais d une parenthese fermante.
+	const bool shaderPorteUn = rs.ok && Apres(rs.source, "_cy, 1.0);") > 0 &&
+							   Apres(rs.source, "_cy, 0.0);") < 0;
+	Cas("courbe/fac-non-renseigne-applique-la-courbe", applique && transparent && shaderPorteUn,
+		NkFormat("fac absent -> {0} (attendu 0.9 : la courbe s applique) | fac=0 -> {1} (attendu 0.5 : "
+				 "TEMOIN, le noeud est transparent) | le shader porte le meme neutre={2}",
+				 so ? so->valeur[0] : -1.f, so0 ? so0->valeur[0] : -1.f, shaderPorteUn ? 1 : 0));
+}
+
+static void CasCourbeInterpolation() {
+	// Les deux interpolations emettent des codes DIFFERENTS -- step pour la
+	// constante, une pente pre-calculee pour la lineaire -- et une interpolation
+	// inconnue est refusee en la nommant. MEME TABLE que la rampe : une seconde
+	// liste « interpolations de courbe » aurait le meme contenu et divergerait au
+	// premier ajout.
+	//
+	// ⚠️ Et la courbe lineaire ne contient AUCUNE division dans le shader : la
+	// pente est calculee a la compilation, et `NkMatLisCourbe` a deja garanti que
+	// le denominateur est non nul en refusant les positions egales.
+	const float32 p[6] = {0.f, 0.f, 0.5f, 0.9f, 1.f, 1.f};
+	NkNodeGraph g1;
+	const NkMatTypes t1 = NkMatRegisterTypes(g1);
+	NkMatCompileResult lin = CompileCourbe(g1, t1, p, 6, "lineaire", nullptr);
+	NkNodeGraph g2;
+	const NkMatTypes t2 = NkMatRegisterTypes(g2);
+	NkMatCompileResult cst = CompileCourbe(g2, t2, p, 6, "constante", nullptr);
+	NkNodeGraph g3;
+	const NkMatTypes t3 = NkMatRegisterTypes(g3);
+	NkMatCompileResult inc = CompileCourbe(g3, t3, p, 6, "spline_de_bezier_cubique", nullptr);
+	const bool cstPalier = cst.ok && Apres(cst.source, "step(") > 0;
+	const bool linSansStep = lin.ok && Apres(lin.source, "step(") < 0;
+	const bool refuseNomme = !inc.ok && Apres(inc.error, "spline_de_bezier_cubique") > 0;
+	// La division cherchee est celle de l interpolation. Chercher un simple « / »
+	// mesurerait les commentaires et le reste du shader.
+	const bool aucuneDivision = lin.ok && Apres(lin.source, ") / (") < 0;
+	NkString b1, b2, e1;
+	const uint32 o1 = lin.ok ? CompileSurLesBackends(lin.source, b1, &e1) : 0u;
+	const uint32 o2 = cst.ok ? CompileSurLesBackends(cst.source, b2, &e1) : 0u;
+	Cas("courbe/interpolation-et-refus",
+		o1 == 5 && o2 == 5 && cstPalier && linSansStep && refuseNomme && aucuneDivision,
+		NkFormat("lin:{0}cst:{1}| constante emet step={2} | lineaire n en emet PAS={3} | inconnue refusee "
+				 "en la nommant={4} | aucune division dans le shader={5}",
+				 b1, b2, cstPalier ? 1 : 0, linSansStep ? 1 : 0, refuseNomme ? 1 : 0,
+				 aucuneDivision ? 1 : 0));
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -3586,6 +3840,13 @@ int main() {
 	CasCombineXYZ();
 	CasVectorMathOperationsEtAccord();
 	CasVectorMathGardesNaN();
+
+	// -- Float Curve : la SECONDE charge variable, et elle a un autre PAS ---
+	CasCourbeChargeVariable();
+	CasCourbeRefusNommes();
+	CasCourbeDomaineDessine();
+	CasCourbeFacNeutreEstUn();
+	CasCourbeInterpolation();
 	CasProceduralCompile();
 	CasBriquesRecopieesVerbatim();
 	CasBriquesSeulementSiUtiles();
