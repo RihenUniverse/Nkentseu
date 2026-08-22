@@ -3157,13 +3157,19 @@ static void CasSortieEtagesRefuses() {
 			const char *etage;
 			const char *attendu;
 	};
-	const Jeu jeux[4] = {{nullptr, "etage non renseigne"},
-						 {"par_pixel_cible", "par_pixel_cible"},
-						 {"par_pixel_processeur", "par_pixel_processeur"},
-						 {"par_pixel_magique", "par_pixel_magique"}};
+	// ⚠️ `par_pixel_cible` A QUITTE CETTE LISTE le 2026-08-22 : (b1) est
+	// construit, il ne se refuse plus. Ce cas ne surveille QUE ce qui reste
+	// indisponible -- et cette collection RETRECIT par conception, un etage a la
+	// fois. Le compte se derive donc du tableau (`sizeof`), il n'est pas recopie
+	// a cote : retirer une ligne ne doit pas obliger a corriger un nombre
+	// ailleurs, sous peine de le corriger un jour sans regarder.
+	const Jeu jeux[] = {{nullptr, "etage non renseigne"},
+						{"par_pixel_processeur", "par_pixel_processeur"},
+						{"par_pixel_magique", "par_pixel_magique"}};
+	const uint32 nJeux = (uint32)(sizeof(jeux) / sizeof(jeux[0]));
 	uint32 bons = 0;
 	NkString detail;
-	for (uint32 i = 0; i < 4; ++i) {
+	for (uint32 i = 0; i < nJeux; ++i) {
 		NkNodeGraph g;
 		NkMatTypes t = NkMatRegisterTypes(g);
 		NkNodeId out;
@@ -3192,7 +3198,7 @@ static void CasSortieEtagesRefuses() {
 	NkMatCompileResult rb2 = NkMatCompileToNkSL(g);
 	const bool ditPourquoi = Apres(rb2.error, "SYNCHRONE") > 0 || Apres(rb2.error, "synchrone") > 0;
 
-	Cas("sortie/etages-non-construits-refusent-en-se-nommant", bons == 4 && ditPourquoi,
+	Cas("sortie/etages-non-construits-refusent-en-se-nommant", bons == nJeux && ditPourquoi,
 		NkFormat("{0}| (b2) dit pourquoi={1}", detail, ditPourquoi ? 1 : 0));
 }
 
@@ -4951,6 +4957,227 @@ static const char *kUneCible = "@location(0) in vec2 vUV;\n"
 							   "    fragColor = vec4(vUV, 0.0, 1.0);\n"
 							   "}\n";
 
+// ── (b1) : LA SECONDE CIBLE, ECRITE PAR TOUS ────────────────────────────────
+//
+// Le contrat, tel que Rodolf l'a signe : RGB = la valeur de la sortie resolue,
+// A = 1 si ce pixel la porte, 0 sinon ; quand A == 0, RGB n'a aucun sens.
+//
+// TOUT SE MESURE SANS GPU, sur le NkSL emis. C'est possible parce que la
+// propriete qui compte est SYNTAXIQUE : la sortie est-elle declaree, est-elle
+// ECRITE, et avec quel alpha.
+
+// Le shader d'un materiau, avec ou sans sortie nommee.
+static NkMatCompileResult CompileAvecSortie(const char *etage, const char *nomDemande) {
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	MonteUnPrincipled(g, t, &out);
+	if (etage) {
+		const NkNodeId v = NkMatAddNode(g, NK_MN_VALUE);
+		g.SetProp(v, NK_MPROP_VALUE, NkValueReal(t.real, 0.f));
+		const NkNodeId so = PoseSortie(g, t, "humidite", etage);
+		g.Connect(v, "value", so, "value");
+	}
+	NkMatCompileOptions opt;
+	opt.sortieParPixel = nomDemande;
+	return NkMatCompileToNkSL(g, opt);
+}
+
+static void CasB1ToutMateriauDeclareEtEcritLaSecondeCible() {
+	// ⚠️ LE CAS QUE RODOLF A DEMANDE EN PREMIER, et le fait materiel qui le
+	// justifie : UNE SORTIE MRT NON ECRITE SUR UN PIXEL COUVERT EST INDEFINIE --
+	// ni conservee, ni nulle. Un materiau qui se contenterait de ne pas la
+	// declarer laisserait dans le tampon ce qui s'y trouvait.
+	//
+	// On mesure donc les TROIS regimes, et ils doivent tous ecrire :
+	//   - aucune sortie nommee du tout        -> declare, ecrit (0,0,0,0) ;
+	//   - une sortie « par_materiau » (etage a) -> declare, ecrit (0,0,0,0) AUSSI,
+	//     parce que (a) est une constante calculee sur le processeur : lui faire
+	//     payer une ecriture par pixel viderait l'argument « quasi gratuit » ;
+	//   - une sortie « par_pixel_cible » (b1)  -> declare, ecrit la VALEUR avec
+	//     A = 1, et N'ECRIT PAS la ligne de zero.
+	//
+	// DISCRIMINE sur la derniere ligne surtout : un emetteur qui ecrirait la
+	// valeur PUIS le zero par-dessus rendrait un tampon vide sur un materiau qui
+	// porte pourtant la sortie -- et le shader compilerait parfaitement.
+	const NkMatCompileResult sans = CompileAvecSortie(nullptr, nullptr);
+	const NkMatCompileResult etageA = CompileAvecSortie("par_materiau", nullptr);
+	const NkMatCompileResult b1 = CompileAvecSortie("par_pixel_cible", nullptr);
+
+	const char *kDecl = "@location(1) out vec4 fragAux;";
+	const char *kZero = "fragAux = vec4(0.0, 0.0, 0.0, 0.0);";
+
+	const bool declSans = sans.ok && ContientSansCasse(sans.source, kDecl);
+	const bool declA = etageA.ok && ContientSansCasse(etageA.source, kDecl);
+	const bool declB1 = b1.ok && ContientSansCasse(b1.source, kDecl);
+	const bool zeroSans = sans.ok && ContientSansCasse(sans.source, kZero);
+	const bool zeroA = etageA.ok && ContientSansCasse(etageA.source, kZero);
+	const bool zeroB1 = b1.ok && ContientSansCasse(b1.source, kZero);
+	const bool valeurB1 = b1.ok && ContientSansCasse(b1.source, "fragAux = vec4(vec3(");
+
+	NkString d;
+	d = NkFormat("SANS sortie : declare={0} ecrit zero={1} | etage (a) : declare={2} ecrit zero={3} | (b1) : "
+				 "declare={4} ecrit la valeur={5} et PAS de zero={6}",
+				 declSans ? 1 : 0, zeroSans ? 1 : 0, declA ? 1 : 0, zeroA ? 1 : 0, declB1 ? 1 : 0,
+				 valeurB1 ? 1 : 0, zeroB1 ? 0 : 1);
+	Cas("b1/tout-materiau-declare-et-ecrit-la-seconde-cible",
+		declSans && zeroSans && declA && zeroA && declB1 && valeurB1 && !zeroB1, d);
+}
+
+static void CasB1ValiditeDistingueZeroDeAbsent() {
+	// ⚠️ LE PIEGE QUE RODOLF A NOMME, ET LA RAISON D'ETRE DU QUATRIEME CANAL.
+	//
+	// Le materiau (b1) de ce cas porte une sortie dont la valeur vaut EXACTEMENT
+	// ZERO. Celui d'a cote ne porte aucune sortie. Dans le tampon, leurs trois
+	// premiers canaux sont IDENTIQUES -- zero des deux cotes.
+	//
+	//   Un lecteur qui ignorerait A lirait 0.0 dans les deux cas : une humidite
+	//   nulle parfaitement credible sur un materiau qui n'a jamais entendu
+	//   parler d'humidite.
+	//
+	// C'est A, ET RIEN D'AUTRE, qui les distingue. Le cas l'exige litteralement :
+	// le porteur ecrit un alpha de 1.0, l'autre un alpha de 0.0.
+	//
+	// DISCRIMINE : un emetteur qui ecrirait A = 1.0 partout -- le reflexe, parce
+	// qu'un alpha opaque est ce qu'on ecrit d'habitude -- rendrait les deux
+	// pixels indiscernables, et le tampon se remplirait de zeros presentes comme
+	// des mesures.
+	const NkMatCompileResult porte = CompileAvecSortie("par_pixel_cible", nullptr);
+	const NkMatCompileResult neportePas = CompileAvecSortie(nullptr, nullptr);
+
+	const bool alphaUn = porte.ok && ContientSansCasse(porte.source, ", 1.0);");
+	const bool alphaZero = neportePas.ok && ContientSansCasse(neportePas.source, "fragAux = vec4(0.0, 0.0, 0.0, 0.0);");
+	// et le porteur ne doit PAS ecrire l'alpha zero
+	const bool porteurSansZero = porte.ok && !ContientSansCasse(porte.source, "fragAux = vec4(0.0, 0.0, 0.0, 0.0);");
+
+	NkString d;
+	d = NkFormat("valeur nulle mais PORTEE : alpha=1={0} et aucun alpha 0={1} | sortie ABSENTE : alpha=0={2} | seul A "
+				 "les distingue",
+				 alphaUn ? 1 : 0, porteurSansZero ? 1 : 0, alphaZero ? 1 : 0);
+	Cas("b1/validite-distingue-zero-de-absent", alphaUn && porteurSansZero && alphaZero, d);
+}
+
+static void CasB1LaValeurVientDuGraphe() {
+	// « Ca declare » ne prouve pas « ca calcule ». Ici la sortie par pixel est
+	// alimentee par un BRUIT -- une source intrinsequement par pixel -- et
+	// l'ecriture doit referencer LA LOCALE QUE CE NOEUD A DECLAREE, pas une
+	// constante ni la locale d'un voisin.
+	//
+	// DISCRIMINE : un emetteur qui ecrirait `vec4(vec3(0.0), 1.0)` passerait tous
+	// les cas precedents -- la sortie serait declaree, ecrite, avec le bon alpha,
+	// et le shader compilerait. Seul le nom de la locale distingue un tampon qui
+	// porte une mesure d'un tampon qui porte un zero bien forme.
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	MonteUnPrincipled(g, t, &out);
+	const NkNodeId bruit = NkMatAddNode(g, NK_MN_NOISE);
+	const NkNodeId so = PoseSortie(g, t, "grain", "par_pixel_cible");
+	g.Connect(bruit, "fac", so, "value");
+	const NkMatCompileResult r = NkMatCompileToNkSL(g);
+
+	// La locale du bruit suit la convention `n<id>_fac`.
+	NkString attendu = NkFormat("fragAux = vec4(vec3(n{0}_fac", bruit);
+	const bool lit = r.ok && ContientSansCasse(r.source, attendu.CStr());
+	NkString be;
+	NkString err;
+	const uint32 nb = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+
+	NkString d;
+	d = NkFormat("compile={0} | l ecriture reference la locale du bruit ('{1}')={2} | {3}", r.ok ? 1 : 0, attendu,
+				 lit ? 1 : 0, be);
+	Cas("b1/la-valeur-vient-du-graphe", r.ok && lit && nb == 5, d);
+}
+
+static void CasB1ValeurProcesseurAbsenteEtDite() {
+	// ⚠️ LE MEME PIEGE QUE LE CANAL ALPHA, UN ETAGE PLUS HAUT — et je ne l'avais
+	// pas vu en concevant (b1).
+	//
+	// `NkMatSortieMateriau::valeur[3]` est la valeur calculee cote processeur.
+	// Pour une sortie « par_pixel_cible » elle n'existe pas : la valeur nait dans
+	// le shader. Le tableau reste donc a ZERO -- et ce zero se lit exactement
+	// comme « la valeur vaut zero », alors qu'il veut dire « il n'y a pas de
+	// valeur ici ». C'est le mensonge plausible qu'on refuse partout ailleurs,
+	// et il etait sur le point d'entrer par la porte de derriere.
+	//
+	// DISCRIMINE : les deux sorties du graphe portent une valeur processeur de
+	// 0.0 -- l'une parce qu'elle vaut vraiment zero, l'autre parce qu'elle n'en a
+	// pas. Un lecteur qui regarderait `valeur` sans regarder `valeurConnue` ne
+	// pourrait PAS les distinguer. Le cas exige donc que le drapeau, lui, les
+	// distingue.
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	MonteUnPrincipled(g, t, &out);
+
+	// (a) une sortie par materiau qui vaut REELLEMENT zero
+	const NkNodeId va = NkMatAddNode(g, NK_MN_VALUE);
+	g.SetProp(va, NK_MPROP_VALUE, NkValueReal(t.real, 0.f));
+	const NkNodeId sa = PoseSortie(g, t, "constante_nulle", "par_materiau");
+	g.Connect(va, "value", sa, "value");
+
+	// (b1) une sortie par pixel, dont la valeur processeur N'EXISTE PAS
+	const NkNodeId bruit = NkMatAddNode(g, NK_MN_NOISE);
+	const NkNodeId sb = PoseSortie(g, t, "grain", "par_pixel_cible");
+	g.Connect(bruit, "fac", sb, "value");
+
+	const NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkMatSortieMateriau *pa = r.ok ? r.TrouveSortie("constante_nulle") : nullptr;
+	const NkMatSortieMateriau *pb = r.ok ? r.TrouveSortie("grain") : nullptr;
+
+	const bool aConnue = pa && pa->valeurConnue && pa->valeur[0] == 0.f && pa->composantes == 1;
+	const bool bAbsente = pb && !pb->valeurConnue && pb->composantes == 1;
+	// et les deux sont bien REMONTEES au moteur : une sortie (b1) qu'on
+	// oublierait de declarer serait invisible du code de jeu.
+	const bool lesDeux = r.ok && r.sorties.Size() == 2;
+
+	NkString d;
+	d = NkFormat("compile={0} sorties remontees={1} (2 attendues) | (a) « constante_nulle » : valeur connue={2} et "
+				 "vaut {3} | (b1) « grain » : valeur processeur ABSENTE et dite={4} | les deux portent 0.0, seul le "
+				 "drapeau les distingue",
+				 r.ok ? 1 : 0, (uint32)r.sorties.Size(), (pa && pa->valeurConnue) ? 1 : 0,
+				 pa ? pa->valeur[0] : 0.f, bAbsente ? 1 : 0);
+	Cas("b1/valeur-processeur-absente-et-dite", lesDeux && aConnue && bAbsente, d);
+}
+
+static void CasB1RefusNommes() {
+	// Les deux ambiguites, et elles se refusent en se nommant.
+	//
+	// (a) demander une sortie qui n'existe pas. ⚠️ Rendre un tampon VIDE serait
+	//     le repli plausible : il se lirait comme « ce materiau ne porte pas
+	//     cette valeur », indiscernable du cas legitime, et donc jamais corrige.
+	// (b) deux sorties « par_pixel_cible » et aucune demandee. Prendre « la
+	//     premiere » rendrait une valeur credible issue d'une sortie que
+	//     personne n'a demandee.
+	const NkMatCompileResult inconnue = CompileAvecSortie("par_pixel_cible", "nexiste_pas");
+
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	MonteUnPrincipled(g, t, &out);
+	const NkNodeId v1 = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId v2 = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId s1 = PoseSortie(g, t, "humidite", "par_pixel_cible");
+	const NkNodeId s2 = PoseSortie(g, t, "usure", "par_pixel_cible");
+	g.Connect(v1, "value", s1, "value");
+	g.Connect(v2, "value", s2, "value");
+	const NkMatCompileResult ambigu = NkMatCompileToNkSL(g);
+	// et la MEME scene, levee en nommant la sortie voulue : c'est le temoin.
+	NkMatCompileOptions opt;
+	opt.sortieParPixel = "usure";
+	const NkMatCompileResult leve = NkMatCompileToNkSL(g, opt);
+
+	const bool nomInconnu = !inconnue.ok && ContientSansCasse(inconnue.error, "nexiste_pas");
+	const bool deuxRefus = !ambigu.ok && ContientSansCasse(ambigu.error, "il faut dire laquelle");
+	const bool leveOk = leve.ok && ContientSansCasse(leve.source, "fragAux = vec4(vec3(");
+
+    NkString d;
+	d = NkFormat("sortie demandee absente -> refus qui la nomme={0} ('{1}') | deux (b1) sans demande -> refus={2} | "
+				 "temoin : la meme scene compile quand on nomme la sortie={3}",
+				 nomInconnu ? 1 : 0, inconnue.error, deuxRefus ? 1 : 0, leveOk ? 1 : 0);
+	Cas("b1/refus-nommes", nomInconnu && deuxRefus && leveOk, d);
+}
+
 static void CasSortieParPixelDeuxCiblesCouleur() {
 	NkSLCompiler c;
 	struct {
@@ -5052,6 +5279,13 @@ int main() {
 
 	// -- (b1) : la seconde cible de rendu est-elle exprimable en NkSL ?
 	CasSortieParPixelDeuxCiblesCouleur();
+
+	// -- (b1) : la seconde cible, ecrite par TOUS les materiaux
+	CasB1ToutMateriauDeclareEtEcritLaSecondeCible();
+	CasB1ValiditeDistingueZeroDeAbsent();
+	CasB1LaValeurVientDuGraphe();
+	CasB1ValeurProcesseurAbsenteEtDite();
+	CasB1RefusNommes();
 	CasTypesNonEnregistres();
 	CasPrincipledVersSortie();
 	CasCouleurDansShaderRefuse();

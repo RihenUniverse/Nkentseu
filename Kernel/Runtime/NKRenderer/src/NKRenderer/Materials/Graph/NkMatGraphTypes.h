@@ -851,9 +851,13 @@ namespace nkentseu {
 				};
 				static const NkMatEtageSortie kEtages[] = {
 					{"par_materiau", "par materiau, cote processeur", true, nullptr},
-					{"par_pixel_cible", "par pixel, vers une cible de rendu", false,
-					 "etage (b1) pas encore construit : il attend que les entrees exposees arrivent jusqu au "
-					 "pixel. Il n est pas refuse par principe, il est refuse par honnetete"},
+					// (b1), construit le 2026-08-22. Format signe par Rodolf :
+					// R16G16B16A16_FLOAT, 8 octets/pixel -- RGB porte la valeur,
+					// A porte la VALIDITE. Voir la note longue sur l'ecriture de
+					// `fragAux` dans NkMatGraphCompile.h : tout materiau declare
+					// et ecrit cette sortie, et celui qui n'a rien a y mettre y
+					// ecrit (0,0,0,0).
+					{"par_pixel_cible", "par pixel, vers une cible de rendu", true, nullptr},
 					{"par_pixel_processeur", "par pixel, relu par le processeur", false,
 					 "etage (b2) volontairement absent : une relecture SYNCHRONE ferait attendre le processeur "
 					 "et s afficherait comme « le jeu rame », jamais comme « la relecture est lente ». S il "

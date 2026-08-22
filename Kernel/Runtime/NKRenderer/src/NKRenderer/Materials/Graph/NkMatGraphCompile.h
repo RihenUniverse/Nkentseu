@@ -100,6 +100,24 @@ namespace nkentseu {
 					uint32 composantes = 0;			  ///< 1 (un reel) ou 3 (une couleur)
 					float32 valeur[3] = {0.f, 0.f, 0.f};
 
+					// ⚠️ LA VALEUR CI-DESSUS N'EXISTE QUE POUR L'ETAGE (a).
+					//
+					// Une sortie « par_pixel_cible » n'a AUCUNE valeur cote
+					// processeur : la sienne est calculee dans le shader, pixel
+					// par pixel, et se lit dans la seconde cible de rendu. Le
+					// tableau reste alors a zero -- et ce zero est exactement le
+					// mensonge qu'on refuse partout ailleurs : il se lit comme
+					// « la valeur vaut zero » alors qu'il veut dire « il n'y a pas
+					// de valeur ici ».
+					//
+					// C'est le MEME piege que le canal alpha de la seconde cible,
+					// un etage plus haut, et il se repare de la meme facon : par
+					// un drapeau qui dit si la valeur veut dire quelque chose.
+					// `etage` permettrait de le deduire ; ce drapeau evite d'avoir
+					// a le savoir, et un lecteur qui l'ignore ne peut pas se
+					// tromper en silence -- il lira `false` et devra s'en occuper.
+					bool valeurConnue = false;
+
 					// ⚠️ CE DONT LA VALEUR DEPEND, ET POURQUOI CE CHAMP EXISTE.
 					//
 					// L'etage (a) est « evalue une fois a la compilation OU AU
@@ -849,7 +867,20 @@ namespace nkentseu {
 
 			} // namespace detail
 
-			inline NkMatCompileResult NkMatCompileToNkSL(const NkNodeGraph &g) {
+			// ── (b1) : CE QUE LA PASSE RESOUT ───────────────────────────────
+			// Le moteur resout UNE sortie nommee par passe, parce que l'API du
+			// jeu est PAR NOM (cf. NkMatSortieMateriau). C'est ce qui evite de
+			// devoir ranger un identifiant dans le tampon : il n'y a rien a
+			// identifier, seulement a dire SI le pixel porte la valeur.
+			struct NkMatCompileOptions {
+					// Nom de la sortie « par_pixel_cible » a ecrire dans la
+					// seconde cible. nullptr = laisser le compilateur choisir
+					// quand il n'y a aucune ambiguite.
+					const char *sortieParPixel = nullptr;
+			};
+
+			inline NkMatCompileResult NkMatCompileToNkSL(const NkNodeGraph &g,
+														 const NkMatCompileOptions &opt = NkMatCompileOptions()) {
 				NkMatCompileResult r;
 
 				// 1. La validation de domaine d'abord. On ne compile pas un graphe
@@ -1127,7 +1158,26 @@ namespace nkentseu {
 				s.Append("@location(1) in vec3 vNormal;\n");
 				s.Append("@location(2) in vec2 vUV;\n");
 				s.Append("@location(3) in vec4 vColor;\n\n");
-				s.Append("@location(0) out vec4 fragColor;\n\n");
+				s.Append("@location(0) out vec4 fragColor;\n");
+				// ⚠️ (b1) — LA SECONDE CIBLE EST DECLAREE PAR TOUS LES MATERIAUX,
+				// Y COMPRIS CEUX QUI N'ONT AUCUNE SORTIE NOMMEE. Ce n'est pas de
+				// l'uniformite pour l'uniformite : une sortie MRT NON ECRITE sur
+				// un pixel COUVERT est INDEFINIE -- ni conservee, ni nulle. Un
+				// materiau qui se contenterait de ne pas la declarer laisserait
+				// donc dans le tampon ce qui s'y trouvait, ou n'importe quoi.
+				//
+				// LE CONTRAT, et il tient en une ligne :
+				//   RGB = la valeur de la sortie resolue ; A = 1 si ce pixel la
+				//   porte, 0 sinon. QUAND A == 0, RGB N'A AUCUN SENS et le
+				//   lecteur n'a pas le droit de le lire.
+				//
+				// ⚠️ C'est A, et RIEN D'AUTRE, qui distingue « la valeur vaut
+				// zero » de « ce materiau ne porte pas cette sortie ». Un lecteur
+				// qui ignorerait A lirait 0.0 -- une humidite nulle parfaitement
+				// credible sur un materiau qui n'a jamais entendu parler
+				// d'humidite. Rien ne pousserait jamais a y revenir : c'est la
+				// forme de mensonge la plus couteuse a debusquer.
+				s.Append("@location(1) out vec4 fragAux;\n\n");
 				s.Append("@binding(set=0, binding=0)\n");
 				s.Append("uniform CameraUBO {\n");
 				s.Append("    mat4  view;\n    mat4  proj;\n    mat4  viewProj;\n    mat4  invViewProj;\n");
@@ -1184,10 +1234,62 @@ namespace nkentseu {
 				if (besoinVoronoi)
 					detail::PutBriqueVoronoi(s);
 
+				// ── (b1) : QUELLE sortie par pixel cette passe ecrit-elle ? ──
+				// Choisi AVANT d'emettre : un refus doit sortir avant qu'une
+				// seule ligne de shader soit ecrite, sinon on rend une source
+				// partielle accompagnee d'une erreur.
+				NkNodeId sortiePixel = NK_NODE_INVALID;
+				{
+					NkNodeId premiere = NK_NODE_INVALID;
+					uint32 combien = 0;
+					for (uint32 i = 0; i < g.RawNodeCount(); ++i) {
+						const graph::NkNode *n = g.RawNodeAt(i);
+						if (!n || !n->alive || !(n->type == NkString(NK_MN_OUTPUT_VALUE)))
+							continue;
+						const NkGraphValue *pe = g.FindProp(n->id, NK_MPROP_SORTIE_ETAGE);
+						if (!pe || !pe->IsSet() || !(pe->text == NkString("par_pixel_cible")))
+							continue;
+						++combien;
+						if (premiere == NK_NODE_INVALID)
+							premiere = n->id;
+						if (opt.sortieParPixel) {
+							const NkGraphValue *pn = g.FindProp(n->id, NK_MPROP_SORTIE_NOM);
+							if (pn && pn->IsSet() && pn->text == NkString(opt.sortieParPixel))
+								sortiePixel = n->id;
+						}
+					}
+					if (opt.sortieParPixel && sortiePixel == NK_NODE_INVALID) {
+						// Demander une sortie qui n'existe pas est une ERREUR, pas
+						// un tampon vide. Un tampon vide se lirait comme « ce
+						// materiau ne porte pas cette valeur » -- indiscernable du
+						// cas legitime, et donc jamais corrige.
+						r.error = NkString("sortie par pixel demandee mais absente du graphe : ");
+						r.error.Append(opt.sortieParPixel);
+						return r;
+					}
+					if (!opt.sortieParPixel) {
+						if (combien > 1) {
+							// ⚠️ ON REFUSE, ON NE CHOISIT PAS. Prendre « la
+							// premiere » rendrait une valeur parfaitement
+							// plausible, issue d'une sortie que personne n'a
+							// demandee -- et l'auteur n'aurait aucun moyen de
+							// savoir laquelle il lit.
+							r.error = NkString("plusieurs sorties « par_pixel_cible » et aucune demandee : "
+											   "la passe n'en ecrit qu'une, il faut dire laquelle");
+							return r;
+						}
+						sortiePixel = premiere;
+					}
+				}
+
 				s.Append("@stage(fragment)\n@entry\nvoid main() {\n");
 				// La normale geometrique sert de defaut a toute prise `normal` non
 				// cablee, et de base au relief. On la nomme une fois.
 				s.Append("    vec3 nkGeomN = normalize(vNormal);\n");
+				// Suit si la seconde cible a recu sa valeur. Voir plus bas : si
+				// elle ne l'a pas recue, elle est ecrite a zero AVANT la fin de
+				// main -- jamais laissee indefinie.
+				bool auxEcrit = false;
 				if (besoinTBN) {
 					// ⚠️ BASE TANGENTE PAR DERIVEES D'ECRAN (cadre cotangent de
 					// Schuler). Ce n'est pas un pis-aller : c'est deja ce que fait
@@ -2681,10 +2783,30 @@ namespace nkentseu {
 						// pas une seule prise de sortie, donc rien en aval ne peut
 						// attendre une locale de sa part.
 						//
-						// Et il ne produit deliberement aucune ligne : c'est ce
-						// qui rend l'etage (a) quasi gratuit. Le jour ou l'etage
-						// (b1) arrivera, c'est ICI qu'une ligne apparaitra — pour
-						// lui seulement, jamais pour (a).
+						// Et il ne produit deliberement aucune ligne pour (a) :
+						// c'est ce qui rend cet etage quasi gratuit.
+						//
+						// (b1) EST ARRIVE, et la ligne annoncee est ci-dessous —
+						// pour lui SEULEMENT. Une sortie « par_materiau » qui
+						// ecrirait ici couterait une ecriture par pixel pour une
+						// valeur constante.
+						if (n->id == sortiePixel) {
+							const int32 ivp = n->FindSocket("value", NkSocketDir::Input);
+							const bool parValeur = ivp >= 0 && g.IncomingOf(n->id, ivp) != nullptr;
+							s.Append("    fragAux = vec4(");
+							if (parValeur) {
+								// Un reel est REPLIQUE sur les trois canaux. Le
+								// lecteur en prend un ; les trois sont d'accord.
+								s.Append("vec3(");
+								ecrisEntree(*n, "value", "float", nullptr);
+								s.Append(")");
+							} else {
+								ecrisEntree(*n, "color", "vec3", nullptr);
+							}
+							// A = 1 : CE PIXEL PORTE LA VALEUR.
+							s.Append(", 1.0);\n");
+							auxEcrit = true;
+						}
 					} else {
 						// ⚠️ ON REFUSE, on n'ignore pas. Un noeud inconnu qu'on
 						// sauterait laisserait son consommateur lire une locale
@@ -2696,6 +2818,17 @@ namespace nkentseu {
 						return r;
 					}
 				}
+
+				// ⚠️ CE QU'ECRIT UN MATERIAU QUI NE PORTE PAS LA SORTIE, et c'est
+				// la moitie du contrat de (b1). `(0,0,0,0)` : A = 0 dit « je ne
+				// porte pas cette sortie », et RGB n'a alors aucun sens.
+				//
+				// Ce n'est PAS une precaution decorative : sans cette ligne, la
+				// seconde cible resterait INDEFINIE sur tous les pixels couverts
+				// par ce materiau. Elle contiendrait des valeurs stables,
+				// credibles, et fausses.
+				if (!auxEcrit)
+					s.Append("    fragAux = vec4(0.0, 0.0, 0.0, 0.0);\n");
 
 				s.Append("}\n");
 
@@ -2830,8 +2963,17 @@ namespace nkentseu {
 						//
 						// On NOMME le noeud coupable. « depend du pixel » tout
 						// court laisserait l'auteur fouiller son graphe entier.
+						// ⚠️ ET CE REFUS NE VAUT QUE POUR « par_materiau ». Avant
+						// (b1) il n'y avait qu'un etage implemente, si bien que la
+						// condition etait implicite -- et elle serait devenue
+						// FAUSSE en silence : une sortie « par_pixel_cible » est
+						// par pixel PAR DEFINITION, la refuser pour cette raison
+						// reviendrait a refuser l'etage entier. Le message le
+						// disait d'ailleurs deja (« est declaree par_materiau »),
+						// mais le code ne le verifiait pas.
+						const bool parMateriau = so.etage == NkString("par_materiau");
 						const graph::NkLink *l = lv ? lv : lc;
-						if (contagion.Lit(l->fromNode)) {
+						if (parMateriau && contagion.Lit(l->fromNode)) {
 							NkVector<NkNodeId> vus;
 							const NkNodeId src = detail::TrouveSourceParPixel(g, l->fromNode, contagion, vus);
 							const NkNode *sn = src != NK_NODE_INVALID ? g.Find(src) : nullptr;
@@ -2848,7 +2990,21 @@ namespace nkentseu {
 							return r;
 						}
 
-						// 5. L'evaluation.
+						// 5. L'evaluation -- COTE PROCESSEUR, donc pour (a) SEUL.
+						//
+						// Une sortie (b1) n'a rien a evaluer ici : sa valeur naitra
+						// dans le shader. On enregistre donc ce qu'on sait d'elle
+						// -- son nom, son etage, son nombre de composantes -- et on
+						// dit explicitement que la valeur processeur est ABSENTE,
+						// plutot que de laisser trainer un zero qui se lirait comme
+						// une mesure.
+						if (!parMateriau) {
+							so.composantes = lv ? 1u : 3u;
+							so.valeurConnue = false;
+							r.sorties.PushBack(so);
+							continue;
+						}
+
 						detail::NkMatEvalCPU ev;
 						ev.g = &g;
 						ev.t = t;
@@ -2867,6 +3023,7 @@ namespace nkentseu {
 						so.composantes = comp;
 						for (uint32 k = 0; k < 3; ++k)
 							so.valeur[k] = val.v[k];
+						so.valeurConnue = true; // (a) : elle vient d'etre calculee
 						r.sorties.PushBack(so);
 					}
 				}
