@@ -2604,3 +2604,56 @@ poser vaut quand même mieux : elle coûte trente secondes sur les questions où
 **sait** qu'un module d'en dessous a déjà tranché — la représentation d'une valeur
 absente, la stabilité d'un identifiant, l'ordre d'évaluation — et ce sont
 justement celles où la réponse existe.
+
+## ✅ La signature de la porte est ouverte — deux documents ne se voient plus (2026-08-23)
+
+Le défaut déclaré la veille est **corrigé**, et il l'a été **seul**, après (b1) :
+mêler sa mesure à celle de la seconde cible en aurait fait une mesure qui porte
+sur deux choses à la fois.
+
+**Ce qui a changé n'est pas le stockage — c'est la signature.** Le registre de
+prototypes est devenu un **paramètre de toute la couche 3** :
+`NkMatFindProto`, `NkMatProtoCount`/`NkMatProtoAt`, `NkMatAddNode`,
+`NkMatNoeudsPourPrise(De)`, `NkMatValidate`, `NkMatEnregistreGroupe`,
+`NkMatCompileToNkSL`, et en interne `CalculeContagion` /
+`TrouveSourceParPixel`. **307 points d'appel** réécrits (banc et démo).
+
+⚠️ **Et il n'a AUCUNE valeur par défaut.** Un défaut qui serait retombé sur un
+registre global aurait laissé le défaut atteignable en silence : tout appelant qui
+n'y aurait pas pensé aurait continué de partager. Ici le compilateur oblige chaque
+appelant à dire **de quel document il parle** — désagréable une fois, définitif.
+Le singleton `NkMatRegistre()` **n'existe plus** ; il n'y a pas de porte de
+derrière à refermer plus tard.
+
+### Le témoin, et il mesure les quatre symptômes annoncés
+
+`groupe/deux-documents-ne-voient-pas-leurs-groupes` — ils ne se corrigent pas
+forcément ensemble, donc ils sont mesurés séparément :
+
+1. un groupe défini dans A n'est **pas trouvable** depuis B ;
+2. il n'apparaît **pas dans le menu** de B ;
+3. A et B emploient **le même nom** sans se gêner — le plus fourbe, parce qu'il se
+   manifestait par un refus d'apparence légitime (« déjà enregistré ») sur un nom
+   que le second document est pourtant seul à employer ;
+4. **fermer A ne casse pas B**.
+
+Plus un **témoin interne** : chaque document voit **son propre** groupe. Sans lui,
+un registre cassé qui ne rendrait jamais rien passerait les quatre contrôles pour
+la pire des raisons. Et `chezA != chezB` — deux documents qui pointeraient sur une
+**seule** définition rejoueraient le défaut sous une autre forme.
+
+### 🔴 La mutation qui compte
+
+Rendre le stockage `static` — **deux jetons** — remet toutes les instances en
+commun sans toucher à une seule signature. Elle reproduit **les quatre symptômes
+d'un coup**, mot pour mot :
+
+```
+chacun voit le sien=11 et pas celui de l autre=00 | menus : le sien=1 pas l autre=00
+| meme nom des deux cotes 'ok'/'deja-enregistre' chacun le sien=0
+| B survit a la fermeture de A=0
+```
+
+Deux autres mutations séparent proprement les deux moitiés : quand le **menu**
+cesse de consulter le registre, la partie « trouvable » reste verte et seule la
+partie « menu » tombe.
