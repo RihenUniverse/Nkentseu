@@ -2366,3 +2366,90 @@ matériau déclare et écrit la seconde sortie** ; celui qui n'a rien à y mettr
 ignorerait `A` lirait `0.0` — une valeur **parfaitement plausible** sur un matériau
 qui n'a jamais entendu parler de cette sortie. Le contrôle correspondant se mesure
 **sans GPU**, sur le NkSL émis.
+
+## 📌 Les trois arbitrages appliqués — catalogue ouvert, validation réparée, récursion à l'insertion (2026-08-22)
+
+Rodolf a tranché les deux questions remontées plus haut. Preuve :
+`Applications/NkMatGraphCheck` — **111 cas, 0 échec, 19 mutations sur 19
+détectées**.
+
+### 1. Deux sources, une seule porte
+
+`NkMatFindProto` consulte la table compilée **puis** un registre d'exécution.
+Comme `NkMatAddNode`, `NkMatProtoCount`/`NkMatProtoAt` et le menu
+`NkMatNoeudsPourPrise` lisaient **déjà** cette porte, **le menu s'est ouvert sans
+une ligne de plus** — c'est la propriété mesurée *avant* de demander l'arbitrage,
+et c'est elle qui a rendu la décision bon marché.
+
+⚠️ **La condition est posée à l'ENREGISTREMENT, pas à la lecture** : une clé qui
+porte le nom d'un proto compilé est refusée en se nommant
+(`eclipserait-un-proto-compile`). La collision devenant impossible, l'ordre de
+consultation n'a plus de conséquence — on consulte quand même la table statique
+d'abord pour que l'invariant se lise dans le code. Le cas vérifie qu'**après** le
+refus la porte rend toujours *le proto compilé*, pas seulement que le code de
+retour est bon.
+
+⚠️ **Stockage à capacité fixe, et c'est un choix.** Un prototype se lit par
+`const NkMatNodeProto*` qui pointe sur des `NkMatSocketDecl` qui pointent sur des
+chaînes. Rangé dans un `NkVector`, tout ce monde change d'adresse à la première
+réallocation, et le pointeur déjà rendu lit de la mémoire libérée — **sans
+planter, en rendant des noms de prises plausibles**. Plafond nommé : 32 groupes,
+16 prises, 48 octets.
+
+⚠️ **Limite écrite dans le code** : le registre est unique **pour le processus**.
+Deux documents ouverts partagent leurs groupes. La porte `NkMatFindProto(clé)` ne
+transporte aucun contexte ; lui en donner un toucherait tous ses appelants. Le
+jour où deux documents doivent s'ignorer, c'est **la signature** qu'il faudra
+changer, pas ce stockage.
+
+**Le pont** — `NkMatEnregistreGroupe` dérive l'interface de la **frontière** d'un
+sous-graphe. Types transportés **par leur nom**, jamais par leur identifiant.
+
+⚠️ **`parPixel` d'un groupe** : vrai dès qu'**un seul** nœud interne est une
+source intrinsèque. Et quand c'est **indécidable** — un groupe imbriqué apparaît
+comme un `graph.instance` qu'on ne peut pas résoudre sans le document — on prend
+le **côté sûr**, parce que les deux erreurs ne coûtent pas pareil :
+
+> `true` à tort **refuse** une sortie licite : faux, mais **bruyant**.
+> `false` à tort **accepte** une valeur qui change à chaque pixel et la fait
+> passer pour celle du matériau : faux, **plausible**, jamais signalé.
+
+### 2. `NkMatValidate` frappe à la porte — une réparation
+
+Elle rendait `ok` sur un type de nœud absent du catalogue. Le contrôle est posé
+**en premier** : compter les sorties d'un graphe dont on ne connaît pas les nœuds
+nommerait un défaut secondaire pendant que la vraie cause passe.
+
+⚠️ **Et la réparation a failli dégrader le message.** Avant, l'émetteur disait
+« nœud non compilable : *le type* ». La validation le rattrape désormais plus tôt
+— donc plus près de la cause — mais rendait un « type-de-nœud-inconnu » **muet sur
+lequel**.
+
+> **Attraper plus tôt ne doit jamais faire perdre le nom.**
+
+### 3. Récursion refusée à l'insertion, **et le second filet reste**
+
+`NkPoseInstance` refuse **avant toute modification** — le cas exige que le graphe
+soit **inchangé** après le refus. `NkNode::subgraph` restant public, un graphe peut
+arriver **par un fichier** sans jamais passer par une insertion : le contrôle à
+l'aplatissement est conservé, et **le cas mesure les deux filets séparément**,
+sans quoi on pourrait retirer le second sans que rien ne le dise.
+
+### 🔴 Six mutations, deux ont survécu — et la leçon a une troisième forme
+
+1. **« le pont recopie le sens des prises au lieu de l'inverser » est passée
+   verte.** Le cas exigeait « une entrée et une sortie » — **vrai aussi quand les
+   deux sens sont inversés** : le compte est **symétrique**, le câblage non. Le
+   prototype avait toutes ses prises à l'envers, et le cas affichait
+   « 1 entrée(s) 1 sortie(s) (1 et 1 attendues) ». **Septième occurrence de « je
+   compte, je ne relie pas »**, et la plus fourbe : le nombre n'était pas
+   approximativement juste, il était **exactement** juste.
+2. **« la détection de récursion réduite au voisin immédiat » est passée verte —
+   et la cause n'est pas le cas, c'est le graphe d'essai.** À deux maillons,
+   regarder le voisin immédiat **suffit** : le contrôle récursif n'était pas
+   mesuré **du tout**. Ajout d'une chaîne à **trois** maillons.
+
+> **Trois formes du même défaut, rencontrées en trois jours : il manquait la
+> MATIÈRE (aucun défaut de prise dans le graphe), puis la RELATION (des noms sans
+> leur câblage), puis la PROFONDEUR (une chaîne trop courte). Une assertion juste
+> sur un graphe d'essai trop pauvre ne mesure rien — et elle est verte.**
