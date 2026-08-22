@@ -69,6 +69,10 @@
 #   ces lignes a chaque passage. Chaque agent qui passe sur un de ces symboles
 #   corrige sa ligne au passage - plutot qu'une grande revue en une fois, qui
 #   n'arrive jamais.
+#   POLITIQUE TRANCHEE PAR RODOLF (2026-08-23) : c est bien celle-la, et la
+#   meme que pour les 111 'non-examine' de config/bancs.list. Il n y a pas de
+#   seconde politique a inventer - c est la seule qui passe a l echelle, et
+#   c est deja celle que tout le monde connait.
 #
 # LE CLIQUET DE "A-DATER" (arbitrage de Rodolf)
 #
