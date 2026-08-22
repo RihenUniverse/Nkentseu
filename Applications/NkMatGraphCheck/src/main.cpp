@@ -25,6 +25,10 @@
 // Le VRAI compilateur NkSL : c est lui qui dit si le shader traverse les
 // quatre backends, et il n a besoin d aucun device (cf. NkSLCheck).
 #include "NKSL/Compiler/NkSLCompiler.h"
+// Le DOCUMENT multi-graphes : il porte deja definition + instances, donc la
+// mecanique des GROUPES. Le banc s en sert pour MESURER ou vit le refus de
+// recursion -- a l insertion, ou seulement a l aplatissement.
+#include "NKGraph/NkGraphDocument.h"
 #include <stdio.h> // fwrite : ecrire la source SANS passer par le formateur
 
 // ── POURQUOI CE BANC N'IMPRIME PLUS AVEC printf ─────────────────────────────
@@ -3721,6 +3725,291 @@ static void CasCourbeInterpolation() {
 				 aucuneDivision ? 1 : 0));
 }
 
+// ── groupe/ : UN GROUPE EST-IL SEULEMENT REPRESENTABLE ? ─────────────────────
+//
+// Demande de Rodolf (2026-08-22, R8 de design.reponses.md) : « un groupe est un
+// groupement de noeuds que l'utilisateur peut empaqueter pour reutiliser a
+// volonte comme des fonctions. » Un groupe devient donc un TYPE DE NOEUD CREE
+// PAR L'UTILISATEUR A L'EXECUTION -- et la consigne est de MESURER si le
+// registre l'accepte, pas de le supposer.
+//
+// Les quatre cas ci-dessous mesurent QUATRE PORTES DIFFERENTES, et elles ne
+// repondent pas la meme chose. C'est tout l'interet : « est-ce que ca marche »
+// n'a pas de reponse unique ici.
+
+// La cle d'un type de noeud invente PAR L'UTILISATEUR. Elle est composee a
+// l'EXECUTION, chiffre compris, a partir d'une valeur `volatile` : ainsi aucune
+// lecture du banc ne peut objecter que la cle etait connue du compilateur. C'est
+// exactement la situation d'un groupe nomme par l'auteur dans l'editeur.
+static volatile uint32 gGraineDuGroupe = 3;
+
+static void FabriqueCleDeGroupe(char *buf) {
+	const char *prefixe = "grp.utilisateur_";
+	uint32 i = 0;
+	while (prefixe[i]) {
+		buf[i] = prefixe[i];
+		++i;
+	}
+	buf[i++] = (char)('0' + (gGraineDuGroupe % 10u));
+	buf[i] = 0;
+}
+
+// Cherche une sous-chaine dans un NkString. Le message d'erreur n'est pas une
+// ligne : `ContientLigne` ne convient pas ici.
+static bool ContientLaCle(const NkString &texte, const char *cle) {
+	const char *hay = texte.CStr();
+	const uint32 hn = (uint32)texte.Size();
+	const uint32 cn = (uint32)strlen(cle);
+	if (!hay || cn == 0 || hn < cn)
+		return false;
+	for (uint32 i = 0; i + cn <= hn; ++i) {
+		uint32 k = 0;
+		while (k < cn && hay[i + k] == cle[k])
+			++k;
+		if (k == cn)
+			return true;
+	}
+	return false;
+}
+
+static void CasGroupeCoeurAccepteUnTypeInconnu() {
+	// LA QUESTION POSEE A LA COUCHE 1. Le coeur accepte-t-il un type de noeud
+	// qui n'existait pas a la compilation ?
+	//
+	// DISCRIMINE : un coeur muni d'un registre FERME de types de noeuds
+	// refuserait `AddNode` et rendrait NK_NODE_INVALID. Un coeur qui accepterait
+	// le noeud mais PERDRAIT sa cle a l'ecriture serait pire encore -- le graphe
+	// paraitrait sain et se rechargerait avec un noeud anonyme. On exige donc
+	// les deux : le noeud vit, ET sa cle traverse le fichier MOT POUR MOT.
+	//
+	// On ne se contente pas d'exister : le noeud doit se COMPORTER comme les
+	// autres -- porter des prises, se relier, et prendre son rang dans l'ordre
+	// topologique. Un type accepte mais ignore par le tri serait un piege.
+	char cle[32];
+	FabriqueCleDeGroupe(cle);
+
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+
+	const NkNodeId grp = g.AddNode(cle, "Mon groupe");
+	const bool cree = grp != NK_NODE_INVALID;
+	// Une interface a lui, declaree a la main -- c'est ce que ferait le
+	// noeud-groupe : ses prises sont celles de ses noeuds frontiere.
+	g.AddSocket(grp, "entree", t.real, NkSocketDir::Input);
+	g.AddSocket(grp, "sortie", t.color, NkSocketDir::Output);
+
+	// Il se relie a un noeud du catalogue, dans les deux sens.
+	const NkNodeId val = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId emi = NkMatAddNode(g, NK_MN_EMISSION);
+	const NkLinkError e1 = g.Connect(val, "value", grp, "entree");
+	const NkLinkError e2 = g.Connect(grp, "sortie", emi, "color");
+
+	// Il prend son rang : producteurs avant consommateurs.
+	NkVector<NkNodeId> ordre;
+	const bool trie = g.TopoSort(ordre);
+	int32 rgVal = -1, rgGrp = -1, rgEmi = -1;
+	for (uint32 i = 0; i < (uint32)ordre.Size(); ++i) {
+		if (ordre[i] == val)
+			rgVal = (int32)i;
+		if (ordre[i] == grp)
+			rgGrp = (int32)i;
+		if (ordre[i] == emi)
+			rgEmi = (int32)i;
+	}
+	const bool bonOrdre = rgVal >= 0 && rgGrp > rgVal && rgEmi > rgGrp;
+
+	// Et sa cle traverse le fichier sans etre rabotee.
+	NkString fichier;
+	g.Serialize(fichier);
+	NkNodeGraph g2;
+	const bool relu = g2.Deserialize(fichier.CStr());
+	const NkNode *apres = relu ? g2.Find(grp) : nullptr;
+	const bool cleIntacte = apres && apres->type == NkString(cle);
+	const bool prisesIntactes = apres && apres->FindSocket("entree", NkSocketDir::Input) >= 0 &&
+								apres->FindSocket("sortie", NkSocketDir::Output) >= 0;
+
+	NkString d;
+	d = NkFormat("cle={0} | cree={1} relie={2}/{3} trie={4} rang(val<grp<emi)={5} | relu={6} cle intacte={7} prises={8}",
+				 NkString(cle), cree ? 1 : 0, NkString(NkLinkErrorName(e1)), NkString(NkLinkErrorName(e2)),
+				 trie ? 1 : 0, bonOrdre ? 1 : 0, relu ? 1 : 0, cleIntacte ? 1 : 0, prisesIntactes ? 1 : 0);
+	Cas("groupe/coeur-accepte-type-runtime",
+		cree && e1 == NkLinkError::Ok && e2 == NkLinkError::Ok && trie && bonOrdre && relu && cleIntacte &&
+			prisesIntactes,
+		d);
+}
+
+static void CasGroupeCatalogueMateriauFerme() {
+	// LA MEME QUESTION POSEE A LA COUCHE 3, et la reponse est l'INVERSE.
+	//
+	// Le catalogue `kProtos` est un tableau `static const` : il est clos a la
+	// compilation. On ne mesure PAS « il contient 28 entrees » -- ce serait un
+	// compte fige sur une collection qui grandit par conception, la dette
+	// exactement decrite dans nkrenderer.reponses.md. On mesure la RELATION qui
+	// nous interesse : *une cle inventee a l'execution n'est connue d'AUCUNE des
+	// portes du catalogue*, et elle le restera tant qu'aucune voie
+	// d'enregistrement n'existera.
+	//
+	// DISCRIMINE aussi par le MENU, et c'est le point utile pour la suite : le
+	// menu « que puis-je brancher ici ? » interroge le MEME registre. Un groupe
+	// absent du registre est donc invisible dans le menu de TOUTES les prises --
+	// pas d'une seule. Reciproquement, ouvrir le registre ouvrirait le menu sans
+	// une ligne de plus. C'est ce qui rend le point reparable au bon endroit.
+	char cle[32];
+	FabriqueCleDeGroupe(cle);
+
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+
+	const NkMatNodeProto *p = NkMatFindProto(cle);
+	const NkNodeId n = NkMatAddNode(g, cle);
+	// Le refus doit etre NET : pas de noeud a moitie forme laisse derriere.
+	const bool refusPropre = n == NK_NODE_INVALID && g.NodeCount() == 0;
+
+	// Invisible dans le menu de CHACUN des quatre types de prise. Une relation,
+	// aucun nombre a maintenir.
+	const NkTypeId types[4] = {t.real, t.vector, t.color, t.shader};
+	const NkMatNodeProto *menu[64];
+	bool vuQuelquePart = false;
+	uint32 totalPropose = 0;
+	for (uint32 k = 0; k < 4; ++k) {
+		uint32 m = NkMatNoeudsPourPrise(g, types[k], menu, 64);
+		if (m > 64)
+			m = 64;
+		totalPropose += m;
+		if (DansLeMenu(menu, m, cle))
+			vuQuelquePart = true;
+	}
+
+	NkString d;
+	d = NkFormat("cle={0} | trouvee dans le catalogue={1} | instanciation refusee proprement={2} | menus rendent {3} "
+				 "propositions | groupe visible quelque part={4} (0 attendu)",
+				 NkString(cle), p ? 1 : 0, refusPropre ? 1 : 0, totalPropose, vuQuelquePart ? 1 : 0);
+	// `totalPropose > 0` est un CONTROLE POSITIF : sans lui, un menu casse qui
+	// ne rendrait jamais rien ferait passer ce cas pour la mauvaise raison.
+	Cas("groupe/catalogue-materiau-ferme", p == nullptr && refusPropre && !vuQuelquePart && totalPropose > 0, d);
+}
+
+static void CasGroupeOuVitLeRefusDuTypeInconnu() {
+	// OU, EXACTEMENT, un type de noeud inconnu est-il arrete ? La question n'est
+	// pas rhetorique : `NkMatAddNode` refuse, mais le FICHIER ne passe pas par
+	// lui. C'est la meme « porte de derriere » que le coeur documente deja pour
+	// les liens (l'API refusait, `Deserialize` acceptait).
+	//
+	// On mesure les trois etages separement, parce qu'ils ne disent pas la meme
+	// chose :
+	//   1. le fichier ACCEPTE le noeud inconnu (c'est voulu : le coeur n'a pas
+	//      de registre de types de noeuds, et il ne doit pas en avoir) ;
+	//   2. `NkMatValidate` -- la validation DE DOMAINE -- le declare `ok`, parce
+	//      qu'elle ne consulte pas le catalogue. C'est le trou, et il est ici ;
+	//   3. seul l'EMETTEUR l'arrete, et il le NOMME.
+	//
+	// DISCRIMINE : si l'emetteur se contentait de SAUTER le noeud inconnu, la
+	// compilation reussirait et rendrait un shader qui ne compile pas -- ou,
+	// pire, qui compile en lisant autre chose. On exige donc `ok == 0`, une
+	// source VIDE, et le type coupable ECRIT DANS LE MESSAGE.
+	char cle[32];
+	FabriqueCleDeGroupe(cle);
+
+	// Un fichier qui porte le noeud inconnu, comme le ferait une sauvegarde
+	// venue d'une version ou le groupe existait.
+	NkString texte;
+	{
+		NkNodeGraph g;
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+		const NkNodeId emi = NkMatAddNode(g, NK_MN_EMISSION);
+		const NkNodeId grp = g.AddNode(cle, "Mon groupe");
+		g.AddSocket(grp, "sortie", t.color, NkSocketDir::Output);
+		g.Connect(grp, "sortie", emi, "color");
+		g.Connect(emi, "emission", out, "surface");
+		g.Serialize(texte);
+	}
+
+	NkNodeGraph g2;
+	NkMatRegisterTypes(g2);
+	const bool relu = g2.Deserialize(texte.CStr());
+	// 1. le noeud inconnu est bien entre par le fichier
+	bool present = false;
+	for (uint32 i = 0; i < g2.RawNodeCount(); ++i) {
+		const NkNode *n = g2.RawNodeAt(i);
+		if (n && n->alive && n->type == NkString(cle))
+			present = true;
+	}
+	// 2. la validation de domaine ne le voit pas
+	const NkMatGraphError v = NkMatValidate(g2);
+	// 3. l'emetteur l'arrete et le nomme
+	const NkMatCompileResult r = NkMatCompileToNkSL(g2);
+	const bool cleDansLeMessage = ContientLaCle(r.error, cle);
+	const bool sourceVide = r.source.Size() == 0;
+
+	NkString d;
+	d = NkFormat("relu={0} noeud inconnu ENTRE par le fichier={1} | validation de domaine dit '{2}' | compile ok={3} "
+				 "(0 attendu) source vide={4} | type coupable nomme={5}",
+				 relu ? 1 : 0, present ? 1 : 0, NkString(NkMatGraphErrorName(v)), r.ok ? 1 : 0, sourceVide ? 1 : 0,
+				 cleDansLeMessage ? 1 : 0);
+	Cas("groupe/refus-du-type-inconnu-situe",
+		relu && present && v == NkMatGraphError::Ok && !r.ok && sourceVide && cleDansLeMessage, d);
+}
+
+static void CasGroupeRecursionRefuseeMaisOu() {
+	// LA RECURSION. Rodolf demande « un controle de cycle A L'INSERTION, avec un
+	// refus qui se nomme ». On mesure ou le refus se trouve REELLEMENT.
+	//
+	// DISCRIMINE dans les deux sens, et c'est le coeur du cas : on exige a la
+	// fois que la construction REUSSISSE (il n'y a donc AUCUN controle a
+	// l'insertion -- si l'on en ajoutait un, ce cas tomberait et il faudrait le
+	// relire, ce qui est exactement ce qu'on veut) et que l'aplatissement REFUSE
+	// en nommant. Un cas qui ne mesurerait que le refus laisserait croire que la
+	// demande de Rodolf est deja satisfaite.
+	//
+	// Deux formes : le groupe qui s'appelle lui-meme, et la boucle a deux
+	// maillons -- celle qu'un controle naif, qui ne regarderait que le voisin
+	// immediat, laisserait passer.
+	NkGraphDocument direct;
+	{
+		const uint32 a = direct.AddGraph("moi");
+		direct.SetRoot(a);
+		NkNodeGraph &g = direct.GraphAt(a);
+		const NkNodeId i = g.AddNode(NK_NODE_INSTANCE, "appel de moi-meme");
+		NkNode *n = g.Find(i);
+		if (n)
+			n->subgraph = NkString("moi");
+	}
+	NkEvalPlan p1;
+	const NkPlanError e1 = direct.BuildPlan(p1);
+
+	NkGraphDocument indirect;
+	{
+		const uint32 a = indirect.AddGraph("A");
+		const uint32 b = indirect.AddGraph("B");
+		indirect.SetRoot(a);
+		const NkNodeId ia = indirect.GraphAt(a).AddNode(NK_NODE_INSTANCE, "A appelle B");
+		NkNode *na = indirect.GraphAt(a).Find(ia);
+		if (na)
+			na->subgraph = NkString("B");
+		const NkNodeId ib = indirect.GraphAt(b).AddNode(NK_NODE_INSTANCE, "B rappelle A");
+		NkNode *nb = indirect.GraphAt(b).Find(ib);
+		if (nb)
+			nb->subgraph = NkString("A");
+	}
+	NkEvalPlan p2;
+	const NkPlanError e2 = indirect.BuildPlan(p2);
+
+	// La construction n'a rien refuse : les deux documents EXISTENT, avec leurs
+	// noeuds d'instance en place. C'est la mesure du trou.
+	const bool construitSansRefus = direct.GraphAt(0).NodeCount() == 1 && indirect.GraphAt(0).NodeCount() == 1 &&
+									indirect.GraphAt(1).NodeCount() == 1;
+	const bool refuseALaFin = e1 == NkPlanError::RecursiveSubgraph && e2 == NkPlanError::RecursiveSubgraph;
+	const bool planVide = p1.Size() == 0 && p2.Size() == 0;
+
+	NkString d;
+	d = NkFormat("construction ACCEPTEE (aucun controle a l insertion)={0} | aplatissement direct='{1}' indirect='{2}' "
+				 "| plans vides={3}",
+				 construitSansRefus ? 1 : 0, NkString(NkPlanErrorName(e1)), NkString(NkPlanErrorName(e2)),
+				 planVide ? 1 : 0);
+	Cas("groupe/recursion-refusee-a-l-aplatissement", construitSansRefus && refuseALaFin && planVide, d);
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -3738,6 +4027,13 @@ int main() {
 	CasConversionDirigee();
 	CasInstancierPrincipled();
 	CasPrototypeInconnu();
+
+	// -- groupe/ : la MESURE demandee par Rodolf (R8) -- un type de noeud cree
+	//    par l utilisateur a l execution est-il seulement representable ?
+	CasGroupeCoeurAccepteUnTypeInconnu();
+	CasGroupeCatalogueMateriauFerme();
+	CasGroupeOuVitLeRefusDuTypeInconnu();
+	CasGroupeRecursionRefuseeMaisOu();
 	CasTypesNonEnregistres();
 	CasPrincipledVersSortie();
 	CasCouleurDansShaderRefuse();
