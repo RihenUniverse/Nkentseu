@@ -4561,6 +4561,98 @@ static void CasRegroupementConversionSurvitALaFrontiere() {
 		idx >= 0 && memeNoms && memeConversion && pasDeConversionInverse, d);
 }
 
+// ── sortie-par-pixel/ : LA SECONDE CIBLE DE RENDU EST-ELLE SEULEMENT
+//    EXPRIMABLE EN NkSL ? ──────────────────────────────────────────────────
+//
+// (b1) repose entierement sur un fait que je n'avais pas verifie : qu'un
+// fragment NkSL puisse declarer DEUX sorties couleur et qu'elles arrivent sur
+// DEUX attachements distincts. Aucun shader du depot ne le fait — les
+// `@location(1) out` qu'on y trouve sont tous des VARYINGS de sommet, pas des
+// attachements de fragment. Il n'y avait donc rien pour l'attester.
+//
+// ⚠️ ET « LES QUATRE BACKENDS GENERENT » NE PROUVERAIT RIEN ICI, moins encore
+// qu'ailleurs. Un generateur qui ignorerait `@location(1)` et emettrait DEUX
+// sorties sur `SV_Target0` produirait un texte parfaitement valide, qui
+// compilerait, et qui ecrirait la valeur auxiliaire PAR-DESSUS la couleur. Le
+// resultat serait une image plausible et un tampon auxiliaire vide. On exige
+// donc le SEMANTIQUE, pas le succes : `SV_Target1` cote HLSL, `location = 1`
+// sur une sortie cote GLSL, et le mot magique de glslang.
+static const char *kDeuxCibles = "@location(0) in vec2 vUV;\n"
+								 "@location(0) out vec4 fragColor;\n"
+								 "@location(1) out vec4 fragAux;\n"
+								 "void main() {\n"
+								 "    fragColor = vec4(vUV, 0.0, 1.0);\n"
+								 "    fragAux = vec4(0.5, 0.25, 0.125, 1.0);\n"
+								 "}\n";
+
+// Le TEMOIN : le meme shader avec une seule sortie. Il existe pour repondre a la
+// question qu'on se pose toujours quand le cas ci-dessus tombe — « est-ce la
+// seconde cible qui est refusee, ou mon shader qui est mauvais ? ». Sans lui, on
+// tranche au hasard.
+static const char *kUneCible = "@location(0) in vec2 vUV;\n"
+							   "@location(0) out vec4 fragColor;\n"
+							   "void main() {\n"
+							   "    fragColor = vec4(vUV, 0.0, 1.0);\n"
+							   "}\n";
+
+static void CasSortieParPixelDeuxCiblesCouleur() {
+	NkSLCompiler c;
+	struct {
+			NkSLTarget cible;
+			const char *nom;
+			bool hlsl;
+	} cibles[4] = {
+		{NkSLTarget::NK_GLSL, "GL", false},
+		{NkSLTarget::NK_GLSL_VULKAN, "VK", false},
+		{NkSLTarget::NK_HLSL_DX11, "DX11", true},
+		{NkSLTarget::NK_HLSL_DX12, "DX12", true},
+	};
+	NkString detail;
+	uint32 genere = 0;
+	bool semantiquePartout = true;
+	for (uint32 t = 0; t < 4; ++t) {
+		NkSLCompileResult r = c.Compile(NkString(kDeuxCibles), NkSLStage::NK_FRAGMENT, cibles[t].cible);
+		if (r.success)
+			++genere;
+		// Le SEMANTIQUE du second attachement. C'est lui qui distingue « deux
+		// sorties » de « deux ecritures sur la meme sortie ».
+		const bool second = r.success && (cibles[t].hlsl ? ContientSansCasse(r.source, "SV_Target1")
+														 : ContientSansCasse(r.source, "location = 1"));
+		// et le PREMIER doit toujours etre la : un generateur qui renommerait
+		// tout en `SV_Target1` passerait le controle ci-dessus.
+		const bool premier = r.success && (cibles[t].hlsl ? ContientSansCasse(r.source, "SV_Target0")
+														 : ContientSansCasse(r.source, "location = 0"));
+		if (!second || !premier)
+			semantiquePartout = false;
+		if (r.success && (!second || !premier) && getenv("NK_DUMP"))
+			logger.Info("\n--- {0} : les deux attachements n ont pas traverse ---\n{1}\n--- fin ---",
+						NkString(cibles[t].nom), r.source.CStr());
+		detail.Append(NkFormat("{0}={1}{2}{3} ", NkString(cibles[t].nom), NkString(r.success ? "gen" : "ECHEC"),
+							   NkString(premier ? "" : "(cible0 absente!)"), NkString(second ? "" : "(cible1 absente!)")));
+	}
+	// Le cinquieme verdict, lu au MOT MAGIQUE et jamais a `success`.
+	bool spirv = false;
+	{
+		NkSLCompileResult sp = c.Compile(NkString(kDeuxCibles), NkSLStage::NK_FRAGMENT, NkSLTarget::NK_SPIRV);
+		if (sp.bytecode.Size() >= 4) {
+			const uint8 *o = sp.bytecode.Data();
+			spirv = (o[0] == 0x03 && o[1] == 0x02 && o[2] == 0x23 && o[3] == 0x07);
+		}
+	}
+	// Le temoin a une seule cible.
+	bool temoin = false;
+	{
+		NkSLCompileResult sp = c.Compile(NkString(kUneCible), NkSLStage::NK_FRAGMENT, NkSLTarget::NK_SPIRV);
+		if (sp.bytecode.Size() >= 4) {
+			const uint8 *o = sp.bytecode.Data();
+			temoin = (o[0] == 0x03 && o[1] == 0x02 && o[2] == 0x23 && o[3] == 0x07);
+		}
+	}
+	detail.Append(NkFormat("GLSLANG={0} | temoin a une seule cible={1}", NkString(spirv ? "ok" : "ECHEC"),
+						   NkString(temoin ? "ok" : "ECHEC")));
+	Cas("sortie-par-pixel/deux-cibles-couleur", genere == 4 && semantiquePartout && spirv && temoin, detail);
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -4593,6 +4685,9 @@ int main() {
 	CasRegroupementOrdreDeterministe();
 	CasRegroupementRefusNomme();
 	CasRegroupementConversionSurvitALaFrontiere();
+
+	// -- (b1) : la seconde cible de rendu est-elle exprimable en NkSL ?
+	CasSortieParPixelDeuxCiblesCouleur();
 	CasTypesNonEnregistres();
 	CasPrincipledVersSortie();
 	CasCouleurDansShaderRefuse();
