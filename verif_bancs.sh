@@ -1,0 +1,652 @@
+#!/usr/bin/env bash
+#
+# verif_bancs.sh — LE VERIFICATEUR DE BANCS (2026-08-22)
+# =============================================================================
+# POURQUOI IL EXISTE
+#
+#   « Un banc s'ignore en ne le lancant pas — et on ne le lance pas le jour ou
+#     on est presse, c'est-a-dire exactement le jour ou on casse quelque chose. »
+#
+#   Une commande unique qui CONSTRUIT tous les bancs declares, les EXECUTE,
+#   rend un verdict lisible, et sort NON NUL si quoi que ce soit echoue.
+#
+# CE QU'IL FAIT, DANS L'ORDRE
+#   1. Preconditions — il refuse de juger le depot depuis un montage casse.
+#   2. Garde de la liste — tout projet d'Applications/ doit etre CLASSE.
+#   3. Construction + execution de chaque banc, avec son critere de verdict.
+#   4. Rapport : nom, construit ou non, code de sortie, duree, et en cas
+#      d'echec la premiere ligne significative de la sortie.
+#
+# LES SIX REGLES QU'IL APPLIQUE, ET LE DEFAUT QUI LES A FAIT ECRIRE
+#   1. Le code de sortie de la CONSTRUCTION est une donnee du controle. Un banc
+#      dont la construction echoue est un ECHEC — jamais un succes silencieux.
+#      (Un agent a compte une mutation « survivante » alors que la compilation
+#      avait echoue et que L'ANCIEN BINAIRE avait tourne. Ici : construction
+#      ratee => on N'EXECUTE PAS, et on ne regarde meme pas l'exe.)
+#   2. La liste est GARDEE, pas seulement ecrite : un projet d'Applications/
+#      sans ligne de classement fait ECHOUER le verificateur. Et le marquage
+#      « ceci est un banc » est une DONNEE (config/bancs.list), jamais une
+#      heuristique sur le nom — « les projets finissant par Test » rate le
+#      premier banc nomme autrement, en silence.
+#   3. Il a sa contre-epreuve : voir contre_epreuve_verif.sh, qui casse un banc
+#      volontairement et exige que ce script le dise et sorte non nul.
+#   4. Aucun texte a accolades ne passe par un formateur a marqueurs : tout
+#      sort par `printf '%s\n'` avec le texte en ARGUMENT. (Le C++ du depot a
+#      paye trois jours pour cette regle ; un shell n'y echappe que s'il ne met
+#      jamais de donnee dans une chaine de format.)
+#   5. Il dit POURQUOI, pas seulement QUE.
+#   6. Il doit etre lancable : il chronometre chaque etape et affiche sa duree.
+#      Deux modes, `rapide` et `complet` — ce que chacun garantit est ecrit
+#      dans le rapport et dans config/bancs.list.
+#
+# USAGE
+#   ./verif_bancs.sh                        # mode rapide, config Debug
+#   ./verif_bancs.sh --mode complet         # tous les bancs
+#   ./verif_bancs.sh --banc NkSLCheck       # un seul banc, par son nom
+#   ./verif_bancs.sh --liste                # inventaire seul, ne construit rien
+#   ./verif_bancs.sh --config Release
+#   ./verif_bancs.sh --sans-construire      # execute les exes deja presents
+#   ./verif_bancs.sh --reconstruire         # `jenga rebuild` : table rase par banc
+#
+# TROIS NIVEAUX DE GARANTIE SUR LA FRAICHEUR DU BINAIRE — dire lequel garantit
+# quoi fait partie du travail :
+#   --sans-construire  ne garantit RIEN sur la fraicheur. Utile pour rejouer une
+#                      execution sans repayer la construction, jamais pour
+#                      conclure « ca passe ».
+#   (defaut)           garantit ce que le systeme de build affirme. Suffisant au
+#                      quotidien, et c'est le mode a lancer avant un commit.
+#   --reconstruire     garantit que le binaire vient des sources ACTUELLES.
+#                      ⚠️ Mesure du 2026-08-22 : un cache qui compare les DATES
+#                      ne voit pas un fichier restaure depuis une sauvegarde qui
+#                      preserve la sienne (`cp -p`, `tar -p`, `rsync -t`). Le
+#                      build dit « a jour », et l'ANCIEN binaire tourne. C'est ce
+#                      mode qui tranche ce cas — et c'est arrive ICI, dans la
+#                      contre-epreuve, avant d'etre corrige.
+#
+# CODES DE SORTIE
+#   0  tout va bien
+#   1  au moins un banc en ECHEC (construction ou execution ou verdict)
+#   2  ECHEC D'INSTRUMENT : precondition manquante, montage casse. Rien n'est
+#      conclu sur le depot — c'est le verificateur qui n'est pas en etat.
+#   3  ECHEC DE CLASSEMENT : un projet d'Applications/ n'est pas classe.
+#   (les categories se cumulent en prenant le plus grand code rencontre, sauf
+#    2 qui l'emporte toujours : un instrument casse ne prouve rien.)
+# =============================================================================
+set -uo pipefail
+
+# --- Le shell ne met JAMAIS de donnee dans une chaine de format (regle 4) -----
+dire()  { printf '%s\n' "$*"; }
+dire2() { printf '%s\n' "$*" >&2; }
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT" || { dire2 "[verif] cd $ROOT impossible"; exit 2; }
+
+LISTE="config/bancs.list"
+SORTIE="Build/Verif"
+CONFIG="Debug"
+MODE="rapide"
+UN_BANC=""
+INVENTAIRE_SEUL=0
+SANS_CONSTRUIRE=0
+RECONSTRUIRE=0
+DELAI_DEFAUT=600          # secondes ; un banc muet ne bloque pas la journee
+JENGA_MIN="2.4.0"         # --target sur build, --force sur test
+
+# --- Arguments ---------------------------------------------------------------
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --mode)            MODE="${2:-}"; shift 2 ;;
+    --config)          CONFIG="${2:-}"; shift 2 ;;
+    --banc)            UN_BANC="${2:-}"; shift 2 ;;
+    --liste)           INVENTAIRE_SEUL=1; shift ;;
+    --sans-construire) SANS_CONSTRUIRE=1; shift ;;
+    --reconstruire)    RECONSTRUIRE=1; shift ;;
+    --delai)           DELAI_DEFAUT="${2:-}"; shift 2 ;;
+    -h|--help)         sed -n '2,74p' "$0"; exit 0 ;;
+    *) dire2 "[verif] option inconnue : $1 (voir --help)"; exit 2 ;;
+  esac
+done
+
+case "$MODE" in rapide|complet) ;; *) dire2 "[verif] --mode doit valoir rapide ou complet"; exit 2 ;; esac
+
+T0=$(date +%s)
+horodate() { date '+%Y-%m-%d %H:%M:%S'; }
+duree_depuis() { local d=$(( $(date +%s) - $1 )); printf '%dm%02ds' $(( d / 60 )) $(( d % 60 )); }
+
+# =============================================================================
+# 1. PRECONDITIONS — refuser de juger le depot depuis un montage casse
+# =============================================================================
+# Regle du depot : « une mesure ne vaut que ce que vaut son montage ». Sans ce
+# bloc, un worktree neuf aux sous-modules vides rend « 9 bancs en echec de
+# construction » pour une cause unique qui n'a rien a voir avec les bancs.
+verifier_preconditions() {
+  local mauvais=0
+
+  # -- jenga present et assez recent ------------------------------------------
+  if ! command -v jenga >/dev/null 2>&1; then
+    dire2 "[verif] PRECONDITION : la commande 'jenga' est introuvable."
+    return 1
+  fi
+  local ver
+  ver=$(jenga --version 2>&1 | sed 's/\x1b\[[0-9;]*m//g' \
+        | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1 | tr -d 'v')
+  if [ -z "$ver" ]; then
+    dire "[precond] ATTENTION : version de jenga illisible — on continue."
+  else
+    local plus_petit
+    plus_petit=$(printf '%s\n%s\n' "$JENGA_MIN" "$ver" | sort -V | head -1)
+    if [ "$plus_petit" != "$JENGA_MIN" ]; then
+      dire2 "[verif] PRECONDITION : jenga $ver < $JENGA_MIN."
+      dire2 "[verif]   Avant $JENGA_MIN, 'build --project X' etait IGNORE EN SILENCE"
+      dire2 "[verif]   (le drapeau est --target) : le verificateur croirait construire"
+      dire2 "[verif]   un banc et construirait tout le workspace. Refus."
+      return 1
+    fi
+    dire "[precond] ok   jenga $ver (>= $JENGA_MIN : --target honore)"
+  fi
+  # La copie embarquee sous Build/_jenga-embed/ peut etre plus ancienne : on ne
+  # l'utilise jamais, on le dit si elle est la et qu'elle diverge.
+  local emb="Build/_jenga-embed/Jenga/_version.py"
+  if [ -f "$emb" ]; then
+    local vemb
+    vemb=$(grep -oE '__version__ *= *"[0-9.]+"' "$emb" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$vemb" ] && [ "$vemb" != "$ver" ]; then
+      dire "[precond] info Build/_jenga-embed/ porte jenga $vemb (plus ancien)."
+      dire "[precond]      Ce script appelle la commande 'jenga' du PATH, pas cette copie."
+    fi
+  fi
+
+  # -- sous-modules peuples ---------------------------------------------------
+  # Mesure : chaque chemin de .gitmodules doit contenir au moins une entree.
+  # Piege paye le 2026-08-22 : dans un worktree, `git submodule update --init`
+  # ne fait RIEN et sort 0 ; il faut --force.
+  if [ -f ".gitmodules" ]; then
+    local vides=() chemin
+    while IFS= read -r chemin; do
+      [ -z "$chemin" ] && continue
+      if [ ! -d "$chemin" ] || [ -z "$(ls -A "$chemin" 2>/dev/null)" ]; then
+        vides+=("$chemin")
+      fi
+    done < <(grep -E '^[[:space:]]*path[[:space:]]*=' .gitmodules | sed 's/.*=[[:space:]]*//')
+    if [ "${#vides[@]}" -gt 0 ]; then
+      # Un sous-module vide n'est fatal que s'il est cite par le workspace.
+      local cites=() c
+      for c in "${vides[@]}"; do
+        if grep -qF "$c" Nkentseu.jenga config/*.jenga 2>/dev/null; then cites+=("$c"); fi
+      done
+      for c in "${vides[@]}"; do dire "[precond] info sous-module vide : $c"; done
+      if [ "${#cites[@]}" -gt 0 ]; then
+        dire2 "[verif] PRECONDITION : ${#cites[@]} sous-module(s) VIDE(S) et cite(s) par le workspace :"
+        for c in "${cites[@]}"; do dire2 "[verif]   - $c"; done
+        dire2 "[verif]   Repare :  git submodule update --init --force"
+        dire2 "[verif]   (le --force est OBLIGATOIRE dans un worktree : sans lui, la"
+        dire2 "[verif]    commande ne fait RIEN et sort 0.)"
+        return 1
+      fi
+      dire "[precond] ok   aucun sous-module vide n'est cite par le workspace"
+    else
+      dire "[precond] ok   sous-modules peuples"
+    fi
+  fi
+
+  # -- la liste existe --------------------------------------------------------
+  if [ ! -f "$LISTE" ]; then
+    dire2 "[verif] PRECONDITION : $LISTE absent. Le classement des bancs est la"
+    dire2 "[verif]   DONNEE de ce controle ; sans elle il n'y a rien a verifier."
+    return 1
+  fi
+  dire "[precond] ok   $LISTE present"
+
+  [ "$mauvais" -eq 0 ]
+}
+
+# =============================================================================
+# 2. INVENTAIRE — ce qui EXISTE dans Applications/, et ce qui est CLASSE
+# =============================================================================
+# L'ensemble mesure ne vient d'aucune heuristique de nom : c'est la liste des
+# `with project("...")` declares par les fichiers .jenga d'Applications/. Un
+# projet est une donnee du systeme de build ; « finit par Test » n'en est pas une.
+declare -a PROJETS=()          # noms mesures
+declare -A PROJ_FICHIER=()     # projet -> son .jenga
+declare -A PROJ_DANS_WS=()     # projet -> 1 si inclus (non commente) dans Nkentseu.jenga
+
+inventorier() {
+  local inc paire rel nom
+  # includes NON COMMENTES du workspace : `^[^#]*` interdit qu'un « # » precede
+  # sur la ligne. C'est ce qui distingue un banc actif d'un banc ARRETE, dont
+  # l'include est simplement commente (cas NkMatInventaireTest, ligne ~1220).
+  declare -A INCLUS=()
+  while IFS= read -r inc; do
+    INCLUS["$inc"]=1
+  done < <(grep -oP '^[^#]*with include\("\K[^"]+' Nkentseu.jenga 2>/dev/null)
+
+  # UN SEUL grep pour tout l'arbre (voir la note de cout sur `rogner`) :
+  #   Applications/X/X.jenga:NomDuProjet
+  declare -A vu=()
+  while IFS= read -r paire; do
+    rel="${paire%%:*}"; nom="${paire#*:}"
+    [ -z "$nom" ] && continue
+    [ -n "${vu[$nom]:-}" ] && continue
+    vu["$nom"]=1
+    PROJETS+=("$nom")
+    PROJ_FICHIER["$nom"]="${rel#./}"
+    if [ -n "${INCLUS[${rel#./}]:-}" ]; then PROJ_DANS_WS["$nom"]=1; else PROJ_DANS_WS["$nom"]=0; fi
+  done < <(grep -rHoP '^\s*with project\("\K[^"]+' Applications --include='*.jenga' 2>/dev/null | sort)
+}
+
+# -- Controle positif d'instrument -------------------------------------------
+# Un inventaire qui ne sait rien trouver ne prouve rien. Deux temoins choisis
+# pour couvrir les deux formes : un banc PRESENT dans le workspace, et un banc
+# ARRETE dont l'include est commente. Si le second ressort « dans le workspace »,
+# c'est que le parseur ignore les commentaires — et tout le reste est faux.
+TEMOIN_PRESENT="NkSLCheck"
+TEMOIN_ARRETE="NkMatInventaireTest"
+controle_instrument() {
+  local p ok1=0 ok2=0
+  for p in "${PROJETS[@]}"; do
+    [ "$p" = "$TEMOIN_PRESENT" ] && ok1=1
+    [ "$p" = "$TEMOIN_ARRETE"  ] && ok2=1
+  done
+  if [ "$ok1" -ne 1 ]; then
+    dire2 "[verif] ECHEC D'INSTRUMENT : l'inventaire ne trouve pas $TEMOIN_PRESENT."
+    dire2 "[verif]   Soit il a ete supprime (mets ce temoin a jour), soit le parseur"
+    dire2 "[verif]   ne sait plus lire les .jenga. Ne rien conclure."
+    return 1
+  fi
+  if [ "$ok2" -ne 1 ]; then
+    dire2 "[verif] ECHEC D'INSTRUMENT : l'inventaire ne trouve pas $TEMOIN_ARRETE."
+    return 1
+  fi
+  if [ "${PROJ_DANS_WS[$TEMOIN_ARRETE]}" -ne 0 ]; then
+    dire2 "[verif] ECHEC D'INSTRUMENT : $TEMOIN_ARRETE est donne DANS le workspace."
+    dire2 "[verif]   Son include est commente dans Nkentseu.jenga (ligne ~1220) : le"
+    dire2 "[verif]   parseur ignore donc les commentaires, et l'inventaire est faux."
+    return 1
+  fi
+  if [ "${PROJ_DANS_WS[$TEMOIN_PRESENT]}" -ne 1 ]; then
+    dire2 "[verif] ECHEC D'INSTRUMENT : $TEMOIN_PRESENT est donne HORS du workspace."
+    return 1
+  fi
+  dire "[instr]   ok   temoins : $TEMOIN_PRESENT dans le workspace, $TEMOIN_ARRETE hors"
+  return 0
+}
+
+# =============================================================================
+# 3. LECTURE DE config/bancs.list
+# =============================================================================
+# Format, un projet par ligne, champs separes par « | » :
+#   <projet> | <classe> | <mode> | <arguments> | <verdict> | <note>
+declare -A CL_CLASSE=() CL_MODE=() CL_ARGS=() CL_VERDICT=() CL_NOTE=()
+declare -a CL_ORDRE=()
+
+# Rognage en bash pur, SANS sous-processus. Mesure du 2026-08-22 : six appels a
+# `sed` par ligne sur 121 lignes coutaient 36 s a eux seuls sous Windows (le
+# demarrage d'un processus y vaut ~50 ms). L'exigence 6 — « il doit etre
+# lancable » — se perd dans ce genre de detail, pas dans les grands choix.
+# ROGNE ecrit dans la variable globale ROGNE : ni `sed`, ni substitution de
+# commande — les deux forkent, et un fork coute ~50 ms sous Windows.
+ROGNE=""
+rogner() {
+  local s="${1:-}"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  ROGNE="$s"
+}
+
+lire_liste() {
+  local ligne nom classe mode args verdict note num=0
+  while IFS= read -r ligne; do
+    num=$((num + 1))
+    case "$ligne" in ''|\#*) continue ;; esac
+    IFS='|' read -r nom classe mode args verdict note <<< "$ligne"
+    rogner "${nom:-}";     nom="$ROGNE"
+    rogner "${classe:-}";  classe="$ROGNE"
+    rogner "${mode:-}";    mode="$ROGNE"
+    rogner "${args:-}";    args="$ROGNE"
+    rogner "${verdict:-}"; verdict="$ROGNE"
+    rogner "${note:-}";    note="$ROGNE"
+    [ -z "$nom" ] && continue
+    if [ -n "${CL_CLASSE[$nom]:-}" ]; then
+      dire2 "[verif] $LISTE ligne $num : $nom declare deux fois."
+      return 1
+    fi
+    case "$classe" in
+      banc|pas-banc|banc-arrete) ;;
+      *) dire2 "[verif] $LISTE ligne $num : classe inconnue « $classe » pour $nom"
+         dire2 "[verif]   attendu : banc | pas-banc | banc-arrete"
+         return 1 ;;
+    esac
+    CL_CLASSE["$nom"]="$classe"; CL_MODE["$nom"]="${mode:-complet}"
+    CL_ARGS["$nom"]="$args";     CL_VERDICT["$nom"]="${verdict:-code}"
+    CL_NOTE["$nom"]="$note";     CL_ORDRE+=("$nom")
+  done < "$LISTE"
+  return 0
+}
+
+# =============================================================================
+# 4. LA GARDE (exigence 2) — mesure contre classement
+# =============================================================================
+garde_liste() {
+  local p non_classes=() orphelines=()
+  for p in "${PROJETS[@]}"; do
+    [ -z "${CL_CLASSE[$p]:-}" ] && non_classes+=("$p")
+  done
+  local n
+  for n in "${CL_ORDRE[@]}"; do
+    local trouve=0 q
+    for q in "${PROJETS[@]}"; do [ "$q" = "$n" ] && trouve=1 && break; done
+    [ "$trouve" -eq 0 ] && orphelines+=("$n")
+  done
+
+  dire "[garde]   ${#PROJETS[@]} projet(s) declare(s) sous Applications/, ${#CL_ORDRE[@]} ligne(s) de classement"
+
+  if [ "${#orphelines[@]}" -gt 0 ]; then
+    dire "[garde]   info ${#orphelines[@]} ligne(s) sans projet dans CET arbre (branche en avance,"
+    dire "[garde]        ou projet supprime) — information, jamais un echec :"
+    for n in "${orphelines[@]}"; do dire "[garde]        - $n"; done
+  fi
+
+  if [ "${#non_classes[@]}" -gt 0 ]; then
+    dire2 ""
+    dire2 "[garde]   ECHEC : ${#non_classes[@]} projet(s) d'Applications/ NON CLASSE(S) :"
+    for n in "${non_classes[@]}"; do
+      dire2 "[garde]     - $n   (${PROJ_FICHIER[$n]})"
+    done
+    dire2 "[garde]   Ajoute une ligne dans $LISTE pour chacun. Dire « ce n'est pas un"
+    dire2 "[garde]   banc » est une reponse valide — ne rien dire n'en est pas une."
+    dire2 "[garde]   C'est la raison d'etre de ce controle : un banc neuf qu'on"
+    dire2 "[garde]   n'aurait pas pense a declarer ne peut pas passer inapercu."
+    return 1
+  fi
+  dire "[garde]   ok   aucun projet non classe"
+  return 0
+}
+
+# =============================================================================
+# 5. CONSTRUCTION ET EXECUTION D'UN BANC
+# =============================================================================
+premiere_ligne_utile() {
+  # $1 = journal, $2 = « build » ou « run »
+  local j="$1" quoi="$2" l=""
+  if [ "$quoi" = "build" ]; then
+    l=$(sed 's/\x1b\[[0-9;]*m//g' "$j" 2>/dev/null \
+        | grep -aiE 'error|erreur|fatal|undefined reference|unresolved external|LNK[0-9]+|C[0-9]{4}' \
+        | grep -avE 'Build Successful|0 error' | head -1)
+  else
+    # `introuvable|not found|missing` est DANS le motif, et volontairement :
+    # sur les trois echecs mesures le 2026-08-22, la ligne « fichier
+    # introuvable » precede la ligne « [FAIL] », donc `head -1` rend la CAUSE
+    # au lieu du SYMPTOME. Un rapport qui nomme « [FAIL] LoadOBJ reussit »
+    # envoie chercher un bug de chargeur ; « fichier introuvable :
+    # Resources/Models/tree.obj » envoie chercher le fichier.
+    l=$(sed 's/\x1b\[[0-9;]*m//g' "$j" 2>/dev/null \
+        | grep -aiE 'error|erreur|fail|echec|echoue|assert|abort|exception|\bKO\b|introuvable|not found|no such file|manquant|missing' \
+        | head -1)
+  fi
+  [ -z "$l" ] && l=$(sed 's/\x1b\[[0-9;]*m//g' "$j" 2>/dev/null | grep -av '^[[:space:]]*$' | tail -1)
+  [ -z "$l" ] && l="(sortie vide)"
+  printf '%s' "$l" | cut -c1-200
+}
+
+chemin_exe() {
+  local nom="$1" c
+  for c in "Build/Bin/$CONFIG-Windows/$nom/$nom.exe" \
+           "Build/Bin/$CONFIG-Windows/$nom/$nom" \
+           "Build/Bin/$CONFIG-Linux/$nom/$nom" \
+           "Build/Bin/$CONFIG-macOS/$nom/$nom"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+
+# Resultats
+declare -a R_NOM=() R_CONSTRUIT=() R_CODE=() R_DUREE=() R_VERDICT=() R_POURQUOI=() R_JOURNAL=()
+
+traiter_banc() {
+  local nom="$1"
+  local args="${CL_ARGS[$nom]}" crit="${CL_VERDICT[$nom]}"
+  local jb="$SORTIE/$nom.build.log" jr="$SORTIE/$nom.run.log"
+  local t_debut=$(date +%s) construit="non" code="-" verdict="" pourquoi="" journal="-"
+
+  # ---- CONSTRUCTION (exigence 1) -------------------------------------------
+  if [ "$SANS_CONSTRUIRE" -eq 1 ]; then
+    construit="saute"
+  else
+    if [ "$RECONSTRUIRE" -eq 1 ]; then
+      jenga rebuild --target "$nom" --config "$CONFIG" > "$jb" 2>&1
+    else
+      jenga build --target "$nom" --config "$CONFIG" > "$jb" 2>&1
+    fi
+    local rcb=$?
+    if [ "$rcb" -ne 0 ]; then
+      # ECHEC DUR. On n'execute PAS : un exe present serait l'ANCIEN, et le
+      # faire tourner produirait exactement le faux « survivant » qui a motive
+      # ce chantier.
+      R_NOM+=("$nom"); R_CONSTRUIT+=("NON"); R_CODE+=("-")
+      R_DUREE+=("$(( $(date +%s) - t_debut ))s"); R_VERDICT+=("ECHEC")
+      R_POURQUOI+=("construction echouee (jenga code $rcb) : $(premiere_ligne_utile "$jb" build)")
+      R_JOURNAL+=("$jb")
+      return 1
+    fi
+    construit="oui"
+  fi
+
+  # ---- L'EXE DOIT EXISTER ---------------------------------------------------
+  local exe
+  if ! exe=$(chemin_exe "$nom"); then
+    R_NOM+=("$nom"); R_CONSTRUIT+=("$construit"); R_CODE+=("-")
+    R_DUREE+=("$(( $(date +%s) - t_debut ))s"); R_VERDICT+=("ECHEC")
+    R_POURQUOI+=("construction annoncee reussie mais aucun executable sous Build/Bin/$CONFIG-*/$nom/")
+    R_JOURNAL+=("$jb")
+    return 1
+  fi
+
+  # ---- EXECUTION ------------------------------------------------------------
+  local t_run=$(date +%s)
+  if [ -n "$args" ]; then
+    # shellcheck disable=SC2086
+    timeout "$DELAI_DEFAUT" "./$exe" $args > "$jr" 2>&1
+  else
+    timeout "$DELAI_DEFAUT" "./$exe" > "$jr" 2>&1
+  fi
+  code=$?
+  local dt=$(( $(date +%s) - t_run ))
+  journal="$jr"
+
+  if [ "$code" -eq 124 ]; then
+    verdict="ECHEC"; pourquoi="delai depasse (> ${DELAI_DEFAUT}s) — banc tue"
+  else
+    # ---- CRITERE DE VERDICT (exigence 5, et la lecon « un repli qui preserve
+    #      success n'est pas un repli ») ------------------------------------
+    case "$crit" in
+      sans-verdict)
+        verdict="INDETERMINE"
+        pourquoi="aucun critere declare : ce banc ne sait pas dire s'il va bien (code $code)"
+        ;;
+      code+absence:*)
+        local motif="${crit#code+absence:}"
+        if [ "$code" -ne 0 ]; then
+          verdict="ECHEC"; pourquoi="code de sortie $code : $(premiere_ligne_utile "$jr" run)"
+        elif grep -aqE "$motif" "$jr"; then
+          verdict="ECHEC"
+          pourquoi="motif interdit trouve (/$motif/) : $(grep -aE "$motif" "$jr" | head -1 | cut -c1-200)"
+        else
+          verdict="OK"
+        fi
+        ;;
+      code+presence:*)
+        local motif="${crit#code+presence:}"
+        if [ "$code" -ne 0 ]; then
+          verdict="ECHEC"; pourquoi="code de sortie $code : $(premiere_ligne_utile "$jr" run)"
+        elif ! grep -aqE "$motif" "$jr"; then
+          verdict="ECHEC"
+          pourquoi="motif de succes attendu ABSENT (/$motif/) — le banc n'a pas dit qu'il avait reussi"
+        else
+          verdict="OK"
+        fi
+        ;;
+      code|"")
+        if [ "$code" -ne 0 ]; then
+          verdict="ECHEC"; pourquoi="code de sortie $code : $(premiere_ligne_utile "$jr" run)"
+        else
+          verdict="OK"
+        fi
+        ;;
+      *)
+        verdict="ECHEC"; pourquoi="critere de verdict inconnu dans $LISTE : « $crit »"
+        ;;
+    esac
+  fi
+
+  R_NOM+=("$nom"); R_CONSTRUIT+=("$construit"); R_CODE+=("$code")
+  R_DUREE+=("${dt}s"); R_VERDICT+=("$verdict"); R_POURQUOI+=("$pourquoi"); R_JOURNAL+=("$journal")
+  [ "$verdict" = "ECHEC" ] && return 1
+  return 0
+}
+
+# =============================================================================
+# DEROULE
+# =============================================================================
+dire "======================================================================"
+dire " VERIFICATEUR DE BANCS — Nkentseu"
+dire " arbre   : $ROOT"
+dire " branche : $(git rev-parse --abbrev-ref HEAD 2>/dev/null)   HEAD $(git rev-parse --short HEAD 2>/dev/null)"
+dire " mode    : $MODE        config : $CONFIG"
+dire " debut   : $(horodate)"
+dire "======================================================================"
+dire ""
+dire "-- Preconditions -----------------------------------------------------"
+verifier_preconditions || { dire2 ""; dire2 "[verif] ECHEC D'INSTRUMENT — rien n'est conclu sur le depot."; exit 2; }
+
+dire ""
+dire "-- Inventaire et garde de la liste -----------------------------------"
+inventorier
+controle_instrument || { dire2 ""; dire2 "[verif] ECHEC D'INSTRUMENT — rien n'est conclu sur le depot."; exit 2; }
+lire_liste || exit 2
+
+RC=0
+garde_liste || RC=3
+
+# --- Selection des bancs ------------------------------------------------------
+declare -a A_LANCER=() ARRETES=() HORS_WS=()
+for n in "${CL_ORDRE[@]}"; do
+  [ -n "$UN_BANC" ] && [ "$n" != "$UN_BANC" ] && continue
+  case "${CL_CLASSE[$n]}" in
+    pas-banc)    continue ;;
+    banc-arrete) ARRETES+=("$n"); continue ;;
+  esac
+  # un banc declare doit exister dans cet arbre
+  local_trouve=0
+  for q in "${PROJETS[@]}"; do [ "$q" = "$n" ] && local_trouve=1 && break; done
+  [ "$local_trouve" -eq 0 ] && continue
+  if [ "${PROJ_DANS_WS[$n]}" -ne 1 ]; then HORS_WS+=("$n"); continue; fi
+  if [ "$MODE" = "rapide" ] && [ "${CL_MODE[$n]}" != "rapide" ]; then continue; fi
+  A_LANCER+=("$n")
+done
+
+if [ -n "$UN_BANC" ] && [ "${#A_LANCER[@]}" -eq 0 ] && [ "${#ARRETES[@]}" -eq 0 ] && [ "${#HORS_WS[@]}" -eq 0 ]; then
+  dire2 "[verif] --banc $UN_BANC : aucun banc de ce nom dans $LISTE"
+  exit 2
+fi
+
+# --- Bancs arretes : NOMMES a chaque passage, jamais tus ----------------------
+if [ "${#ARRETES[@]}" -gt 0 ]; then
+  dire ""
+  dire "-- Bancs arretes (declares, NON construits) --------------------------"
+  for n in "${ARRETES[@]}"; do
+    dire "  $n — ${CL_NOTE[$n]}"
+  done
+  dire "  Un banc arrete qu'on ne mentionne plus est un banc oublie."
+fi
+if [ "${#HORS_WS[@]}" -gt 0 ]; then
+  dire ""
+  dire "-- ECHEC : declares « banc » mais HORS du workspace -------------------"
+  for n in "${HORS_WS[@]}"; do
+    dire "  $n — aucun include actif dans Nkentseu.jenga (${PROJ_FICHIER[$n]})"
+  done
+  dire "  Soit tu le reintegres, soit tu le passes en classe « banc-arrete »"
+  dire "  avec sa raison. Un banc qu'on croit lancer et qui n'existe pas dans"
+  dire "  le workspace est le pire des deux mondes."
+  RC=1
+fi
+
+if [ "$INVENTAIRE_SEUL" -eq 1 ]; then
+  dire ""
+  dire "-- Inventaire seul (--liste) : rien n'a ete construit -----------------"
+  dire "  bancs a lancer en mode $MODE : ${#A_LANCER[@]}"
+  for n in "${A_LANCER[@]}"; do
+    printf '    %-24s %-9s verdict=%-13s args=%s\n' \
+      "$n" "[${CL_MODE[$n]}]" "${CL_VERDICT[$n]}" "${CL_ARGS[$n]:-(aucun)}"
+  done
+  dire ""
+  dire " duree : $(duree_depuis "$T0")"
+  exit "$RC"
+fi
+
+mkdir -p "$SORTIE"
+
+dire ""
+dire "-- Bancs -------------------------------------------------------------"
+for n in "${A_LANCER[@]}"; do
+  printf '  %-26s ... ' "$n"
+  if traiter_banc "$n"; then
+    dire "${R_VERDICT[$(( ${#R_VERDICT[@]} - 1 ))]} (${R_DUREE[$(( ${#R_DUREE[@]} - 1 ))]})"
+  else
+    dire "${R_VERDICT[$(( ${#R_VERDICT[@]} - 1 ))]} (${R_DUREE[$(( ${#R_DUREE[@]} - 1 ))]})"
+  fi
+done
+
+# =============================================================================
+# RAPPORT
+# =============================================================================
+dire ""
+dire "-- Tableau -----------------------------------------------------------"
+printf '  %-26s %-10s %-6s %-8s %s\n' "banc" "construit" "code" "duree" "verdict"
+printf '  %-26s %-10s %-6s %-8s %s\n' "--------------------------" "---------" "-----" "-------" "-------"
+NB_OK=0; NB_ECHEC=0; NB_IND=0
+for i in "${!R_NOM[@]}"; do
+  printf '  %-26s %-10s %-6s %-8s %s\n' \
+    "${R_NOM[$i]}" "${R_CONSTRUIT[$i]}" "${R_CODE[$i]}" "${R_DUREE[$i]}" "${R_VERDICT[$i]}"
+  case "${R_VERDICT[$i]}" in
+    OK)          NB_OK=$((NB_OK + 1)) ;;
+    ECHEC)       NB_ECHEC=$((NB_ECHEC + 1)) ;;
+    INDETERMINE) NB_IND=$((NB_IND + 1)) ;;
+  esac
+done
+
+if [ "$NB_ECHEC" -gt 0 ]; then
+  dire ""
+  dire "-- POURQUOI (exigence 5) ---------------------------------------------"
+  for i in "${!R_NOM[@]}"; do
+    [ "${R_VERDICT[$i]}" != "ECHEC" ] && continue
+    dire "  ${R_NOM[$i]} :"
+    dire "    ${R_POURQUOI[$i]}"
+    dire "    journal complet : ${R_JOURNAL[$i]}"
+  done
+fi
+
+if [ "$NB_IND" -gt 0 ]; then
+  dire ""
+  dire "-- Indetermines (a doter d'un critere de verdict) --------------------"
+  for i in "${!R_NOM[@]}"; do
+    [ "${R_VERDICT[$i]}" != "INDETERMINE" ] && continue
+    dire "  ${R_NOM[$i]} : ${R_POURQUOI[$i]}"
+  done
+  dire "  Ces bancs tournent, mais leur code de sortie ne juge rien. Ils ne"
+  dire "  sont PAS comptes verts. Donne-leur un critere dans $LISTE."
+fi
+
+[ "$NB_ECHEC" -gt 0 ] && [ "$RC" -lt 1 ] && RC=1
+
+dire ""
+dire "======================================================================"
+if [ "$RC" -eq 0 ] && [ "$NB_ECHEC" -eq 0 ]; then
+  dire " VERDICT : OK — $NB_OK banc(s) au vert, $NB_IND indetermine(s)"
+else
+  dire " VERDICT : ECHEC — $NB_ECHEC banc(s) en echec, $NB_OK au vert, $NB_IND indetermine(s)"
+fi
+dire " mode $MODE : ${#A_LANCER[@]} banc(s) lance(s) sur ${#CL_ORDRE[@]} projet(s) classe(s)"
+dire " duree totale : $(duree_depuis "$T0")     fin : $(horodate)"
+dire " journaux : $SORTIE/"
+dire "======================================================================"
+exit "$RC"
