@@ -1476,6 +1476,81 @@ celle de Blender ; seule son exécution diffère.
 **3. Une entrée ni câblée ni renseignée donne le NOIR.** Le blanc ferait passer un
 matériau non fini pour un matériau clair. Le neutre doit **se voir**.
 
+#### 🎯 LA CIBLE POSÉE PAR RODOLF (2026-08-22) — **chaque paramètre EST une prise typée**
+
+> « le principe sur blender qui fait qu'**un champ de couleur peut recevoir une
+> texture fichier ou procédural** ? je veux ça au lieu d'avoir un champ couleur à
+> part et un champ texture de différents types à part. »
+
+**Le principe est juste ; la mécanique qu'il propose ne l'est pas, et il faut
+dire les deux.** Sa formule — « une couleur c'est une texture 1×1 de contenu
+uni » — n'est pas ce que fait Blender, et coûterait cher ici : un
+échantillonnage coûte un slot de descripteur (on en a 16 à 32), une liaison de
+sampler et une lecture mémoire **par pixel**, quand une constante se replie dans
+un bloc uniforme — gratuit. Et depuis le 22/08 on sait qu'**écrire sur un binding
+absent du layout ne provoque rien** : multiplier les bindings multiplie une
+surface de panne silencieuse déjà mesurée.
+
+**Le principe réel, plus simple et plus fort :**
+
+> Un paramètre n'est pas une **valeur**, c'est une **expression d'un type donné**.
+> Une constante en est une forme, un échantillonnage d'image une autre, un
+> procédural une troisième. **Ce qui les rend interchangeables est le TYPE, pas
+> un format de stockage commun.**
+
+C'est la phrase de `NkNodeGraph.h` appliquée aux paramètres : *« on unifie
+l'AUTORAT, jamais l'EXÉCUTION »*. Une seule prise à l'autorat, deux chemins de
+compilation.
+
+**Ce que ça condamne**, et c'est structurant : aujourd'hui un matériau porte
+`NkPBRParams` (une struct **fixe** de réels) **et** un tableau **fixe** de canaux
+de texture. **Deux représentations parallèles de la même question** — « d'où
+vient la valeur de ce paramètre ». C'est cette dualité qui produit les défauts
+déjà vus : un canal utile à un archétype et pas à l'autre, une liste de textures
+à maintenir à côté d'une liste de réels. La cible est leur convergence vers des
+prises typées, et `NkSocket::defaultValue` est déjà le mécanisme, un cran plus
+bas.
+
+⚠️ **Et ça résout « remplir avec ou sans nœud »** — Rodolf n'a ouvert l'éditeur de
+nœuds dans **aucune** de ses quatre captures : il est dans le panneau de
+propriétés, il clique un point, il choisit une source. Le graphe existe derrière,
+il ne le voit jamais. **Ce ne sont pas deux systèmes à réconcilier : c'est la
+même donnée, avec deux façons de la toucher.**
+
+**Livré le 2026-08-22 — la brique qui rend le menu possible :**
+`NkMatNoeudsPourPrise` / `NkMatNoeudsPourPriseDe` répondent à « que puis-je
+brancher ici ? » **en interrogeant le registre**, jamais une liste écrite par
+famille — une liste se périmerait au premier nœud ajouté et proposerait ce que
+`Connect` refuse. Le résultat est **asymétrique**, exactement comme chez
+Blender, parce que les conversions sont dirigées :
+
+| prise | menu calculé |
+|---|---|
+| `Principled.base_color` (couleur) | `RGB` **et** `Value` (un réel se diffuse en gris) |
+| `Principled.roughness` (réel) | `Value` **seul** — `RGB` en est absent |
+| `Material Output.surface` (shader) | les 4 BSDF ; ni le puits, ni `Value`, ni `RGB` |
+
+Un nœud **sans aucune sortie** — le `Material Output` — n'est jamais proposable,
+et ça tombe sans cas particulier : rien ne peut sortir d'un puits.
+
+**Deux réserves inscrites :**
+- ⚠️ **Toutes les prises ne peuvent pas tout accepter.** Un paramètre qui alimente
+  l'**état du pipeline** (mode de mélange, mode d'ombre) ne peut pas varier par
+  pixel à moindre coût. `NkMatSocketDecl::constanteSeulement` existe pour ça, et
+  l'interface doit alors **ne pas afficher de point** plutôt qu'ouvrir un menu
+  vide — un menu vide laisse croire à une panne. **Aucun des 7 prototypes actuels
+  n'est dans ce cas** : le drapeau est testé sur son mécanisme, pas sur un usage,
+  et c'est écrit dans le banc.
+- **Une expression sur une prise a un coût, et il doit être visible.** Brancher un
+  bruit procédural sur `roughness` est gratuit à écrire et cher à rendre. Ce
+  n'est pas une raison de l'interdire, c'est une raison de savoir le mesurer.
+
+⚠️ **Coordination** : `NkVpMatTypeDefaults.h` (NK3DModeler) est **la même donnée
+vue d'un troisième bout**. Sa note dit qu'elle doit disparaître le jour où le
+graphe porte les défauts. **Ce jour n'est pas encore arrivé** — les prototypes
+déclarent la forme des prises, pas encore leurs valeurs — mais il se rapproche,
+et le déclencheur sera annoncé avant, pas constaté après.
+
 #### La preuve de rendu — et pourquoi elle ne regarde **pas** l'image
 
 `NkMatGraphDemo` (2026-08-22) : device **DX11 headless** (pas de HWND, donc pas
