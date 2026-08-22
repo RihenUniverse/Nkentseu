@@ -568,6 +568,11 @@ struct LigneMatrice {
 		uint32 setB, bindB;		 ///< idem second
 		uint32 nbSetsCpp;		 ///< 1 = les deux descripteurs dans le MEME set
 		bool entreeVideAuMilieu; ///< une entree de layout VIDE inseree a l'index 1
+		// ⚠️ TAILLE DU PREMIER BLOC. La matrice initiale montait deux blocs de 16
+		// octets ; le montage d'origine avait un CameraUBO d'environ 300 octets en
+		// premier. C'est le seul des trois ecarts que j'avais nommes qui porte sur
+		// la MECANIQUE et non sur l'habillage.
+		bool premierBlocLarge;
 		const char *isole;
 };
 
@@ -616,7 +621,12 @@ static NkString FragmentMatrice(const LigneMatrice &l) {
 		PutEntier(s, l.setA);
 		s.Append(", binding=");
 		PutEntier(s, l.bindA);
-		s.Append(")\nuniform BlocA {\n    vec4 va;\n} uA;\n\n");
+		if (l.premierBlocLarge)
+			// Membres RECOPIES a l'identique de ce qu'emet NkMatCompileToNkSL pour
+			// CameraUBO : c'est la taille ET la forme du bloc d'origine.
+			s.Append(")\nuniform BlocA {\n    mat4  view;\n    mat4  proj;\n                     mat4  viewProj;\n    mat4  invViewProj;\n    vec4  camPos;\n                     vec4  camDir;\n    vec2  viewport;\n    float time;\n                     float deltaTime;\n    float iblStrength;\n} uA;\n\n");
+		else
+			s.Append(")\nuniform BlocA {\n    vec4 va;\n} uA;\n\n");
 	}
 	if (l.nbBlocs == 2) {
 		s.Append("@binding(set=");
@@ -625,13 +635,19 @@ static NkString FragmentMatrice(const LigneMatrice &l) {
 		PutEntier(s, l.bindB);
 		s.Append(")\nuniform BlocB {\n    vec4 vb;\n} uB;\n\n");
 	}
+	const char *lireA = l.premierBlocLarge ? "uA.camPos.x" : "uA.va.x";
 	s.Append("@stage(fragment)\n@entry\nvoid main() {\n");
-	if (l.nbBlocs == 2)
-		s.Append("    fragColor = vec4(uA.va.x, uB.vb.x, 0.250980392, 1.0);\n");
-	else if (l.nbBlocs == 1)
-		s.Append("    fragColor = vec4(uA.va.x, 0.0, 0.250980392, 1.0);\n");
-	else
+	if (l.nbBlocs == 2) {
+		s.Append("    fragColor = vec4(");
+		s.Append(lireA);
+		s.Append(", uB.vb.x, 0.250980392, 1.0);\n");
+	} else if (l.nbBlocs == 1) {
+		s.Append("    fragColor = vec4(");
+		s.Append(lireA);
+		s.Append(", 0.0, 0.250980392, 1.0);\n");
+	} else {
 		s.Append("    fragColor = vec4(0.0, 0.0, 0.250980392, 1.0);\n");
+	}
 	s.Append("}\n");
 	return s;
 }
@@ -644,13 +660,24 @@ static bool JoueLigne(DemoContexte &ctx, const LigneMatrice &l, uint8 rgba[4], N
 	a.v[0] = (float32)kAttenduA / 255.f;
 	b.v[0] = (float32)kAttenduB / 255.f;
 
-	NkBufferHandle bufA = ctx.device->CreateBuffer(NkBufferDesc::Uniform(sizeof(BlocEssai)));
+	// Le premier bloc, large, reprend EXACTEMENT la structure du CameraUBO du
+	// banc : meme taille, memes membres, meme decalage pour la valeur lue
+	// (`camPos.x`). C'est la seule facon que la ligne teste la TAILLE et non
+	// une structure inventee qui se trouverait faire le meme nombre d'octets.
+	DemoCameraUBO large;
+	large.camPos[0] = (float32)kAttenduA / 255.f;
+
+	const uint32 tailleA = l.premierBlocLarge ? (uint32)sizeof(DemoCameraUBO) : (uint32)sizeof(BlocEssai);
+	NkBufferHandle bufA = ctx.device->CreateBuffer(NkBufferDesc::Uniform(tailleA));
 	NkBufferHandle bufB = ctx.device->CreateBuffer(NkBufferDesc::Uniform(sizeof(BlocEssai)));
 	if (!bufA.IsValid() || (l.nbBlocs == 2 && !bufB.IsValid())) {
 		pourquoiPas = NkString("creation de tampon refusee");
 		return false;
 	}
-	ctx.device->WriteBuffer(bufA, &a, sizeof(a));
+	if (l.premierBlocLarge)
+		ctx.device->WriteBuffer(bufA, &large, sizeof(large));
+	else
+		ctx.device->WriteBuffer(bufA, &a, sizeof(a));
 	if (l.nbBlocs == 2)
 		ctx.device->WriteBuffer(bufB, &b, sizeof(b));
 
@@ -703,7 +730,7 @@ static bool JoueLigne(DemoContexte &ctx, const LigneMatrice &l, uint8 rgba[4], N
 	w[nw].binding = l.bindA;
 	w[nw].type = NkDescriptorType::NK_UNIFORM_BUFFER;
 	w[nw].buffer = bufA;
-	w[nw].bufferRange = sizeof(BlocEssai);
+	w[nw].bufferRange = tailleA;
 	++nw;
 	if (l.nbBlocs == 2) {
 		if (l.nbSetsCpp == 1) {
@@ -790,13 +817,15 @@ static bool JoueLigne(DemoContexte &ctx, const LigneMatrice &l, uint8 rgba[4], N
 }
 
 static void MatriceDeuxBlocs(DemoContexte &ctx) {
-	const LigneMatrice lignes[6] = {
-		{"0-AUCUN-bloc-temoin-d-appareil", 0, 0, 0, 0, 0, 1, false, "mon appareil trace-t-il quoi que ce soit"},
-		{"1-un-seul-bloc-b0", 1, 0, 0, 0, 0, 1, false, "temoin : le mecanisme marche-t-il du tout"},
-		{"2-deux-blocs-b0-b8-MEME-set", 2, 0, 0, 0, 8, 1, false, "le NOMBRE de blocs, sans histoire de sets"},
-		{"3-deux-blocs-b0-b1-MEME-set", 2, 0, 0, 0, 1, 1, false, "le NUMERO du second (bas contre haut)"},
-		{"4-deux-blocs-DEUX-sets-sans-vide", 2, 0, 0, 1, 8, 2, false, "le nombre de SETS"},
-		{"5-deux-sets-AVEC-entree-vide", 2, 0, 0, 2, 8, 2, true, "l'entree de layout vide au milieu"},
+	const LigneMatrice lignes[7] = {
+		{"0-AUCUN-bloc-temoin-d-appareil", 0, 0, 0, 0, 0, 1, false, false, "mon appareil trace-t-il quoi que ce soit"},
+		{"1-un-seul-bloc-b0", 1, 0, 0, 0, 0, 1, false, false, "temoin : le mecanisme marche-t-il du tout"},
+		{"2-deux-blocs-b0-b8-MEME-set", 2, 0, 0, 0, 8, 1, false, false, "le NOMBRE de blocs, sans histoire de sets"},
+		{"3-deux-blocs-b0-b1-MEME-set", 2, 0, 0, 0, 1, 1, false, false, "le NUMERO du second (bas contre haut)"},
+		{"4-deux-blocs-DEUX-sets-sans-vide", 2, 0, 0, 1, 8, 2, false, false, "le nombre de SETS"},
+		{"5-deux-sets-AVEC-entree-vide", 2, 0, 0, 2, 8, 2, true, false, "l'entree de layout vide au milieu"},
+		{"6-PREMIER-BLOC-LARGE-300o-plus-vide", 2, 0, 0, 2, 8, 2, true, true,
+		 "la TAILLE du premier bloc -- au plus pres du montage d'origine"},
 	};
 	logger.Info("");
 	logger.Info("== MATRICE : deux blocs uniformes sur DX11 ==");
@@ -804,7 +833,7 @@ static void MatriceDeuxBlocs(DemoContexte &ctx) {
 				(uint32)kAttenduA, (uint32)kAttenduB, (uint32)kAttenduM);
 	logger.Info("   un bloc absent lit ZERO. Fond magenta (255,0,255) = rien n'a ete trace.");
 	logger.Info("");
-	for (uint32 i = 0; i < 6; ++i) {
+	for (uint32 i = 0; i < 7; ++i) {
 		uint8 c[4] = {0, 0, 0, 0};
 		NkString pourquoi;
 		if (!JoueLigne(ctx, lignes[i], c, pourquoi)) {

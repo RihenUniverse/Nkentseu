@@ -25,6 +25,7 @@
 // Le VRAI compilateur NkSL : c est lui qui dit si le shader traverse les
 // quatre backends, et il n a besoin d aucun device (cf. NkSLCheck).
 #include "NKSL/Compiler/NkSLCompiler.h"
+#include <stdio.h> // fwrite : ecrire la source SANS passer par le formateur
 
 // ── POURQUOI CE BANC N'IMPRIME PLUS AVEC printf ─────────────────────────────
 // Rodolf, 2026-08-22 (et c'est la deuxieme fois) : « ne pas utiliser directement
@@ -2289,6 +2290,18 @@ static void CasExposeLitLeBloc() {
 	const NkNodeId bsdf = MontePrincipledExposable(g, t);
 	Expose(g, t, bsdf, "roughness", "usure");
 	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	// SONDE DEMANDEE PAR LE COORDINATEUR : ecrire la source EMISE dans un
+	// fichier et la regarder. Volontairement par fwrite et NON par le
+	// journal : une source de shader est pleine d ACCOLADES LITTERALES, et
+	// c est exactement ce que le formateur du depot detruit. Mesurer avec
+	// l outil qui a cause la panne serait la meme faute une fois de plus.
+	if (getenv("NK_DUMP_EXPOSE") && r.ok) {
+		FILE *f = fopen("mesures_matgraph/source_expose.nksl", "wb");
+		if (f) {
+			fwrite(r.source.CStr(), 1, (size_t)r.source.Size(), f);
+			fclose(f);
+		}
+	}
 	const bool lit = r.ok && Apres(r.source, "nkParams.usure") > 0;
 	const bool plusDeLitteral = r.ok && Apres(r.source, "roughness = 0.35") < 0;
 	const bool bloc = r.ok && Apres(r.source, "uniform NkGraphParams") > 0;
