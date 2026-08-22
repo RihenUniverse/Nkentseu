@@ -113,5 +113,29 @@ namespace nkentseu {
 		// il l'a mis dans le nom du noeud, pas dans celui du slot.
 		static const char *const NK_MATBIND_GRAPH_SAMPLER_PREFIX = "nkGraphTex";
 
+		// ─────────────────────────────────────────────────────────────────────
+		// LE BLOC DES PARAMETRES EXPOSES D'UN GRAPHE
+		// ─────────────────────────────────────────────────────────────────────
+		// Meme raisonnement que les slots de texture, et meme conclusion : AUCUN
+		// binding neuf. Le binding 8 porte l'UBO du materiau pour les archetypes
+		// ecrits a la main (`NkPBRParams`, `NkToonParams`...). Un materiau
+		// ENGENDRE n'en a aucun usage — il n'a pas de struct figee — donc le slot
+		// est libre pour lui, exactement comme `tAlbedo` l'etait.
+		//
+		// ⚠️ ET C'EST UN BLOC PAR INSTANCE, PAS PAR MATERIAU. Le cas qui compte
+		// est « le meme materiau, deux objets, deux valeurs » : il exige que
+		// chaque objet ait son propre contenu. Le cout est donc REEL et il est
+		// nomme ici plutot que laisse a deduire : un tampon uniforme par objet
+		// (ou des push constants pour les petits blocs), donc une ecriture et une
+		// liaison de plus par objet dessine. Quelqu'un doit pouvoir contester ce
+		// cout en le voyant ecrit, pas le decouvrir dans un profil.
+		static const unsigned int NK_MATBIND_GRAPH_PARAMS = NK_MATBIND_UBO; // 8
+
+		// Le nom du bloc dans le shader engendre. Le moteur ne s'en sert pas —
+		// il ecrit a des DECALAGES — mais un humain qui lit le shader doit
+		// reconnaitre d'ou viennent ces valeurs.
+		static const char *const NK_MATBIND_GRAPH_PARAMS_BLOCK = "NkGraphParams";
+		static const char *const NK_MATBIND_GRAPH_PARAMS_VAR = "nkParams";
+
 	} // namespace renderer
 } // namespace nkentseu

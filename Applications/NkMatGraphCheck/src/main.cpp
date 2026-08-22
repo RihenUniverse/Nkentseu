@@ -2195,6 +2195,259 @@ static void CasSepareTroisSorties() {
 				 distinctes ? 1 : 0));
 }
 
+
+// ── Les parametres EXPOSES : l'API publique du moteur ────────────────────────
+
+// Pose une exposition sur une prise : la cle est `expose.<prise>`, la charge
+// utile est le nom PUBLIC, et deux reels optionnels sont les bornes.
+static void Expose(NkNodeGraph &g, const NkMatTypes &t, NkNodeId n, const char *prise, const char *nomPublic,
+				   bool bornes = false, float32 mini = 0.f, float32 maxi = 1.f) {
+	NkString cle(NK_MPROP_EXPOSE_PREFIX);
+	cle.Append(prise);
+	NkGraphValue v = NkValueText(t.real, nomPublic);
+	if (bornes) {
+		v.numbers.PushBack(mini);
+		v.numbers.PushBack(maxi);
+	}
+	g.SetProp(n, cle.CStr(), v);
+}
+
+// Un Principled minimal vers la sortie, pour poser des expositions dessus.
+static NkNodeId MontePrincipledExposable(NkNodeGraph &g, const NkMatTypes &t) {
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	g.SetSocketDefault(bsdf, "roughness", NkSocketDir::Input, NkValueReal(t.real, 0.35f));
+	return bsdf;
+}
+
+static void CasExposeLitLeBloc() {
+	// DISCRIMINE : une prise exposee doit lire le BLOC UNIFORME, jamais un
+	// litteral. C'est tout l'objet de l'exposition — une valeur repliee dans le
+	// code ne peut plus changer a l'execution. On verifie donc la PRESENCE de la
+	// lecture ET l'ABSENCE du litteral qui aurait ete emis sans exposition.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId bsdf = MontePrincipledExposable(g, t);
+	Expose(g, t, bsdf, "roughness", "usure");
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const bool lit = r.ok && Apres(r.source, "nkParams.usure") > 0;
+	const bool plusDeLitteral = r.ok && Apres(r.source, "roughness = 0.35") < 0;
+	const bool bloc = r.ok && Apres(r.source, "uniform NkGraphParams") > 0;
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	Cas("variable/expose-lit-le-bloc", r.ok && ok == 4 && lit && plusDeLitteral && bloc && r.params.Size() == 1,
+		NkFormat("{0}| bloc declare={1} lit nkParams.usure={2} | le litteral 0.35 a disparu={3} | {4} parametre(s)",
+				 be, bloc ? 1 : 0, lit ? 1 : 0, plusDeLitteral ? 1 : 0, (uint32)r.params.Size()));
+}
+
+static void CasDecalagesStd140() {
+	// ⚠️ LE CAS QUI PROTEGE LE RENFORCEMENT (a). En `std140` un `vec3` s'aligne
+	// sur 16 octets : reel, vec3, reel ne donnent PAS 0, 4, 16 mais **0, 16,
+	// 28**, pour un bloc de 32. Un moteur qui deduirait les positions de l'ordre
+	// de declaration ecrirait a cote des le premier vec3 — sans erreur, avec une
+	// valeur credible.
+	//
+	// DISCRIMINE : ce sont les DECALAGES qu'on lit, pas l'ordre. Une disposition
+	// sequentielle naive donnerait les memes NOMS dans le meme ORDRE, et seuls
+	// les nombres la denoncent.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId bsdf = MontePrincipledExposable(g, t);
+	Expose(g, t, bsdf, "metallic", "metal");	  // reel  : 4 o
+	Expose(g, t, bsdf, "base_color", "teinte");   // vec3  : aligne 16
+	Expose(g, t, bsdf, "roughness", "usure");	  // reel
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkMatParamExpose *a = r.ok ? r.TrouveParam("metal") : nullptr;
+	const NkMatParamExpose *b = r.ok ? r.TrouveParam("teinte") : nullptr;
+	const NkMatParamExpose *c = r.ok ? r.TrouveParam("usure") : nullptr;
+	const bool bons = a && b && c && a->decalage == 0u && b->decalage == 16u && c->decalage == 28u &&
+					  r.paramsTaille == 32u;
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	Cas("variable/decalages-std140", r.ok && ok == 4 && bons,
+		NkFormat("metal@{0} teinte@{1} usure@{2} | bloc={3} o | attendus 0/16/28 et 32 (PAS 0/4/16) | {4}",
+				 a ? a->decalage : 999u, b ? b->decalage : 999u, c ? c->decalage : 999u, r.paramsTaille, be));
+}
+
+static void CasPriseConnecteeEtExposeeRefusee() {
+	// 🔴 LE CAS LE PLUS INSIDIEUX DE LA SERIE, et celui que ma proposition avait
+	// oublie. Si une prise recoit un LIEN **et** porte une exposition, le lien
+	// REMPLACE la valeur exposee : `SetFloat("usure", 0.9f)` ne fait RIEN. Le
+	// materiau compile, il rend, le parametre est mort — aucune erreur, aucun
+	// journal.
+	//
+	// ⚠️ Chez Blender le probleme ne se pose pas parce que brancher un lien FAIT
+	// DISPARAITRE le widget : l'interface rend l'etat impossible. Nous n'avons
+	// pas d'interface — c'est donc la validation qui doit le rendre impossible.
+	//
+	// DISCRIMINE : le TEMOIN est la meme exposition SANS le lien, qui doit
+	// compiler. Un controle qui refuserait toute exposition passerait le premier
+	// sans rien prouver.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId bsdf = MontePrincipledExposable(g, t);
+	Expose(g, t, bsdf, "roughness", "usure");
+	NkMatCompileResult temoin = NkMatCompileToNkSL(g);
+
+	const NkNodeId val = NkMatAddNode(g, NK_MN_VALUE);
+	const NkLinkError e = g.Connect(val, "value", bsdf, "roughness");
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const bool nomme = !r.ok && Apres(r.error, "roughness") > 0 && Apres(r.error, "CONNECTEE") > 0;
+	Cas("variable/prise-connectee-et-exposee-refusee",
+		temoin.ok && e == NkLinkError::Ok && !r.ok && nomme && r.source.Size() == 0,
+		NkFormat("temoin sans lien compile={0} | avec lien refuse={1} en nommant la prise={2} rien emis={3} | "
+				 "message : {4}",
+				 temoin.ok ? 1 : 0, r.ok ? 0 : 1, nomme ? 1 : 0, r.source.Size() == 0 ? 1 : 0, r.error));
+}
+
+static void CasExposeRefusNommes() {
+	// QUATRE refus, QUATRE messages distincts. Ils ne se reparent pas pareil :
+	// un doublon se renomme, un nom invalide se corrige, une prise inconnue
+	// vient d'un renommage, et une prise shader n'est simplement pas une valeur.
+	NkString m[4];
+	{ // doublon de nom public
+		NkNodeGraph g;
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		const NkNodeId bsdf = MontePrincipledExposable(g, t);
+		Expose(g, t, bsdf, "metallic", "reglage");
+		Expose(g, t, bsdf, "roughness", "reglage");
+		m[0] = NkMatCompileToNkSL(g).error;
+	}
+	{ // nom public invalide
+		NkNodeGraph g;
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		const NkNodeId bsdf = MontePrincipledExposable(g, t);
+		Expose(g, t, bsdf, "roughness", "2 usures");
+		m[1] = NkMatCompileToNkSL(g).error;
+	}
+	{ // prise inconnue -- ce que laisse un renommage de prise
+		NkNodeGraph g;
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		const NkNodeId bsdf = MontePrincipledExposable(g, t);
+		Expose(g, t, bsdf, "rugosite", "usure");
+		m[2] = NkMatCompileToNkSL(g).error;
+	}
+	{ // une prise SHADER n'est pas une valeur uniforme
+		// ⚠️ CE CAS A D'ABORD MESURE AUTRE CHOSE. Ma premiere version exposait
+		// `Material Output.surface`, qui est CONNECTEE : c'est donc le controle
+		// du lien qui repondait, et le refus « type shader » n'etait jamais
+		// atteint. Les quatre messages etaient bien distincts — simplement pas
+		// les quatre que je croyais tester.
+		//
+		// On expose donc une prise shader LIBRE : `Mix Shader.shader1`, sur un
+		// graphe par ailleurs valide.
+		NkNodeGraph g;
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+		const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_SHADER);
+		const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
+		g.Connect(mix, "shader", out, "surface");
+		g.Connect(emis, "emission", mix, "shader2"); // shader1 reste LIBRE
+		Expose(g, t, mix, "shader1", "melange");
+		m[3] = NkMatCompileToNkSL(g).error;
+	}
+	const bool tous = m[0].Size() && m[1].Size() && m[2].Size() && m[3].Size();
+	const bool distincts = tous && !(m[0] == m[1]) && !(m[1] == m[2]) && !(m[2] == m[3]) && !(m[0] == m[3]);
+	Cas("variable/refus-nommes-et-distincts", distincts,
+		NkFormat("[{0}] [{1}] [{2}] [{3}] | quatre messages distincts={4}", m[0], m[1], m[2], m[3],
+				 distincts ? 1 : 0));
+}
+
+static void CasDefautEstCeluiDeLaPrise() {
+	// ⚠️ RENFORCEMENT (c) : le defaut d'un parametre expose EST le `defaultValue`
+	// de sa prise, jamais une seconde valeur rangee a cote. Deux sources pour une
+	// meme chose divergent, et c'est alors l'editeur qui montre l'une pendant que
+	// le moteur envoie l'autre.
+	//
+	// DISCRIMINE : on CHANGE le defaut de la prise apres avoir pose l'exposition,
+	// et la disposition doit suivre. Une implantation qui aurait recopie la
+	// valeur au moment de l'exposition rendrait l'ancienne.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId bsdf = MontePrincipledExposable(g, t); // roughness = 0,35
+	Expose(g, t, bsdf, "roughness", "usure", true, 0.f, 1.f);
+	g.SetSocketDefault(bsdf, "roughness", NkSocketDir::Input, NkValueReal(t.real, 0.72f));
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkMatParamExpose *p = r.ok ? r.TrouveParam("usure") : nullptr;
+	const bool suit = p && p->defaut.IsSet() && p->defaut.numbers.Size() == 1 && p->defaut.numbers[0] == 0.72f;
+	const bool bornes = p && p->bornes && p->borneMin == 0.f && p->borneMax == 1.f;
+	Cas("variable/le-defaut-est-celui-de-la-prise", r.ok && suit && bornes,
+		NkFormat("defaut retenu={0} (0,72 attendu apres modification de la prise) | bornes lues={1} [{2} ; {3}]",
+				 (p && p->defaut.numbers.Size() == 1) ? (double)p->defaut.numbers[0] : -1.0, bornes ? 1 : 0,
+				 p ? (double)p->borneMin : -1.0, p ? (double)p->borneMax : -1.0));
+}
+
+static void CasJetonSuitLaDisposition() {
+	// ⚠️ RENFORCEMENT (b) : recompiler un graphe EDITE peut reordonner le bloc.
+	// Du code de jeu ayant retenu un DECALAGE ecrirait alors dans le mauvais
+	// parametre — sans erreur, avec une valeur credible. Le jeton existe pour
+	// qu'un cache de decalages puisse se jeter.
+	//
+	// DISCRIMINE dans les DEUX sens : deux compilations du meme graphe donnent le
+	// MEME jeton (sinon tout cache serait inutile), et une disposition differente
+	// en donne un AUTRE (sinon le jeton ne protegerait rien).
+	NkNodeGraph g1;
+	const NkMatTypes t1 = NkMatRegisterTypes(g1);
+	const NkNodeId b1 = MontePrincipledExposable(g1, t1);
+	Expose(g1, t1, b1, "metallic", "metal");
+	Expose(g1, t1, b1, "roughness", "usure");
+	NkMatCompileResult a1 = NkMatCompileToNkSL(g1);
+	NkMatCompileResult a2 = NkMatCompileToNkSL(g1);
+
+	NkNodeGraph g2;
+	const NkMatTypes t2 = NkMatRegisterTypes(g2);
+	const NkNodeId b2 = MontePrincipledExposable(g2, t2);
+	Expose(g2, t2, b2, "roughness", "usure"); // ordre INVERSE
+	Expose(g2, t2, b2, "metallic", "metal");
+	NkMatCompileResult b = NkMatCompileToNkSL(g2);
+
+	const bool stable = a1.ok && a2.ok && a1.jeton == a2.jeton && a1.jeton != 0;
+	const bool change = b.ok && a1.jeton != b.jeton;
+	// Et la disposition a REELLEMENT change : sinon le jeton changerait pour rien.
+	const NkMatParamExpose *pa = a1.ok ? a1.TrouveParam("usure") : nullptr;
+	const NkMatParamExpose *pb = b.ok ? b.TrouveParam("usure") : nullptr;
+	const bool disposition = pa && pb && pa->decalage != pb->decalage;
+	Cas("variable/jeton-suit-la-disposition", stable && change && disposition,
+		NkFormat("meme graphe deux fois : jeton stable={0} | ordre inverse : jeton different={1} | et le decalage "
+				 "d'usure a bouge {2}->{3} : {4}",
+				 stable ? 1 : 0, change ? 1 : 0, pa ? pa->decalage : 999u, pb ? pb->decalage : 999u,
+				 disposition ? 1 : 0));
+}
+
+static void CasRechercheParNom() {
+	// L'API du moteur est par NOM. Un nom inconnu rend nullptr, jamais le
+	// premier parametre — sinon `SetFloat("faute_de_frappe", …)` piloterait
+	// silencieusement autre chose.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId bsdf = MontePrincipledExposable(g, t);
+	Expose(g, t, bsdf, "metallic", "metal");
+	Expose(g, t, bsdf, "roughness", "usure");
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const bool trouve = r.ok && r.TrouveParam("usure") && r.TrouveParam("metal");
+	const bool inconnu = r.ok && r.TrouveParam("usur") == nullptr && r.TrouveParam("usuree") == nullptr &&
+						 r.TrouveParam("") == nullptr;
+	Cas("variable/recherche-par-nom", r.ok && trouve && inconnu,
+		NkFormat("les deux noms trouves={0} | prefixe, suffixe et vide rendent nullptr={1}", trouve ? 1 : 0,
+				 inconnu ? 1 : 0));
+}
+
+static void CasSansExpositionAucunBloc() {
+	// Le temoin de l'autre bord : un graphe sans exposition ne doit declarer
+	// AUCUN bloc. Sans ce cas, une implantation qui emettrait toujours le bloc
+	// passerait tous les autres — et ferait payer un tampon uniforme a chaque
+	// materiau constant.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	MontePrincipledExposable(g, t);
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const bool aucunBloc = r.ok && Apres(r.source, "NkGraphParams") < 0;
+	Cas("variable/sans-exposition-aucun-bloc", r.ok && aucunBloc && r.params.Empty() && r.paramsTaille == 0u,
+		NkFormat("bloc absent={0} | {1} parametre(s) | taille={2} o", aucunBloc ? 1 : 0, (uint32)r.params.Size(),
+				 r.paramsTaille));
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -2286,6 +2539,16 @@ int main() {
 	CasNormaleVoyageJusquAuPuits();
 	CasBumpDeriveesEtGarde();
 	CasSepareTroisSorties();
+
+	// -- les parametres EXPOSES : l'API publique du moteur ---------------
+	CasExposeLitLeBloc();
+	CasDecalagesStd140();
+	CasPriseConnecteeEtExposeeRefusee();
+	CasExposeRefusNommes();
+	CasDefautEstCeluiDeLaPrise();
+	CasJetonSuitLaDisposition();
+	CasRechercheParNom();
+	CasSansExpositionAucunBloc();
 
 	logger.Info("\n-- {0} cas, {1} echec(s) --", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;

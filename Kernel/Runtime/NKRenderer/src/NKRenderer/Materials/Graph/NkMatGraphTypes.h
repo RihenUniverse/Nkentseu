@@ -436,6 +436,81 @@ namespace nkentseu {
 			// image plausible, donc le doute serait indecidable.
 			static const char *const NK_MPROP_NORMAL_CONV = "convention_normale";
 
+			// ─────────────────────────────────────────────────────────────────
+			// LES PARAMETRES EXPOSES — l'endroit ou ce chantier devient une API
+			// publique du moteur.
+			// ─────────────────────────────────────────────────────────────────
+			// Une propriete `expose.<prise>` porte le NOM PUBLIC du parametre.
+			// Presente = expose ; absente = constante.
+			//
+			// ⚠️ POURQUOI LE NOM EST LA DONNEE, ET PAS UN BOOLEEN A COTE : c'est
+			// ce nom que le code du jeu emploiera — `SetFloat("usure", 0.7f)`. Un
+			// booleen obligerait a inventer le nom ailleurs, donc a le maintenir
+			// a deux endroits. Et quinze proprietes `expose.*` sont verbeuses
+			// mais SE REGROUPENT le jour ou l'on voudra un objet dedie ; quinze
+			// booleens ne se regroupent pas.
+			//
+			// ⚠️ ET « EXPOSE » N'EST PAS LE DEFAUT. Une constante se REPLIE dans
+			// le code emis — `x * 0` disparait, les branches mortes s'effacent —
+			// tandis qu'une variable exposee vit dans un bloc uniforme et
+			// qu'AUCUNE optimisation n'est plus possible sur elle. Tout exposer
+			// donnerait un materiau pilotable et lent. C'est donc un choix par
+			// parametre, pose par l'AUTEUR sur SON noeud : `roughness` est
+			// exposable dans un materiau et pas dans un autre.
+			static const char *const NK_MPROP_EXPOSE_PREFIX = "expose.";
+
+			// La charge utile de cette propriete : le nom public dans `text`, et
+			// DEUX reels optionnels dans `numbers` — les bornes. Elles ne sont pas
+			// de la coquetterie : elles disent a un editeur quel curseur afficher,
+			// et elles empechent un script d'ecrire une valeur absurde.
+			static const uint32 NK_EXPOSE_BORNES_REELS = 2;
+
+			// ⚠️ LE DEFAUT D'UN PARAMETRE EXPOSE **EST** LE `defaultValue` DE SA
+			// PRISE. Jamais une seconde valeur rangee a cote : deux sources pour
+			// une meme chose divergent, et c'est alors l'editeur qui montre l'une
+			// pendant que le moteur envoie l'autre.
+
+			// Un nom public doit etre un IDENTIFIANT : le shader en fait un membre
+			// de bloc uniforme, et le code du jeu une cle. Un nom a espaces ou
+			// commencant par un chiffre produirait un shader invalide, et l'erreur
+			// accuserait le generateur au lieu du nom.
+			inline bool NkMatNomPublicValide(const char *n) {
+				if (!n || !*n)
+					return false;
+				const char *p = n;
+				if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || *p == '_'))
+					return false;
+				for (; *p; ++p) {
+					const bool ok = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+									(*p >= '0' && *p <= '9') || *p == '_';
+					if (!ok)
+						return false;
+				}
+				return true;
+			}
+
+			// ── DISPOSITION std140 ───────────────────────────────────────────
+			// ⚠️ LA DISPOSITION PORTE DES DECALAGES, JAMAIS UN ORDRE. En `std140`
+			// un `vec3` s'aligne sur 16 octets et en occupe 12 : trois reels a la
+			// suite n'occupent PAS trois emplacements contigus. Un moteur qui
+			// deduirait les positions de l'ordre de declaration ecrirait a cote
+			// des le premier `vec3` — sans erreur, avec une valeur credible.
+			inline uint32 NkMatStd140Align(NkTypeId t, const NkMatTypes &types) {
+				if (t == types.real)
+					return 4u;
+				return 16u; // vecteur et couleur : alignes sur 16 en std140
+			}
+
+			inline uint32 NkMatStd140Size(NkTypeId t, const NkMatTypes &types) {
+				if (t == types.real)
+					return 4u;
+				return 12u; // vec3 : occupe 12, mais le SUIVANT s'aligne sur 16
+			}
+
+			inline uint32 NkMatAlignUp(uint32 v, uint32 a) {
+				return (v + a - 1u) / a * a;
+			}
+
 			// Les noeuds de relief. `Normal Map` decode une carte tangente ;
 			// `Bump` derive une normale d'un champ de hauteur. Et `Separate XYZ`
 			// vient avec eux parce que sans lui aucun scalaire VARIABLE n'est

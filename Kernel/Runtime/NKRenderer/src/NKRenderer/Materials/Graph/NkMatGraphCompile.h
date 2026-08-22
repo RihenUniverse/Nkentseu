@@ -54,11 +54,74 @@ namespace nkentseu {
 	namespace renderer {
 		namespace matgraph {
 
+			// Un parametre expose, tel que le MOTEUR doit le voir.
+			//
+			// ⚠️ IL PORTE SON DECALAGE, PAS SON RANG. En `std140` un `vec3`
+			// s'aligne sur 16 octets et en occupe 12 : trois reels a la suite
+			// n'occupent PAS trois emplacements contigus. Un moteur qui deduirait
+			// les positions de l'ordre de declaration ecrirait a cote des le
+			// premier `vec3` — sans erreur, avec une valeur credible.
+			struct NkMatParamExpose {
+					NkString nom;	 ///< le nom PUBLIC, celui qu'emploie le code du jeu
+					NkTypeId type = NK_TYPE_INVALID;
+					uint32 decalage = 0; ///< en octets, depuis le debut du bloc
+					uint32 taille = 0;	 ///< en octets
+					// ⚠️ LE DEFAUT EST CELUI DE LA PRISE, recopie ici pour que le
+					// moteur n'ait pas a retraverser le graphe. Il n'existe PAS de
+					// seconde valeur : deux sources pour une meme chose divergent,
+					// et c'est alors l'editeur qui montre l'une pendant que le
+					// moteur envoie l'autre.
+					NkGraphValue defaut;
+					bool bornes = false;
+					float32 borneMin = 0.f, borneMax = 0.f;
+					// D'ou il vient, pour qu'un message d'erreur puisse le designer.
+					NkNodeId noeud = NK_NODE_INVALID;
+					NkString prise;
+			};
+
 			struct NkMatCompileResult {
 					bool ok = false;
 					NkString source; ///< le NkSL emis
 					NkString error;	 ///< renseigne SEULEMENT si ok == false
+
+					// ── L'API PUBLIQUE ───────────────────────────────────────
+					// La disposition du bloc uniforme, decrite ICI et NULLE PART
+					// AILLEURS. A deux endroits, le moteur ecrirait a un decalage
+					// et le shader lirait a un autre : ni erreur, ni journal, et
+					// une valeur credible.
+					NkVector<NkMatParamExpose> params;
+					uint32 paramsTaille = 0; ///< taille totale du bloc, en octets
+
+					// ⚠️ JETON DE COMPILATION. Recompiler un graphe EDITE peut
+					// reordonner le bloc ; du code de jeu ayant retenu un decalage
+					// ecrirait alors dans le mauvais parametre — sans erreur, avec
+					// une valeur credible. **L'API du moteur est par NOM**, et tout
+					// cache de decalage doit porter ce jeton et se jeter quand il
+					// change.
+					uint64 jeton = 0;
+
+					const NkMatParamExpose *TrouveParam(const char *nom) const;
 			};
+
+			// ⚠️ L'API DU MOTEUR EST PAR NOM. Un decalage retenu par du code de jeu
+			// devient faux des que le graphe est reedite et recompile ; le nom, lui,
+			// ne ment pas. Tout cache de decalage doit porter le `jeton` et se
+			// jeter quand il change.
+			inline const NkMatParamExpose *NkMatCompileResult::TrouveParam(const char *nom) const {
+				if (!nom)
+					return nullptr;
+				for (uint32 i = 0; i < (uint32)params.Size(); ++i) {
+					const char *a = params[i].nom.CStr();
+					const char *b = nom;
+					while (*a && *a == *b) {
+						++a;
+						++b;
+					}
+					if (!*a && !*b)
+						return &params[i];
+				}
+				return nullptr;
+			}
 
 			namespace detail {
 
@@ -191,10 +254,132 @@ namespace nkentseu {
 					return r;
 				}
 
+				// Les identifiants de type, retrouves depuis le registre du graphe.
+				// On ne les REENREGISTRE pas : un `RegisterType` ici masquerait un
+				// graphe dont les types n'ont jamais ete declares.
+				NkMatTypes t;
+				t.real = g.FindType(NK_MT_REAL);
+				t.vector = g.FindType(NK_MT_VECTOR);
+				t.color = g.FindType(NK_MT_COLOR);
+				t.shader = g.FindType(NK_MT_SHADER);
+				t.ramp = g.FindType(NK_MT_RAMP);
+
 				NkVector<NkNodeId> ordre;
 				if (!g.TopoSort(ordre)) {
 					r.error = NkString("cycle");
 					return r;
+				}
+
+				// ── PRE-PASSE : LES PARAMETRES EXPOSES ──────────────────────
+				// C'est ici que le chantier devient une API publique : ce qui sort
+				// de cette passe est ce que le code d'un jeu manipulera.
+				for (uint32 i = 0; i < (uint32)ordre.Size(); ++i) {
+					const NkNode *n = g.Find(ordre[i]);
+					if (!n)
+						continue;
+					for (uint32 k = 0; k < (uint32)n->props.Size(); ++k) {
+						const NkGraphProp &pr = n->props[k];
+						// La cle est `expose.<prise>` : on isole le suffixe.
+						const char *cle = pr.name.CStr();
+						const char *pref = NK_MPROP_EXPOSE_PREFIX;
+						const char *c = cle;
+						while (*pref && *c == *pref) {
+							++c;
+							++pref;
+						}
+						if (*pref != 0)
+							continue; // pas une propriete d'exposition
+						const char *nomPrise = c;
+
+						auto refuse = [&](const char *quoi) {
+							r.error = NkString(quoi);
+							r.error.Append(" : ");
+							r.error.Append(n->type);
+							r.error.Append(".");
+							r.error.Append(nomPrise);
+							r.source = NkString("");
+						};
+
+						const int32 idx = n->FindSocket(nomPrise, NkSocketDir::Input);
+						if (idx < 0) {
+							// Une exposition sur une prise inexistante est morte :
+							// elle ne pilotera jamais rien, et personne ne le
+							// remarquera. C'est typiquement ce que laisse un
+							// renommage de prise.
+							refuse("expose sur une prise inconnue");
+							return r;
+						}
+						const NkSocket &sk = n->sockets[(uint32)idx];
+
+						// 🔴 UNE PRISE CONNECTEE **ET** EXPOSEE EST REFUSEE.
+						// C'est le cas le plus insidieux de tous : le lien
+						// REMPLACE la valeur exposee, donc `SetFloat("usure", …)`
+						// ne fait RIEN. Le materiau compile, il rend, et le
+						// parametre est mort — aucune erreur, aucun journal.
+						//
+						// ⚠️ Chez Blender le probleme ne se pose pas parce que
+						// brancher un lien FAIT DISPARAITRE le widget : l'interface
+						// rend l'etat impossible. Nous n'avons pas d'interface —
+						// c'est donc la validation qui doit le rendre impossible.
+						if (g.IncomingOf(n->id, idx)) {
+							refuse("prise CONNECTEE et exposee (le lien remplacerait la valeur exposee, "
+								   "qui ne piloterait plus rien)");
+							return r;
+						}
+
+						if (!pr.value.IsSet() || !NkMatNomPublicValide(pr.value.text.CStr())) {
+							// Le nom devient un membre de bloc uniforme ET une cle
+							// pour le code du jeu : un nom a espaces produirait un
+							// shader invalide, et l'erreur accuserait le
+							// generateur au lieu du nom.
+							refuse("nom public absent ou invalide (lettres, chiffres et souligne, ne commencant "
+								   "pas par un chiffre)");
+							return r;
+						}
+						if (sk.type == t.shader) {
+							refuse("une prise de type shader ne peut pas etre exposee (ce n'est pas une valeur "
+								   "uniforme)");
+							return r;
+						}
+
+						NkMatParamExpose p;
+						p.nom = pr.value.text;
+						p.type = sk.type;
+						p.defaut = sk.defaultValue;
+						p.noeud = n->id;
+						p.prise = NkString(nomPrise);
+						if ((uint32)pr.value.numbers.Size() >= NK_EXPOSE_BORNES_REELS) {
+							p.bornes = true;
+							p.borneMin = pr.value.numbers[0];
+							p.borneMax = pr.value.numbers[1];
+						}
+
+						// Unicite du nom PUBLIC. Deux parametres homonymes
+						// rendraient `SetFloat` dependant de l'ordre de
+						// declaration — donc l'un des deux inaccessible.
+						for (uint32 q = 0; q < (uint32)r.params.Size(); ++q)
+							if (r.params[q].nom == p.nom) {
+								r.error = NkString("deux parametres exposes portent le meme nom public : ");
+								r.error.Append(p.nom);
+								r.source = NkString("");
+								return r;
+							}
+						r.params.PushBack(p);
+					}
+				}
+
+				// Les decalages `std140`, calcules dans l'ordre de declaration.
+				{
+					uint32 curseur = 0;
+					for (uint32 i = 0; i < (uint32)r.params.Size(); ++i) {
+						NkMatParamExpose &p = r.params[i];
+						const uint32 a = NkMatStd140Align(p.type, t);
+						p.decalage = NkMatAlignUp(curseur, a);
+						p.taille = NkMatStd140Size(p.type, t);
+						curseur = p.decalage + p.taille;
+					}
+					// Un bloc uniforme se termine sur un multiple de 16.
+					r.paramsTaille = NkMatAlignUp(curseur, 16u);
 				}
 
 				// ── PRE-PASSE : LES TEXTURES ────────────────────────────────
@@ -252,6 +437,26 @@ namespace nkentseu {
 				s.Append("    mat4  view;\n    mat4  proj;\n    mat4  viewProj;\n    mat4  invViewProj;\n");
 				s.Append("    vec4  camPos;\n    vec4  camDir;\n    vec2  viewport;\n");
 				s.Append("    float time;\n    float deltaTime;\n    float iblStrength;\n} uCam;\n\n");
+				// Le bloc des parametres exposes. Les membres sont declares dans
+				// l'ordre des decalages calcules — c'est ce qui fait que `std140`
+				// place chacun la ou la disposition l'annonce.
+				if (!r.params.Empty()) {
+					s.Append("@binding(set=2, binding=");
+					detail::PutU(s, NK_MATBIND_GRAPH_PARAMS);
+					s.Append(")\nuniform ");
+					s.Append(NK_MATBIND_GRAPH_PARAMS_BLOCK);
+					s.Append(" {\n");
+					for (uint32 i = 0; i < (uint32)r.params.Size(); ++i) {
+						s.Append("    ");
+						s.Append(r.params[i].type == t.real ? "float " : "vec3  ");
+						s.Append(r.params[i].nom);
+						s.Append(";\n");
+					}
+					s.Append("} ");
+					s.Append(NK_MATBIND_GRAPH_PARAMS_VAR);
+					s.Append(";\n\n");
+				}
+
 				// Les samplers du graphe. AUCUN BINDING NEUF : on reutilise les
 				// emplacements que le layout materiau declare deja, dans l'ordre.
 				// Un materiau engendre n'a que faire de `tAlbedo` ou de `tHeight` —
@@ -327,6 +532,18 @@ namespace nkentseu {
 							}
 							return;
 						}
+						// ⚠️ UNE PRISE EXPOSEE LIT LE BLOC UNIFORME, jamais un
+						// litteral. C'est tout l'objet de l'exposition : la valeur
+						// doit pouvoir changer a l'execution, donc elle ne peut pas
+						// etre repliee dans le code. Le defaut, lui, part dans la
+						// disposition — c'est la meme valeur, a un autre endroit.
+						for (uint32 q = 0; q < (uint32)r.params.Size(); ++q)
+							if (r.params[q].noeud == n.id && r.params[q].prise == NkString(prise)) {
+								s.Append(NK_MATBIND_GRAPH_PARAMS_VAR);
+								s.Append(".");
+								s.Append(r.params[q].nom);
+								return;
+							}
 						const NkGraphValue &d = n.sockets[(uint32)idx].defaultValue;
 						if (d.IsSet()) {
 							detail::PutValeur(s, d, typeAttendu);
@@ -1010,6 +1227,22 @@ namespace nkentseu {
 				}
 
 				s.Append("}\n");
+
+				// ⚠️ LE JETON. Il est calcule sur la SOURCE EMISE, donc il change
+				// des que la disposition change — et aussi quand seul le code
+				// change, ce qui est le bon sens de l'erreur : un cache jete pour
+				// rien coute une ecriture, un cache garde a tort ecrit dans le
+				// mauvais parametre. FNV-1a, parce qu'on veut un identifiant
+				// stable et bon marche, pas une garantie cryptographique.
+				{
+					uint64 h = 1469598103934665603ull;
+					const char *p = r.source.CStr();
+					while (p && *p) {
+						h ^= (uint64)(unsigned char)*p++;
+						h *= 1099511628211ull;
+					}
+					r.jeton = h;
+				}
 				r.ok = true;
 				return r;
 			}
