@@ -44,6 +44,8 @@
 #   ./verif_bancs.sh --mode complet         # tous les bancs
 #   ./verif_bancs.sh --banc NkSLCheck       # un seul banc, par son nom
 #   ./verif_bancs.sh --liste                # inventaire seul, ne construit rien
+#   ./verif_bancs.sh --capacites            # garde des capacites SEULE (~10 s)
+#   ./verif_bancs.sh --sans-capacites       # passe sans la garde des capacites
 #   ./verif_bancs.sh --config Release
 #   ./verif_bancs.sh --sans-construire      # execute les exes deja presents
 #   ./verif_bancs.sh --reconstruire         # `jenga rebuild` : table rase par banc
@@ -69,6 +71,10 @@
 #   2  ECHEC D'INSTRUMENT : precondition manquante, montage casse. Rien n'est
 #      conclu sur le depot — c'est le verificateur qui n'est pas en etat.
 #   3  ECHEC DE CLASSEMENT : un projet d'Applications/ n'est pas classe.
+#   (une capacite annoncee et non classee — voir config/capacites.list et
+#    verif_capacites.sh — ROUGIT cette passe via le code 1. Elle ne refuse
+#    JAMAIS un commit : un controle qui bloque se contourne par --no-verify,
+#    en silence ; un banc rouge, lui, se voit.)
 #   (les categories se cumulent en prenant le plus grand code rencontre, sauf
 #    2 qui l'emporte toujours : un instrument casse ne prouve rien.)
 # =============================================================================
@@ -87,6 +93,8 @@ CONFIG="Debug"
 MODE="rapide"
 UN_BANC=""
 INVENTAIRE_SEUL=0
+CAPACITES_SEULES=0
+AVEC_CAPACITES=1
 SANS_CONSTRUIRE=0
 RECONSTRUIRE=0
 DELAI_DEFAUT=600          # secondes ; un banc muet ne bloque pas la journee
@@ -99,6 +107,8 @@ while [ "$#" -gt 0 ]; do
     --config)          CONFIG="${2:-}"; shift 2 ;;
     --banc)            UN_BANC="${2:-}"; shift 2 ;;
     --liste)           INVENTAIRE_SEUL=1; shift ;;
+    --capacites)       CAPACITES_SEULES=1; shift ;;
+    --sans-capacites)  AVEC_CAPACITES=0; shift ;;
     --sans-construire) SANS_CONSTRUIRE=1; shift ;;
     --reconstruire)    RECONSTRUIRE=1; shift ;;
     --delai)           DELAI_DEFAUT="${2:-}"; shift 2 ;;
@@ -426,6 +436,150 @@ premiere_ligne_utile() {
   printf '%s' "$l" | cut -c1-320
 }
 
+# =============================================================================
+# 5bis. SITUER UN ECHEC — nommer les branches non fusionnees qui le touchent
+# =============================================================================
+# LA MESURE QUI A FAIT ECRIRE CE BLOC (2026-08-22)
+#
+#   Ce verificateur ne mesure QU'UNE reference : celle sur laquelle il tourne.
+#   Le 22/08 il a rapporte trois bancs rouges sur `main`. Les trois etaient des
+#   ATTENTES PERIMEES DU BANC, et les corrections existaient deja — dans des
+#   branches non fusionnees. Vingt-quatre heures plus tard, `main` a jour :
+#   ZERO rouge. Le verificateur n'avait pas menti sur ce qu'il mesurait ; il
+#   avait laisse croire qu'il mesurait « le code », alors qu'il mesurait « le
+#   code ICI ».
+#
+#   ⚠️ Et le rapport lui-meme a paye la meme faute : `feat/verificateur` etait
+#   4 commits derriere `main` — la premiere passe mesurait une PHOTO DE MAIN
+#   prise le matin, pas `main`.
+#
+# CE QUE CE BLOC CHANGE
+#   Un outil qui dit « NkAssetIODemo est rouge » ACCUSE.
+#   Un outil qui dit « NkAssetIODemo est rouge, et cinq branches non fusionnees
+#   touchent les fichiers accuses » SITUE. C'est toute la difference entre
+#   envoyer quelqu'un chercher un bug et lui dire ou regarder d'abord.
+#
+#   ⚠️ ET L'ABSENCE COMPTE AUTANT QUE LA PRESENCE. « Aucune branche non fusionnee
+#   ne touche ces fichiers » est l'information la PLUS utile des deux : elle dit
+#   que le defaut est bien ici, et qu'il ne faut pas perdre une heure a fusionner
+#   avant de chercher. Un outil qui ne parlerait que quand il trouve laisserait
+#   le silence signifier deux choses a la fois.
+#
+# CE QU'IL NE FAIT PAS : il ne dit pas que la branche CORRIGE l'echec. Il dit
+# qu'elle TOUCHE les fichiers accuses. Le premier serait un jugement, et il
+# serait faux une fois sur deux ; le second est un fait, et il se verifie.
+
+BR_CALCULE=0
+declare -A BR_FICHIERS=()    # branche -> fichiers qu'elle touche ET qui different encore
+declare -A BR_INEDITS=()     # branche -> nb de ses commits sans equivalent sur HEAD
+INDEX_SUIVIS=""
+
+calculer_branches() {
+  [ "$BR_CALCULE" -eq 1 ] && return 0
+  BR_CALCULE=1
+  local b mb
+  # Cout mesure le 2026-08-22 : ~10 s pour 16 branches. Calcule UNE SEULE FOIS,
+  # et UNIQUEMENT si un banc est tombe : une passe verte ne paie rien.
+  while IFS= read -r b; do
+    [ -z "$b" ] && continue
+    mb=$(git merge-base HEAD "$b" 2>/dev/null) || continue
+    [ -z "$mb" ] && continue
+    # DEUX conditions, et pas une :
+    #   - le fichier a bouge SUR la branche depuis la base commune ;
+    #   - et il DIFFERE ENCORE de ce qu'on mesure aujourd'hui.
+    # Sans la seconde, on nommerait des branches dont la modification est deja
+    # dans HEAD : l'outil enverrait chercher une correction qui est sous ses yeux.
+    BR_FICHIERS["$b"]="$(comm -12 \
+        <(git diff --name-only "$mb" "$b" 2>/dev/null | sort) \
+        <(git diff --name-only HEAD "$b" 2>/dev/null | sort))"
+    # Commits de la branche dont AUCUN equivalent (patch-id) n'est sur HEAD.
+    BR_INEDITS["$b"]=$(git cherry HEAD "$b" 2>/dev/null | grep -ac '^+')
+  done < <(git branch --no-merged HEAD --format='%(refname:short)' 2>/dev/null)
+  INDEX_SUIVIS="$(git ls-files 2>/dev/null)"
+  return 0
+}
+
+# Les fichiers ACCUSES par un echec : le dossier du banc, plus tout fichier
+# source dont le NOM apparait dans la ligne de cause. `NkFBXImporter::Import`
+# donne le jeton `NkFBXImporter`, qui donne `.../NkFBXImporter.cpp` s'il existe.
+# On ne devine pas : un jeton ne devient un chemin que si git suit reellement un
+# fichier de ce nom.
+chemins_accuses() {
+  local banc="$1" cause="$2" jeton res nd
+  printf '%s
+' "Applications/$banc/"
+  printf '%s
+' "$cause"     | grep -aoE '[A-Za-z_][A-Za-z0-9_]{3,}'     | sort -u     | while IFS= read -r jeton; do
+        res=$(printf '%s
+' "$INDEX_SUIVIS" | grep -aE "(^|/)${jeton}\.(h|hpp|cpp|inl|c)$")
+        [ -z "$res" ] && continue
+        # ⚠️ UN NOM QUI DESIGNE CENT FICHIERS NE DESIGNE RIEN.
+        # Defaut mesure le 2026-08-22, dans cette fonction meme : la ligne de
+        # cause disait « Compilation Error: main.cpp ». Le jeton `main` resout
+        # vers ~100 fichiers, et l'outil a nomme SIX branches sur des `main.cpp`
+        # totalement etrangers au banc tombe. C'est exactement ce que cette
+        # fonction existe pour empecher — un outil qui ACCUSE au lieu de SITUER —
+        # venu se loger dans la fonction qui porte l'exigence.
+        #
+        # La regle qui tient : un jeton ne designe une unite de code que si tous
+        # ses fichiers vivent dans LE MEME dossier. `NkGLTFLoader` -> le .h et le
+        # .cpp d'un meme module : une unite. `main` -> cent dossiers : rien.
+        nd=$(printf '%s
+' "$res" | sed 's#/[^/]*$##' | sort -u | grep -c '')
+        [ "$nd" -gt 1 ] && continue
+        printf '%s
+' "$res"
+      done
+}
+
+situer_echec() {
+  local banc="$1" cause="$2"
+  calculer_branches
+  local accuses b liste inter
+  accuses="$(chemins_accuses "$banc" "$cause" | grep -av '^[[:space:]]*$' | sort -u)"
+  if [ -z "$accuses" ]; then
+    dire "    (aucun chemin accuse identifiable dans la ligne de cause)"
+    return 0
+  fi
+  # « inedits d'abord » : une branche dont tous les commits ont deja un
+  # equivalent sur HEAD est la moins susceptible de porter la correction.
+  local -a avec=() sans=()
+  for b in "${!BR_FICHIERS[@]}"; do
+    liste="${BR_FICHIERS[$b]}"
+    [ -z "$liste" ] && continue
+    inter="$(printf '%s\n' "$liste" | grep -aFf <(printf '%s\n' "$accuses") | head -4)"
+    [ -z "$inter" ] && continue
+    if [ "${BR_INEDITS[$b]:-0}" -gt 0 ]; then avec+=("$b|$inter"); else sans+=("$b|$inter"); fi
+  done
+
+  local n=$(( ${#avec[@]} + ${#sans[@]} ))
+  if [ "$n" -eq 0 ]; then
+    dire "    branches non fusionnees touchant les fichiers accuses : AUCUNE"
+    dire "      (${#BR_FICHIERS[@]} branche(s) examinee(s)) — le defaut est bien sur CETTE"
+    dire "      reference. Ne perds pas une heure a fusionner avant de chercher."
+    return 0
+  fi
+
+  dire "    ⚠️ $n branche(s) non fusionnee(s) touchent les fichiers accuses"
+  dire "       ET en different encore aujourd'hui :"
+  local t nom fics f
+  for t in "${avec[@]}" "${sans[@]}"; do
+    [ -z "$t" ] && continue
+    nom="${t%%|*}"; fics="${t#*|}"
+    if [ "${BR_INEDITS[$nom]:-0}" -gt 0 ]; then
+      dire "       $nom   (${BR_INEDITS[$nom]} commit(s) inedit(s))"
+    else
+      dire "       $nom   (0 inedit : contenu deja sur HEAD, regarde-la en dernier)"
+    fi
+    printf '%s\n' "$fics" | while IFS= read -r f; do [ -n "$f" ] && dire "         $f"; done
+  done
+  dire "    Ce verificateur ne mesure QU'UNE reference. Fusionne d'abord, remesure"
+  dire "    ensuite : il tient a etre rouge pour une correction qui existe deja."
+  dire "    ⚠️ « commit(s) inedit(s) » se compte par patch-id : une fusion ECRASEE"
+  dire "    (squash) en fait surcompter, jamais sous-compter. C'est un indice de"
+  dire "    lecture, pas un verdict — l'outil situe, il ne tranche pas."
+}
+
 chemin_exe() {
   local nom="$1" c
   for c in "Build/Bin/$CONFIG-Windows/$nom/$nom.exe" \
@@ -549,6 +703,19 @@ dire "======================================================================"
 dire " VERIFICATEUR DE BANCS — Nkentseu"
 dire " arbre   : $ROOT"
 dire " branche : $(git rev-parse --abbrev-ref HEAD 2>/dev/null)   HEAD $(git rev-parse --short HEAD 2>/dev/null)"
+# ⚠️ EN HAUT, PAS EN NOTE. Le 22/08 au soir, `feat/verificateur` etait 4 commits
+# derriere `main` : la passe mesurait une PHOTO de main prise le matin, en
+# croyant mesurer main. Le lendemain, sur main a jour, DEUX des rouges rapportes
+# avaient disparu — ils etaient corriges depuis la veille. Un verificateur qui
+# ne dit pas de quand date sa reference laisse lire ses rouges comme des faits
+# sur le code.
+RETARD=$(git rev-list --count HEAD..main 2>/dev/null || printf '?')
+if [ "$RETARD" != "0" ] && [ "$RETARD" != "?" ] && [ -n "$RETARD" ]; then
+  dire " ⚠️ RETARD  : $RETARD commit(s) derriere main. Ce que tu vas lire mesure CETTE"
+  dire "             photo, pas main. Fusionne avant de conclure quoi que ce soit."
+elif [ "$RETARD" = "0" ]; then
+  dire " a jour   : 0 commit derriere main"
+fi
 dire " mode    : $MODE        config : $CONFIG"
 dire " debut   : $(horodate)"
 dire "======================================================================"
@@ -564,6 +731,50 @@ lire_liste || exit 2
 
 RC=0
 garde_liste || RC=3
+
+# =============================================================================
+# 4bis. LA GARDE DES CAPACITES ANNONCEES
+# =============================================================================
+# MEME MECANISME QUE config/bancs.list, PAS UN SECOND (arbitrage de Rodolf,
+# R3-b). Une capacite creuse detectee et non classee ROUGIT LE VERIFICATEUR.
+#
+# ELLE NE REFUSE PAS LE COMMIT, ET C'EST DELIBERE. Un controle qui bloque le
+# commit se contourne par --no-verify, en silence, par quelqu'un de presse — et
+# personne ne sait jamais qu'il a ete contourne. Un banc rouge, lui, reste rouge
+# et SE VOIT. On echange un blocage qu'on peut faire taire contre un signal
+# qu'on ne peut pas.
+#
+# ELLE N'EST PAS DANS --liste NON PLUS, et pour la meme raison, mesuree : elle
+# coute ~10 s. --liste est ce que gitcommit.sh appelle a chaque commit (1 a 4 s
+# aujourd'hui). Y ajouter 10 s, c'est fabriquer la raison de contourner le hook
+# — exactement le probleme que R3-b demande de ne pas reconstruire.
+# Elle vit donc dans la PASSE, et se lance a la demande :
+#     ./verif_bancs.sh --capacites     (la garde des capacites SEULE, ~10 s)
+CAP_RC=0
+lancer_garde_capacites() {
+  if [ ! -f ./verif_capacites.sh ]; then
+    dire "[cap]     info verif_capacites.sh absent — garde des capacites non lancee."
+    return 0
+  fi
+  dire ""
+  dire "-- Garde des capacites annoncees -------------------------------------"
+  bash ./verif_capacites.sh
+  CAP_RC=$?
+  case "$CAP_RC" in
+    0) return 0 ;;
+    2) dire2 "[cap]     ECHEC D'INSTRUMENT du detecteur de capacites — rien n'est"
+       dire2 "[cap]     conclu sur les capacites. Le reste de cette passe tient."
+       return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if [ "$CAPACITES_SEULES" -eq 1 ]; then
+  lancer_garde_capacites || RC=1
+  dire ""
+  dire " duree : $(duree_depuis "$T0")"
+  exit "$RC"
+fi
 
 # --- Selection des bancs ------------------------------------------------------
 declare -a A_LANCER=() ARRETES=() HORS_WS=()
@@ -634,6 +845,10 @@ for n in "${A_LANCER[@]}"; do
   fi
 done
 
+if [ "$AVEC_CAPACITES" -eq 1 ]; then
+  lancer_garde_capacites || { [ "$RC" -lt 1 ] && RC=1; }
+fi
+
 # =============================================================================
 # RAPPORT
 # =============================================================================
@@ -660,6 +875,7 @@ if [ "$NB_ECHEC" -gt 0 ]; then
     dire "  ${R_NOM[$i]} :"
     dire "    ${R_POURQUOI[$i]}"
     dire "    journal complet : ${R_JOURNAL[$i]}"
+    situer_echec "${R_NOM[$i]}" "${R_POURQUOI[$i]}"
   done
 fi
 
@@ -684,6 +900,13 @@ else
   dire " VERDICT : ECHEC — $NB_ECHEC banc(s) en echec, $NB_OK au vert, $NB_IND indetermine(s)"
 fi
 dire " mode $MODE : ${#A_LANCER[@]} banc(s) lance(s) sur ${#CL_ORDRE[@]} projet(s) classe(s)"
+if [ "$AVEC_CAPACITES" -eq 1 ]; then
+  case "$CAP_RC" in
+    0) dire " capacites : toutes classees" ;;
+    2) dire " capacites : ECHEC D'INSTRUMENT du detecteur — rien conclu" ;;
+    *) dire " capacites : ECHEC DE CLASSEMENT (code $CAP_RC) — voir plus haut" ;;
+  esac
+fi
 dire " duree totale : $(duree_depuis "$T0")     fin : $(horodate)"
 dire " journaux : $SORTIE/"
 dire "======================================================================"
