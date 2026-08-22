@@ -4107,19 +4107,42 @@ static void CasPontInterfaceDeduiteDuSousGraphe() {
 				typesNommes = false;
 		}
 
+	// ⚠️ COMPTER NE SUFFIT PAS, ET LA MUTATION L'A DIT. « une entree et une
+	// sortie » est VRAI AUSSI quand les deux sens sont inverses : le compte est
+	// symetrique, le cablage non. La mutation qui recopie le sens de la prise
+	// frontiere tel quel -- au lieu de l'inverser -- laissait ce cas VERT, avec
+	// un prototype dont toutes les prises sont a l'envers.
+	//
+	// Septieme occurrence dans ce chantier de « je compte, je ne relie pas ». On
+	// nomme donc les deux prises : `a` vient du noeud d'ENTREE du groupe, elle
+	// doit etre une ENTREE sur le prototype ; `value` vient du noeud de SORTIE,
+	// elle doit etre une SORTIE.
+	bool sensJuste = false;
+	if (p) {
+		int32 iA = -1, iV = -1;
+		for (uint32 i = 0; i < p->socketCount; ++i) {
+			if (NkMatCleEgale(p->sockets[i].name, "a"))
+				iA = (int32)i;
+			else if (NkMatCleEgale(p->sockets[i].name, "value"))
+				iV = (int32)i;
+		}
+		sensJuste = iA >= 0 && iV >= 0 && p->sockets[(uint32)iA].dir == NkSocketDir::Input &&
+					p->sockets[(uint32)iV].dir == NkSocketDir::Output;
+	}
+
 	// et il s'instancie pour de vrai, prises comprises
 	NkNodeGraph h;
 	NkMatRegisterTypes(h);
 	const NkNodeId inst = NkMatAddNode(h, "grp.mon_groupe");
 
 	NkString d;
-	d = NkFormat("enregistrement='{0}' | prises deduites : {1} entree(s) {2} sortie(s) (1 et 1 attendues) | types "
-				 "nommes={3} | parPixel={4} (0 attendu) | s instancie={5}",
-				 NkString(NkMatRegistreErreurNom(e)), nIn, nOut, typesNommes ? 1 : 0, (p && p->parPixel) ? 1 : 0,
-				 inst != NK_NODE_INVALID ? 1 : 0);
+	d = NkFormat("enregistrement='{0}' | prises deduites : {1} entree(s) {2} sortie(s) (1 et 1 attendues) | 'a' est "
+				 "une ENTREE et 'value' une SORTIE={3} | types nommes={4} | parPixel={5} (0 attendu) | s instancie={6}",
+				 NkString(NkMatRegistreErreurNom(e)), nIn, nOut, sensJuste ? 1 : 0, typesNommes ? 1 : 0,
+				 (p && p->parPixel) ? 1 : 0, inst != NK_NODE_INVALID ? 1 : 0);
 	Cas("groupe/pont-interface-deduite-du-sous-graphe",
-		e == NkMatRegistreErreur::Ok && p != nullptr && nIn == 1 && nOut == 1 && typesNommes && !p->parPixel &&
-			inst != NK_NODE_INVALID,
+		e == NkMatRegistreErreur::Ok && p != nullptr && nIn == 1 && nOut == 1 && sensJuste && typesNommes &&
+			!p->parPixel && inst != NK_NODE_INVALID,
 		d);
 	NkMatRegistre().Vide();
 }
@@ -4214,6 +4237,22 @@ static void CasGroupeRecursionRefuseeMaisOu() {
 	//     raisons.
 	const bool temoin = licite == NkGroupError::Ok && d2.GraphAt(ga).NodeCount() == 1;
 
+	// (d) ⚠️ TROIS MAILLONS, et ce cas manquait. La mutation qui reduit la
+	//     detection au VOISIN IMMEDIAT a survecu a (b) -- et c'est logique : a
+	//     deux maillons, regarder le voisin immediat SUFFIT. Le controle
+	//     recursif n'etait donc pas mesure du tout. Avec A -> B -> C, refuser
+	//     C -> A demande de remonter toute la chaine.
+	NkGraphDocument d4;
+	const uint32 ha = d4.AddGraph("A");
+	const uint32 hb = d4.AddGraph("B");
+	const uint32 hc = d4.AddGraph("C");
+	d4.SetRoot(ha);
+	const NkGroupError l1 = NkPoseInstance(d4, ha, "B", nullptr);
+	const NkGroupError l2 = NkPoseInstance(d4, hb, "C", nullptr);
+	const NkGroupError trois = NkPoseInstance(d4, hc, "A", nullptr);
+	const bool chaineLicite = l1 == NkGroupError::Ok && l2 == NkGroupError::Ok;
+	const bool rienPose3 = d4.GraphAt(hc).NodeCount() == 0;
+
 	// ── FILET 2 : a l'aplatissement, pour ce qui vient d'un FICHIER ──────
 	// On contourne volontairement la porte -- `NkNode::subgraph` est public, donc
 	// c'est exactement ce qu'un chargement de fichier produit.
@@ -4230,12 +4269,15 @@ static void CasGroupeRecursionRefuseeMaisOu() {
 	const NkPlanError e3 = d3.BuildPlan(p3);
 
 	NkString d;
-	d = NkFormat("INSERTION : soi-meme='{0}' boucle a deux maillons='{1}' | rien pose apres refus={2}/{3} | temoin "
-				 "instance licite={4} || APLATISSEMENT (chemin du fichier) : '{5}' plan vide={6}",
-				 NkString(NkGroupErrorName(soi)), NkString(NkGroupErrorName(boucle)), rienPose1 ? 1 : 0,
-				 rienPose2 ? 1 : 0, temoin ? 1 : 0, NkString(NkPlanErrorName(e3)), p3.Size() == 0 ? 1 : 0);
+	d = NkFormat("INSERTION : soi-meme='{0}' deux maillons='{1}' TROIS maillons='{2}' | rien pose apres refus={3}/{4}"
+				 "/{5} | temoins (instance licite={6}, chaine A->B->C licite={7}) || APLATISSEMENT (chemin du "
+				 "fichier) : '{8}' plan vide={9}",
+				 NkString(NkGroupErrorName(soi)), NkString(NkGroupErrorName(boucle)),
+				 NkString(NkGroupErrorName(trois)), rienPose1 ? 1 : 0, rienPose2 ? 1 : 0, rienPose3 ? 1 : 0,
+				 temoin ? 1 : 0, chaineLicite ? 1 : 0, NkString(NkPlanErrorName(e3)), p3.Size() == 0 ? 1 : 0);
 	Cas("groupe/recursion-refusee-aux-deux-portes",
-		soi == NkGroupError::Recursive && boucle == NkGroupError::Recursive && rienPose1 && rienPose2 && temoin &&
+		soi == NkGroupError::Recursive && boucle == NkGroupError::Recursive &&
+			trois == NkGroupError::Recursive && rienPose1 && rienPose2 && rienPose3 && temoin && chaineLicite &&
 			e3 == NkPlanError::RecursiveSubgraph && p3.Size() == 0,
 		d);
 }
