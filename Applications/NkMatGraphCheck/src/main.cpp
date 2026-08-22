@@ -16,6 +16,50 @@
 // marche, il echouerait si l'implantation etait fausse D'UNE FACON PRECISE, et
 // cette facon est ecrite a cote du cas. Un cas qui ne peut pas surprendre n'est
 // pas une mesure.
+//
+// ═════════════════════════════════════════════════════════════════════════════
+// REGLE 1 — LES TROIS FACONS DONT UN CAS JUSTE NE MESURE RIEN
+//
+// Mesurees ici en trois jours, sur trois mutations qui ont SURVECU a des cas
+// dont l'assertion etait pourtant exacte. Elles ne se cherchent pas de la meme
+// facon, et c'est pour ca qu'il faut les trois :
+//
+//   IL MANQUAIT LA MATIERE.   « le defaut de prise n'est pas recopie » est passee
+//     verte parce que le graphe d'essai ne portait AUCUN defaut de prise. Un cas
+//     qui ne porte pas la propriete ne peut pas la juger.
+//     -> Demande-toi : mon graphe d'essai contient-il ce que je pretends
+//        surveiller ?
+//
+//   IL MANQUAIT LA RELATION.  « le sens des prises n'est plus inverse » est
+//     passee verte parce que le cas comptait « une entree et une sortie » -- vrai
+//     AUSSI quand les deux sens sont inverses. Le compte est symetrique, le
+//     cablage non. LE NOMBRE ETAIT EXACTEMENT JUSTE : le compteur ne donne aucun
+//     indice. Un cas qui compte ne juge pas ce qui relie.
+//     -> Demande-toi : ce nombre serait-il le meme si tout etait permute ?
+//
+//   IL MANQUAIT LA PROFONDEUR. « la recursion ne regarde que le voisin immediat »
+//     est passee verte parce que le graphe d'essai n'avait que DEUX maillons --
+//     et a deux maillons, le voisin immediat suffit. Un cas a deux maillons ne
+//     juge pas ce qui est recursif.
+//     -> Demande-toi : mon exemple est-il assez profond pour que la recursion
+//        serve ?
+//
+// REGLE 2 — LIRE LE COMPTE D'ERREURS DE COMPILATION AVANT LE RESULTAT DU BANC
+//
+// ⚠️ Rencontre TROIS FOIS. Quand la construction echoue, l'ancien binaire est
+// toujours la, et il s'execute. Le banc affiche alors un resultat complet,
+// coherent et VERT -- sur du code qui n'existe plus. Rien dans sa sortie ne
+// signale que ce n'est pas le code qu'on vient d'ecrire.
+//
+// Ce n'est pas une habitude a prendre, c'est une REGLE : toute mesure commence
+// par le nombre d'erreurs de compilation. « 0 echec » sur une construction ratee
+// ne mesure rien du tout, et c'est la seule sortie du banc qui ment sans qu'on
+// puisse le voir.
+//
+// Meme famille, par l'autre bout (Q38 s3) : un harnais de mutation qui restaure
+// le fichier SANS reconstruire laisse le binaire MUTE en place, et la course
+// suivante rend ROUGE sur une source saine.
+// ═════════════════════════════════════════════════════════════════════════════
 // =============================================================================
 #include "NKRenderer/Materials/Graph/NkMatGraphTypes.h"
 #include "NKRenderer/Materials/Graph/NkMatGraphCompile.h"

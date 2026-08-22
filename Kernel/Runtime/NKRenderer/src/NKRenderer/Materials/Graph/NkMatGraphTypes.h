@@ -1339,6 +1339,39 @@ namespace nkentseu {
 				return *a == 0 && *b == 0;
 			}
 
+			// ═════════════════════════════════════════════════════════════════
+			// ⚠️⚠️ LIMITE DECLAREE — DEFAUT CONNU, CORRECTION PLANIFIEE ⚠️⚠️
+			//
+			//   LE REGISTRE DE GROUPES EST UNIQUE POUR LE PROCESSUS.
+			//   DEUX DOCUMENTS OUVERTS PARTAGENT LEURS GROUPES.
+			//
+			// Ce n'est PAS une simplification acceptable, c'est un DEFAUT. Dans
+			// une application qui ouvre plusieurs documents -- NK3DModeler,
+			// NKScena, Nogee -- il produit trois symptomes, et aucun ne se voit
+			// dans un banc :
+			//   1. un groupe defini dans le document A apparait dans le menu de B ;
+			//   2. deux documents independants entrent en collision de noms, et
+			//      le second se voit refuser un nom qu'il est seul a employer ;
+			//   3. B casse quand A se ferme.
+			// Ca se decouvrira chez un utilisateur, pas ici.
+			//
+			// CE QU'IL FAUT CORRIGER, ET CE N'EST PAS CE STOCKAGE : c'est la
+			// SIGNATURE de la porte. `NkMatFindProto(cle)` ne transporte aucun
+			// contexte ; tant qu'elle n'en transporte pas, aucun rangement ne
+			// peut separer deux documents. Le stockage a capacite fixe, lui, est
+			// un choix DELIBERE et il reste bon (voir la note plus haut : un
+			// NkVector deplacerait les prototypes et le pointeur deja rendu
+			// lirait de la memoire liberee, sans planter, en rendant des noms de
+			// prises plausibles).
+			//
+			// QUAND : juste apres (b1). Decide avec Rodolf le 2026-08-22, et
+			// decale VOLONTAIREMENT -- ouvrir la signature touche tous les
+			// appelants, et meler ce changement a la seconde cible de rendu
+			// donnerait une mesure qui porte sur deux choses a la fois.
+			// Le changement viendra seul, avec son propre temoin :
+			// **deux documents ne voient pas les groupes l'un de l'autre**.
+			// ═════════════════════════════════════════════════════════════════
+			//
 			// La source d'execution. Voir plus haut pourquoi elle est a capacite
 			// fixe et pourquoi la collision de noms est refusee ICI.
 			class NkMatRegistreProtos {

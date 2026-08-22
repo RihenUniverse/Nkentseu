@@ -2453,3 +2453,33 @@ sans quoi on pourrait retirer le second sans que rien ne le dise.
 > MATIÈRE (aucun défaut de prise dans le graphe), puis la RELATION (des noms sans
 > leur câblage), puis la PROFONDEUR (une chaîne trop courte). Une assertion juste
 > sur un graphe d'essai trop pauvre ne mesure rien — et elle est verte.**
+
+## ⚠️ DÉFAUT CONNU, CORRECTION PLANIFIÉE — le registre de groupes est unique pour le processus
+
+**Le registre de groupes est unique pour le processus ; deux documents ouverts
+partagent leurs groupes.** Défaut connu, correction planifiée.
+
+Ce n'est pas une simplification acceptable. Dans une application qui ouvre
+plusieurs documents — NK3DModeler, NKScena, Nogee — il produit trois symptômes, et
+**aucun ne se voit dans un banc** :
+
+1. un groupe défini dans le document A apparaît dans le menu de B ;
+2. deux documents indépendants entrent en collision de noms, et le second se voit
+   refuser un nom qu'il est seul à employer ;
+3. B casse quand A se ferme.
+
+> **Ça se découvrira chez un utilisateur, pas dans un banc.**
+
+**Ce qu'il faut corriger n'est pas le stockage, c'est la SIGNATURE de la porte.**
+`NkMatFindProto(clé)` ne transporte aucun contexte ; tant qu'elle n'en transporte
+pas, aucun rangement ne peut séparer deux documents. Le stockage à capacité fixe,
+lui, reste un choix délibéré et bon.
+
+**Quand** : juste après (b1). Décalé **volontairement** — ouvrir la signature
+touche tous les appelants, et mêler ce changement à la seconde cible de rendu
+donnerait une mesure qui porte sur deux choses à la fois. Le changement viendra
+seul, **avec son propre témoin : *deux documents ne voient pas les groupes l'un de
+l'autre***.
+
+📌 Écrit ici et dans `NkMatGraphTypes.h` parce qu'**une limite écrite se corrige ;
+une limite sue se transmet en s'effaçant**.
