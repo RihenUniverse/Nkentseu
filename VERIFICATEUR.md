@@ -14,6 +14,7 @@ rend un **verdict lisible**, et sort **non nul** si quoi que ce soit échoue.
 ./verif_bancs.sh --capacites      # garde des capacités annoncées, seule (~10 s)
 ./contre_epreuve_verif.sh         # prouve que le vérificateur sait dire NON
 ./contre_epreuve_capacites.sh     # prouve que le détecteur de capacités sait dire NON
+./preuve_copies_mortes.sh         # les fichiers « copy » versionnés, et la preuve qu'aucun build ne les compile
 ```
 
 | fichier | rôle |
@@ -25,6 +26,7 @@ rend un **verdict lisible**, et sort **non nul** si quoi que ce soit échoue.
 | `verif_capacites.sh` | la **garde des capacités annoncées** : détecte les capacités creuses et exige qu'elles soient classées |
 | `config/capacites.list` | **la donnée** : le classement des capacités détectées |
 | `contre_epreuve_capacites.sh` | introduit `NkCapFantome` et exige le rouge |
+| `preuve_copies_mortes.sh` | recalcule la preuve que les 27 fichiers « copy » ne sont compilés par rien |
 
 ---
 
@@ -43,7 +45,8 @@ rend un **verdict lisible**, et sort **non nul** si quoi que ce soit échoue.
 **Il ne garantit pas** que la liste des bancs est complète au sens du *sens* :
 il garantit qu'aucun projet d'`Applications/` n'est **non classé**. Répondre
 « ce n'est pas un banc » reste une réponse humaine, et 111 projets portent
-aujourd'hui la note `non-examine` (voir la dette, plus bas).
+aujourd'hui la note `non-examine` — et 117 lignes de `config/capacites.list`
+de même (voir *Dettes ouvertes*, en fin de document).
 
 **Il garantit aussi** qu'aucune **capacité annoncée et creuse** détectée par
 `verif_capacites.sh` n'est **non classée** — mais il ne garantit **jamais**
@@ -557,6 +560,216 @@ auraient produit **la même sortie verte**.
 
 ---
 
+## ⚠️ Un outil qui situe peut accuser plus fort qu'un outil qui se tait
+
+**Parce qu'on le croit.**
+
+La fonction qui nomme les branches non fusionnées existe pour empêcher d'accuser
+à tort. À sa **première épreuve de bout en bout**, elle a accusé six branches
+étrangères.
+
+Le banc `NKSmoothMeshTest` cassé volontairement, la ligne de cause était
+`Compilation Error: main.cpp`. Le jeton `main` a résolu vers ~100 fichiers, et
+l'outil a nommé `feat/materiaux-graphe` (pour `NkMatGraphDemo/src/main.cpp`),
+`feat/noge-inventaire`, `sauvegarde-avant-nettoyage-carnets`… aucune n'avait le
+moindre rapport avec le banc tombé.
+
+> **Un nom qui désigne cent fichiers ne désigne rien. Un jeton ne désigne une
+> unité de code que si tous ses fichiers vivent dans le même dossier.**
+
+`NkGLTFLoader` → le `.h` et le `.cpp` d'un même module : une unité.
+`main` → cent dossiers : rien. Après correction, le même cas rend **AUCUNE** —
+la vérité.
+
+### Ce que ça a coûté à trouver, et c'est le point
+
+**La première épreuve de bout en bout. Pas une relecture.**
+
+La fonction avait été validée en isolation, sur trois causes fabriquées à la
+main (`NkFBXImporter::Import`, `NkGLTFLoader`, une cause vide). Les trois
+passaient. Aucune ne ressemblait à ce que produit réellement un compilateur qui
+tombe — et c'est *exactement* le cas où l'outil sert.
+
+**Une validation sur des entrées qu'on a choisies soi-même valide surtout son
+auteur.** Ce n'est pas une raison de ne pas la faire ; c'est une raison de ne
+jamais s'y arrêter.
+
+---
+
+## ⚠️ Le cliquet de `A-DATER` — une dette qui ne se renouvelle pas
+
+`dette-datee` exige une échéance. Deux cas se ressemblent et ne veulent pas dire
+la même chose :
+
+| champ date | sens | verdict |
+|---|---|---|
+| **vide** | un oubli | **ÉCHEC** |
+| **`A-DATER`** | « cette échéance appartient à Rodolf, je ne l'invente pas » | nommé à chaque passage, **pas rouge** |
+
+Inventer une date pour faire taire un outil, ce serait produire un **chiffre
+crédible et faux** — précisément ce que ce chantier traque.
+
+Mais `A-DATER` sans contrainte redeviendrait une porte ouverte : le stock se
+renouvellerait exactement pendant qu'on le vide. D'où le **cliquet** :
+
+> **Le compte de `A-DATER` peut descendre. Il ne peut pas monter.**
+
+- Le stock actuel (24) est un **héritage**.
+- Toute capacité **nouvelle** est datée **à la naissance**, sans exception.
+- Le plafond est une **donnée** déclarée dans `config/capacites.list` :
+  `# PLAFOND-A-DATER = 24`. Le relever est possible — et c'est un geste
+  **délibéré qui apparaît dans un diff**. Le cliquet ne s'oppose pas à la
+  décision, il s'oppose à la **dérive silencieuse**.
+- **Son absence est un ÉCHEC D'INSTRUMENT**, pas un défaut : un cliquet absent
+  et un cliquet satisfait produisent la même sortie verte.
+- Quand le compte **descend**, l'outil le dit et demande qu'on resserre le
+  plafond — **il ne le resserre pas tout seul** : un contrôle qui modifie sa
+  propre donnée sans que personne ne le voie a cessé d'être un contrôle.
+
+L'épreuve **I** de `contre_epreuve_capacites.sh` mesure les deux sens : une
+dette `A-DATER` de plus → **CLIQUET ROMPU, code 4** ; le fichier sans directive
+de plafond → **code 2**, jamais un vert.
+
+---
+
+## D3 — ce que le C++ lie contre ce que les shaders échantillonnent
+
+**Livré.** Il était refusé le 22/08 pour une raison mesurée : côté C++, l'index
+de set n'existait **dans aucune déclaration**. Ce n'était pas une fatalité,
+c'était une ligne de code manquante.
+
+### La correction, côté code
+
+`NkResources.h` porte désormais `kStandardBindings[]` — `(set, binding, type,
+étage, nom)` — et **`CreateStandardLayouts()` la parcourt**. L'appariement
+`enum → set` est devenu une **donnée du code**, donc calculable.
+
+La table n'est pas une seconde vérité à maintenir à côté du code : **c'est la
+seule**. Si elle ment, les layouts mentent avec elle, et ça se voit.
+
+**Preuve d'équivalence avant remplacement** : les deux versions produisent la
+**même suite de 18 `(set, binding, type, étage)`, dans le même ordre** — comparé
+mécaniquement, pas relu. Plus la compilation (24/24, `SUCCESS`).
+⚠️ **Ce n'est pas une preuve d'exécution : aucun GPU n'a tourné.**
+
+⚠️ **Un piège trouvé en compilant, pas en relisant** : deux types portent le nom
+`NkShaderStage` — `nkentseu::NkShaderStage` (= `NkSLStage`, celui du RHI, qui
+porte `NK_ALL_GRAPHICS`) et `nkentseu::renderer::NkShaderStage`
+(`NkShaderBackend.h`). Non qualifié, **le second gagne**. Et l'erreur ne sort pas
+dans le fichier fautif : `NkResources.cpp` compilait, `NkRender3D.cpp` non. Tout
+est qualifié explicitement.
+
+### Ce que D3 affirme, et rien de plus
+
+| | |
+|---|---|
+| il dit | « le C++ lie ce `(set, binding)` et **aucun shader qualifié par un set** ne le déclare » |
+| il ne dit **pas** | « le shader lit la mauvaise chose » — trancher demande de savoir ce que la **carte** lit, et rien ici ne le mesure |
+
+⚠️ **Et il ne regarde pas le sens inverse comme un défaut.** Le corpus compte
+**47 couples `(set, binding)` distincts** pour **18** bindings standard : la
+majorité appartient à des familles (compute, 2D, post) qui n'utilisent pas les
+layouts standard. Crier sur chacune fabriquerait 29 faux positifs le premier
+jour.
+
+⚠️ **Les déclarations SANS set sont comptées à part, et nommées.** OpenGL n'a pas
+de descriptor sets : ses shaders écrivent `layout(binding=2)` tout court. Un D3
+qui ne compterait que les déclarations qualifiées annoncerait « aucun shader ne
+déclare ce slot » alors qu'une famille entière le déclare — **il accuserait**.
+Défaut trouvé en contre-vérifiant ses deux premiers candidats ; le message porte
+désormais les deux moitiés de ce qui est su.
+
+### Le fait que D3 rapporte — et qu'il ne corrige pas
+
+```
+NK_BIND_IBL_IRRADIANCE (set=0,binding=5)  <->  tEnvIrradiance (set=0,binding=8)
+   jeton commun: irradiance ; ici le slot du C++ porte: sampler2D tCookie3
+```
+
+Le C++ lie l'irradiance IBL au slot **(0,5)**, où les shaders déclarent
+`tCookie3` — un `sampler2D`, une texture de cookie de lumière. Et
+`tEnvIrradiance` (un `samplerCube`) vit en **(0,8)**.
+
+⚠️ **Ce n'est pas un verdict.** Un commentaire qui ment sur un numéro de binding
+peut être le commentaire qui a tort **ou** le code ; trancher demande de mesurer
+ce que la carte lit. **L'outil situe, il ne tranche pas.**
+
+Et il en sort un **second de la même forme**, que personne ne cherchait :
+`NK_BIND_SHADOW_ATLAS` en (0,4) pendant que `tShadowAtlas` vit en (0,11).
+
+L'information n'est rendue que lorsque le slot du C++ porte **autre chose** —
+sinon le nom vit ailleurs *aussi*, et il n'y a rien à montrer. Sans ce filtre,
+la section sortait 32 lignes dont la plupart ne montraient rien, et **une
+information qu'on ne lit plus vaut un silence**.
+
+---
+
+## ⚠️ Autocontrôle : trois couches d'échappement, et deux mangent un `\n`
+
+Entre le heredoc qui écrit un script, le shell qui le lit et `awk` qui compile
+ses chaînes, un `\n` de format peut disparaître **en silence**. Payé **trois
+fois** dans la même soirée : un `printf` awk coupé par un vrai saut de ligne,
+l'awk qui refuse de compiler, et **une section entière du rapport restée vide**.
+
+**Une section vide se lit « rien à signaler ».** C'est la forme exacte que ce
+chantier traque : un outil cassé et un dépôt sain rendent la même sortie.
+
+Deux parades, et aucune n'est une relecture :
+
+1. `verif_capacites.sh` **se contrôle lui-même au démarrage** : une chaîne de
+   format non fermée dans son propre source → **ÉCHEC D'INSTRUMENT, code 2**.
+2. En awk, **`printf fmt, a, b >> f` se lit `printf fmt, a, (b >> f)`** : le
+   dernier argument est pris pour une comparaison, et le fichier reste **vide**.
+   Les parenthèses ne sont pas du style, elles sont la correction.
+
+---
+
+## Les fichiers « copy » versionnés — la preuve, pas la liste
+
+`./preuve_copies_mortes.sh` (`--morts` pour les seuls chemins).
+
+`git ls-files` suit **27** fichiers `… copy.cpp` / `… copy 2.h` / etc. dans
+l'arbre source. Ils ne sont compilés par rien, mais **tout `grep` les lit** — les
+outils comme les humains.
+
+**Pourquoi ça compte ici** : `NkOpenglDevice copy.hpp` porte
+`mCaps.timestampQueries = true`. Le détecteur de capacités l'a compté comme une
+écriture réelle. Ce n'est pas le danger. Le danger est **symétrique** : une copie
+morte peut fournir la **seule « lecture »** d'un champ creux et faire **manquer**
+un défaut — en silence, et dans la mauvaise direction.
+
+**Ils ne sont pas exclus par un filtre.** « Exclure les fichiers dont le nom
+contient *copy* » serait une heuristique de nom, exactement ce que ce dépôt
+interdit depuis quatre fois.
+
+### Deux voies, et il faut les deux
+
+Une première mesure ne cherchait **que** qui cite le basename (`#include` ou
+source listée). Elle rendait « 25 non cités sur 27 ». **Elle était fausse comme
+preuve** : **118** `.jenga` de ce dépôt déclarent leurs sources par **joker**
+(`src/**.cpp`, `src/**/*.h`). Un fichier que personne ne nomme peut être compilé
+quand même.
+
+Et la version qui lisait les jokers s'est trompée dans l'autre sens : elle a
+déclaré `NkOpenglDevice copy.hpp` **vivant** en s'appuyant sur
+`src/NKRHI/Opengl/**` — qui est un **`excludefiles`**, l'exact contraire d'une
+inclusion. *Un outil de preuve qui lit une exclusion comme une inclusion ne
+prouve rien : il répond à une autre question que celle qu'on lui pose.*
+
+**Résultat mesuré : 27 sur 27 prouvés morts** — aucune citation hors commentaire,
+et aucun joker d'inclusion du `.jenga` le plus proche ne les couvre.
+
+⚠️ **Le doute penche du côté sûr** : en cas d'ambiguïté sur un motif, le fichier
+est déclaré **vivant**. Se tromper en disant « vivant » coûte un fichier qu'on ne
+supprime pas ; se tromper en disant « mort » fait supprimer du code qui compile.
+Les deux erreurs n'ont pas le même prix.
+
+⚠️ **Ce script ne supprime rien**, et c'est délibéré : retirer 27 fichiers depuis
+une branche pendant que cinq agents travaillent fabrique des conflits qu'on
+résout mal. Il **prouve** ; la suppression se décide et se fait sur `main`.
+
+---
+
 ## Le format de `config/bancs.list`
 
 ```
@@ -692,3 +905,59 @@ que ce que vaut son montage*.
 3. Choisir son `verdict`. Si le banc ne sait pas dire s'il va bien, écrire
    `sans-verdict` **plutôt que `code`** : mieux vaut un INDÉTERMINÉ visible
    qu'un vert faux.
+
+---
+
+## Dettes ouvertes — pour ne pas repartir de zéro le jour où on les prend
+
+### 🔴 Le cache de Jenga est invalidé par le CHANGEMENT DE CIBLE, pas par un changement de source
+
+**Non ouvert, et c'est un choix : six chantiers tournent, ce n'est pas le
+moment d'en ouvrir un septième.** Mais tout est mesuré, et reproductible en
+trois commandes — le jour où on le prend, on part de là.
+
+**Reproduction, arbre chaud, aucune source modifiée entre les trois :**
+
+| séquence | durée | fichiers recompilés |
+|---|---|---|
+| `jenga build --target NkSLCheck` deux fois (**même** cible) | **4,6 s** | **0** |
+| puis `jenga build --target NkSLComputeCheck` | **48,3 s** | **219** |
+| puis `jenga build --target NkSLCheck` à nouveau | **49,5 s** | **219** |
+
+**Aucune source n'a bougé entre ces trois commandes.** Le cache d'objets tient
+parfaitement tant qu'on reste sur la même cible, et s'effondre à chaque bascule.
+
+**Ce que ça coûte, chiffré** : le vérificateur enchaîne 8 cibles.
+8 × ~50 s de recompilation inutile ≈ **7 min sur les 13 à 18** d'une passe.
+Autrement dit : **le coût du vérificateur ne vient pas du nombre de bancs, il
+vient de ce défaut.** Avec un cache qui tiendrait, la passe à chaud tomberait
+vers **une minute**.
+
+**Où c'est** : dépôt Jenga (`D:\Projets\MacShared\Projets\Jenga`), séparé. Le
+corriger depuis ici serait sortir du périmètre.
+
+**Piste non explorée**, à mesurer avant de promettre : un seul `jenga build`
+sans `--target` (workspace entier), suivi de 8 `--target` devenus no-op à 4,6 s.
+Le workspace compte ~146 projets dont 50 applications fenêtrées — **ça peut
+coûter plus que ça ne rapporte**, et ça ne se saura qu'en le chronométrant.
+
+### 🟠 Les 27 fichiers « copy » attendent une suppression sur `main`
+
+Prouvés morts (voir *Les fichiers « copy » versionnés*). La suppression ne se
+fait **pas depuis une branche** pendant que plusieurs agents travaillent.
+`./preuve_copies_mortes.sh --morts` redonne la liste à jour le jour venu.
+
+### 🟠 Le banc de l'échantillonnage impossible
+
+Demander 3 (ou 7) échantillons MSAA à NKRHI et exiger **soit une ressource
+valide, soit une erreur** — jamais un `0` muet. C'est le seul des neuf capacités
+qui demande une **exécution** : aucun motif de texte ne le voit, et tout
+détecteur qui prétendrait le voir serait un générateur de faux positifs.
+**Ce n'est pas un détecteur, c'est un banc.** Attribué, pas encore écrit.
+
+### 🟡 Les 117 lignes `non-examine` de `config/capacites.list`
+
+Classées pour que la garde soit totale dès le premier jour, **pas examinées une
+par une**. Politique tranchée : **chaque agent qui passe sur un de ces symboles
+corrige sa ligne au passage** — même règle que les 111 `non-examine` de
+`config/bancs.list`. Une grande revue en une fois n'arrive jamais.
