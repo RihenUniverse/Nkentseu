@@ -119,6 +119,25 @@ namespace nkentseu {
 					const char *name;
 					const char *type; ///< un des NK_MT_*
 					NkSocketDir dir;
+					// ⚠️ CERTAINES PRISES NE PEUVENT PAS RECEVOIR D'EXPRESSION.
+					// Un parametre qui alimente l'ETAT DU PIPELINE — mode de
+					// melange, mode d'ombre — ne peut pas varier par pixel a
+					// moindre cout. Blender a la meme limite : certaines entrees
+					// refusent un lien.
+					//
+					// L'interface doit alors NE PAS AFFICHER le point de
+					// connexion, plutot qu'ouvrir un menu vide : un menu vide
+					// laisse croire a une panne, une prise sans point dit « ce
+					// parametre est une constante », ce qui est la verite.
+					//
+					// C'est declare ICI, en couche 3, et pas dans le coeur : le
+					// coeur ne sait pas ce qu'est un etat de pipeline. La
+					// consequence est que `Connect` ne le REFUSE pas — c'est la
+					// requete de bibliotheque qui rend une liste vide, et une
+					// passe de validation qui pourra le signaler. Conforme au
+					// principe : la validation est une passe, jamais une
+					// precondition de structure.
+					bool constanteSeulement = false;
 			};
 
 			struct NkMatNodeProto {
@@ -136,6 +155,18 @@ namespace nkentseu {
 			static const char *const NK_MN_EMISSION = "mat.emission";
 			static const char *const NK_MN_MIX_SHADER = "mat.melange_shader";
 			static const char *const NK_MN_OUTPUT = "mat.sortie";
+			// Les deux noeuds SOURCES de Blender : `Value` et `RGB`. Ils ne
+			// prennent aucune entree et produisent une valeur constante, portee
+			// par une PROPRIETE DE NOEUD. Ce sont eux qui donnent une reponse
+			// non vide a « que puis-je brancher sur une prise de type couleur ? »
+			// — et ce sont les premiers noeuds du depot a exercer `NkNode::props`
+			// jusque dans le shader.
+			static const char *const NK_MN_VALUE = "mat.valeur";
+			static const char *const NK_MN_RGB = "mat.rgb";
+			// Cles des proprietes qu'ils portent. Ce sont des CLES stables : le
+			// compilateur les lit par ce nom, l'interface les ecrit par ce nom.
+			static const char *const NK_MPROP_VALUE = "valeur";
+			static const char *const NK_MPROP_COLOR = "couleur";
 
 			namespace detail {
 
@@ -185,14 +216,26 @@ namespace nkentseu {
 					{"surface", NK_MT_SHADER, NkSocketDir::Input},
 				};
 
+				// `Value` : un reel constant. `RGB` : une couleur constante. Leur
+				// valeur vit dans une propriete de noeud, pas dans une prise : il
+				// n'y a rien a y brancher, c'est le point de depart d'une chaine.
+				static const NkMatSocketDecl kValue[] = {
+					{"value", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+				static const NkMatSocketDecl kRGB[] = {
+					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
+				};
+
 				static const NkMatNodeProto kProtos[] = {
 					{NK_MN_PRINCIPLED, "Principled BSDF", kPrincipled, 6},
 					{NK_MN_DIFFUSE, "Diffuse BSDF", kDiffuse, 4},
 					{NK_MN_EMISSION, "Emission", kEmission, 3},
 					{NK_MN_MIX_SHADER, "Mix Shader", kMixShader, 4},
 					{NK_MN_OUTPUT, "Material Output", kOutput, 1},
+					{NK_MN_VALUE, "Value", kValue, 1},
+					{NK_MN_RGB, "RGB", kRGB, 1},
 				};
-				static const uint32 kProtoCount = 5;
+				static const uint32 kProtoCount = 7;
 
 			} // namespace detail
 
@@ -247,6 +290,92 @@ namespace nkentseu {
 					g.AddSocket(n, s.name, g.FindType(s.type), s.dir);
 				}
 				return n;
+			}
+
+			// Une prise accepte-t-elle un lien ? Isole en une fonction pour que la
+			// requete ET le banc jugent par le MEME chemin : un drapeau lu a deux
+			// endroits differents finit par etre lu differemment.
+			inline bool NkMatPriseAccepteUnLien(const NkMatSocketDecl &sd) {
+				return !sd.constanteSeulement;
+			}
+
+			// ── « QUE PUIS-JE BRANCHER ICI ? » ───────────────────────────────
+			// La demande de Rodolf (2026-08-22) : dans Blender, chaque parametre
+			// porte un point, et cliquer ce point ouvre un menu de sources
+			// FILTRE PAR LE TYPE DE LA PRISE — le menu de `Base Color` et celui
+			// de `Roughness` n'ont pas le meme contenu.
+			//
+			// ⚠️ LA REPONSE SE CALCULE, ELLE NE S'ECRIT PAS. Une liste tenue a la
+			// main par famille se perimerait au premier noeud ajoute, et
+			// divergerait de ce que le graphe accepte VRAIMENT — on aurait alors
+			// un menu qui propose ce que `Connect` refuse. Ici la question est
+			// posee au registre : un prototype est proposable si l'une de ses
+			// SORTIES est acceptee par la prise, conversions dirigees comprises.
+			//
+			// Consequence directe, et c'est le principe que Rodolf a formule :
+			// **un parametre n'est pas une valeur, c'est une EXPRESSION d'un type
+			// donne.** Une constante en est une forme, un echantillonnage une
+			// autre. Ce qui les rend interchangeables est le TYPE.
+			//
+			// Rend le nombre de prototypes proposables ; remplit `out` jusqu'a
+			// `maxOut`. `out` peut etre nul pour ne compter que.
+			inline uint32 NkMatNoeudsPourPrise(const NkNodeGraph &g, NkTypeId typePrise,
+											   const NkMatNodeProto **out = nullptr, uint32 maxOut = 0) {
+				if (typePrise == NK_TYPE_INVALID)
+					return 0;
+				uint32 n = 0;
+				for (uint32 i = 0; i < NkMatProtoCount(); ++i) {
+					const NkMatNodeProto *p = NkMatProtoAt(i);
+					bool proposable = false;
+					for (uint32 k = 0; k < p->socketCount; ++k) {
+						const NkMatSocketDecl &sd = p->sockets[k];
+						if (sd.dir != NkSocketDir::Output)
+							continue;
+						// `Accepts` porte les conversions DIRIGEES : un reel
+						// alimente une couleur, l'inverse est refuse. C'est ce qui
+						// fait que le menu d'une prise couleur contient `Value`,
+						// et que celui d'une prise reelle ne contient pas `RGB`.
+						if (g.Accepts(typePrise, g.FindType(sd.type))) {
+							proposable = true;
+							break;
+						}
+					}
+					// Un noeud SANS AUCUNE SORTIE — le Material Output — n'est
+					// jamais proposable. Rien ne peut sortir de lui : c'est un
+					// puits. Il tombe naturellement, sans cas particulier.
+					if (!proposable)
+						continue;
+					if (out && n < maxOut)
+						out[n] = p;
+					++n;
+				}
+				return n;
+			}
+
+			// La meme question, posee comme l'interface la pose : « sur CETTE
+			// prise de CE noeud ». Rend 0 si la prise est declaree constante.
+			inline uint32 NkMatNoeudsPourPriseDe(const NkNodeGraph &g, const char *protoKey, const char *prise,
+												 const NkMatNodeProto **out = nullptr, uint32 maxOut = 0) {
+				const NkMatNodeProto *p = NkMatFindProto(protoKey);
+				if (!p || !prise)
+					return 0;
+				for (uint32 k = 0; k < p->socketCount; ++k) {
+					const NkMatSocketDecl &sd = p->sockets[k];
+					if (sd.dir != NkSocketDir::Input)
+						continue;
+					const char *a = sd.name;
+					const char *b = prise;
+					while (*a && *a == *b) {
+						++a;
+						++b;
+					}
+					if (*a || *b)
+						continue;
+					if (!NkMatPriseAccepteUnLien(sd))
+						return 0; // pas de point de connexion sur cette prise
+					return NkMatNoeudsPourPrise(g, g.FindType(sd.type), out, maxOut);
+				}
+				return 0;
 			}
 
 			// ── VALIDATION PROPRE AU DOMAINE ─────────────────────────────────

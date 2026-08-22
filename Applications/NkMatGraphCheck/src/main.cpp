@@ -1321,6 +1321,156 @@ static void CasCompileGrapheVenuDunFichier() {
 	Cas("compile/graphe-venu-d-un-fichier", relu && memeShader && ok == 4, d);
 }
 
+// ── la bibliotheque interrogee PAR TYPE DE PRISE ─────────────────────────────
+// La demande de Rodolf du 2026-08-22 : dans Blender, chaque parametre porte un
+// point, et le menu qui s'ouvre est FILTRE PAR LE TYPE DE LA PRISE. Le menu de
+// `Base Color` et celui de `Roughness` n'ont pas le meme contenu.
+
+// Cherche un prototype par sa cle dans un resultat de requete.
+static bool DansLeMenu(const NkMatNodeProto **menu, uint32 n, const char *cle) {
+	for (uint32 i = 0; i < n; ++i) {
+		const char *a = menu[i]->key;
+		const char *b = cle;
+		while (*a && *a == *b) {
+			++a;
+			++b;
+		}
+		if (!*a && !*b)
+			return true;
+	}
+	return false;
+}
+
+static void CasMenuPriseShader() {
+	// DISCRIMINE par ce qui NE DOIT PAS y etre. Une requete qui rendrait tous
+	// les prototypes passerait un test qui se contenterait de compter « au moins
+	// un ». `Material Output` n'a AUCUNE sortie : rien ne peut en sortir, il ne
+	// peut donc jamais etre propose. Et `Value`/`RGB` produisent un reel et une
+	// couleur, pas un shader.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkMatNodeProto *menu[16];
+	const uint32 n = NkMatNoeudsPourPrise(g, t.shader, menu, 16);
+	const bool bons = DansLeMenu(menu, n, NK_MN_PRINCIPLED) && DansLeMenu(menu, n, NK_MN_DIFFUSE) &&
+					  DansLeMenu(menu, n, NK_MN_EMISSION) && DansLeMenu(menu, n, NK_MN_MIX_SHADER);
+	const bool absents = !DansLeMenu(menu, n, NK_MN_OUTPUT) && !DansLeMenu(menu, n, NK_MN_VALUE) &&
+						 !DansLeMenu(menu, n, NK_MN_RGB);
+	Cas("biblio/menu-prise-shader", n == 4 && bons && absents,
+		NkFormat("{0} propositions (4 attendues) | les 4 BSDF presents={1} | sortie/valeur/rgb absents={2}", n,
+				 bons ? 1 : 0, absents ? 1 : 0));
+}
+
+static void CasMenuPriseCouleurEtReelle() {
+	// LE CAS QUI TRANCHE, et il tient dans une asymetrie. Les conversions sont
+	// DIRIGEES : reel -> couleur est declaree, couleur -> reel ne l'est pas
+	// (luminance ? moyenne ? canal rouge ? trois reponses plausibles, donc
+	// aucune par defaut). Le menu doit donc etre ASYMETRIQUE :
+	//     prise COULEUR : `RGB` **et** `Value` (le reel se diffuse en gris)
+	//     prise REELLE  : `Value` seul -- `RGB` doit en etre ABSENT
+	// Une table de conversions symetrique par erreur mettrait `RGB` dans les
+	// deux, et aucun test a sens unique ne le verrait.
+	NkNodeGraph g;
+	NkMatRegisterTypes(g);
+	const NkMatNodeProto *mc[16], *mr[16];
+	const uint32 nc = NkMatNoeudsPourPriseDe(g, NK_MN_PRINCIPLED, "base_color", mc, 16);
+	const uint32 nr = NkMatNoeudsPourPriseDe(g, NK_MN_PRINCIPLED, "roughness", mr, 16);
+	const bool couleurOk = DansLeMenu(mc, nc, NK_MN_RGB) && DansLeMenu(mc, nc, NK_MN_VALUE);
+	const bool reelOk = DansLeMenu(mr, nr, NK_MN_VALUE) && !DansLeMenu(mr, nr, NK_MN_RGB);
+	Cas("biblio/menu-asymetrique-couleur-reel", nc == 2 && nr == 1 && couleurOk && reelOk,
+		NkFormat("base_color : {0} propositions (RGB+Value attendus, ok={1}) | roughness : {2} (Value SEUL, RGB "
+				 "doit etre absent, ok={3})",
+				 nc, couleurOk ? 1 : 0, nr, reelOk ? 1 : 0));
+}
+
+static void CasMenuPriseInconnue() {
+	// Une prise qui n'existe pas rend un menu VIDE, jamais le menu complet. Une
+	// requete qui retomberait sur « tout » ferait proposer n'importe quoi sur
+	// une prise mal orthographiee.
+	NkNodeGraph g;
+	NkMatRegisterTypes(g);
+	const uint32 n = NkMatNoeudsPourPriseDe(g, NK_MN_PRINCIPLED, "prise_qui_nexiste_pas");
+	const uint32 m = NkMatNoeudsPourPriseDe(g, "mat.noeud_inconnu", "base_color");
+	Cas("biblio/menu-prise-ou-noeud-inconnu", n == 0 && m == 0,
+		NkFormat("prise inconnue -> {0} | noeud inconnu -> {1} (0 et 0 attendus)", n, m));
+}
+
+static void CasPriseConstanteSeulement() {
+	// ⚠️ CE QUE CE CAS COUVRE, ET CE QU'IL NE COUVRE PAS.
+	// Certains parametres alimentent l'ETAT DU PIPELINE (mode de melange, mode
+	// d'ombre) et ne peuvent pas varier par pixel a moindre cout : leur prise
+	// doit pouvoir se declarer « constante seulement », et l'interface ne doit
+	// alors PAS afficher de point de connexion — un menu vide laisserait croire
+	// a une panne.
+	//
+	// AUCUN des sept prototypes actuels n'est dans ce cas, et je ne vais pas en
+	// inventer un pour faire vert. On teste donc le MECANISME sur une
+	// declaration construite ici : le drapeau est lu, et il decide. Le jour ou
+	// un vrai parametre d'etat arrive, il n'y aura qu'a poser le booleen.
+	NkMatSocketDecl libre = {"exemple", NK_MT_REAL, NkSocketDir::Input, false};
+	NkMatSocketDecl figee = {"exemple", NK_MT_REAL, NkSocketDir::Input, true};
+	const bool ok = NkMatPriseAccepteUnLien(libre) && !NkMatPriseAccepteUnLien(figee);
+	Cas("biblio/prise-constante-seulement", ok,
+		NkFormat("prise libre accepte un lien={0} | prise figee refuse={1} | usage reel dans la bibliotheque : AUCUN "
+				 "a ce jour, et c'est dit",
+				 NkMatPriseAccepteUnLien(libre) ? 1 : 0, NkMatPriseAccepteUnLien(figee) ? 0 : 1));
+}
+
+static void CasCompileRGBVersBaseColor() {
+	// LE PRINCIPE DE RODOLF, COMPILE : « un champ de couleur peut recevoir une
+	// texture ou un procedural ». Ici la source est un noeud `RGB`, dont la
+	// valeur vit dans une PROPRIETE DE NOEUD — les proprietes livrees dans le
+	// coeur cette nuit traversent donc jusqu'au shader pour la premiere fois.
+	//
+	// DISCRIMINE : la valeur de la propriete doit se retrouver dans le code
+	// emis. Un compilateur qui declarerait la locale sans lire la propriete
+	// produirait un shader qui compile parfaitement et rendrait du noir.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId rgb = NkMatAddNode(g, NK_MN_RGB);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	const NkLinkError e = g.Connect(rgb, "color", bsdf, "base_color");
+	const float32 turquoise[3] = {0.04f, 0.33f, 0.37f};
+	g.SetProp(rgb, NK_MPROP_COLOR, NkValueVec(t.color, turquoise, 3));
+
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkString be;
+	NkString err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	const bool porteLaValeur = r.ok && ContientSansCasse(r.source, "0.330000013");
+	// Et le Principled doit LIRE la locale du RGB, pas un litteral : c'est la
+	// preuve que le lien a ete suivi et non que la valeur a ete recopiee.
+	const NkString nomVal = NkFormat("n{0}_val", (uint32)rgb);
+	const bool lien = r.ok && Apres(r.source, nomVal.CStr()) > 0;
+	Cas("compile/rgb-vers-base-color", e == NkLinkError::Ok && r.ok && ok == 4 && porteLaValeur && lien,
+		NkFormat("lien={0} | {1}| valeur de la propriete presente={2} | le BSDF lit {3}={4}",
+				 NkString(NkLinkErrorName(e)), be, porteLaValeur ? 1 : 0, nomVal, lien ? 1 : 0));
+}
+
+static void CasCompileValeurVersRoughness() {
+	// Le pendant reel : un noeud `Value` alimente `roughness`. Il exerce la
+	// SECONDE porte des valeurs -- une propriete SCALAIRE -- et le fait que le
+	// compilateur choisisse `float` et non `vec3` pour ce type de sortie.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId val = NkMatAddNode(g, NK_MN_VALUE);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	const NkLinkError e = g.Connect(val, "value", bsdf, "roughness");
+	g.SetProp(val, NK_MPROP_VALUE, NkValueReal(t.real, 0.125f));
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkString be;
+	NkString err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	const NkString decl = NkFormat("float n{0}_val = 0.125", (uint32)val);
+	const bool bonType = r.ok && Apres(r.source, decl.CStr()) > 0;
+	Cas("compile/valeur-vers-roughness", e == NkLinkError::Ok && r.ok && ok == 4 && bonType,
+		NkFormat("lien={0} | {1}| declaration '{2}' presente={3}", NkString(NkLinkErrorName(e)), be, decl,
+				 bonType ? 1 : 0));
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -1378,6 +1528,14 @@ int main() {
 	CasCompileRefuseAvantDeGenerer();
 	CasCompileEntreeNiCableeNiRenseignee();
 	CasCompileGrapheVenuDunFichier();
+
+	// -- la bibliotheque interrogee par TYPE DE PRISE (demande de Rodolf) --
+	CasMenuPriseShader();
+	CasMenuPriseCouleurEtReelle();
+	CasMenuPriseInconnue();
+	CasPriseConstanteSeulement();
+	CasCompileRGBVersBaseColor();
+	CasCompileValeurVersRoughness();
 
 	logger.Info("\n-- {0} cas, {1} echec(s) --", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;

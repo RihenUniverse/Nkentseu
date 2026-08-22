@@ -313,6 +313,23 @@ namespace nkentseu {
 							detail::PutNom(s, n->id, "fac");
 							s.Append(");\n");
 						}
+					} else if (t == NkString(NK_MN_VALUE) || t == NkString(NK_MN_RGB)) {
+						// LES DEUX NOEUDS SOURCES, et les PREMIERS a lire une
+						// PROPRIETE DE NOEUD jusque dans le shader. Leur valeur
+						// n'est pas une prise : il n'y a rien a y brancher, c'est
+						// le depart d'une chaine. Elle vit donc dans `props`.
+						const bool estCouleur = (t == NkString(NK_MN_RGB));
+						const NkGraphValue *pv =
+							g.FindProp(n->id, estCouleur ? NK_MPROP_COLOR : NK_MPROP_VALUE);
+						s.Append("    ");
+						s.Append(estCouleur ? "vec3 " : "float ");
+						detail::PutNom(s, n->id, "val");
+						s.Append(" = ");
+						if (pv && pv->IsSet())
+							detail::PutValeur(s, *pv, estCouleur ? "vec3" : "float");
+						else
+							s.Append(estCouleur ? "vec3(0.0)" : "0.0");
+						s.Append(";\n");
 					} else if (t == NkString(NK_MN_OUTPUT)) {
 						// ── LE PUITS : ombrage puis ecriture ────────────────
 						// Le modele d'eclairage est celui de LayeredV1, a
