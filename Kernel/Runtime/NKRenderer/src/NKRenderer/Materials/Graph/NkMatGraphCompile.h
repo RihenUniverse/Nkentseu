@@ -83,6 +83,17 @@ namespace nkentseu {
 						out.Append(".0");
 				}
 
+				// Comparaison de cles d'operation. Une fonction plutot qu'un
+				// `strcmp` inline : elle est appelee une douzaine de fois par
+				// noeud et une inversion d'argument y passerait inapercue.
+				inline bool OpEst(const char *a, const char *b) {
+					while (*a && *a == *b) {
+						++a;
+						++b;
+					}
+					return *a == 0 && *b == 0;
+				}
+
 				inline void PutU(NkString &out, uint32 v) {
 					char b[16];
 					snprintf(b, sizeof(b), "%u", v);
@@ -329,6 +340,152 @@ namespace nkentseu {
 							detail::PutValeur(s, *pv, estCouleur ? "vec3" : "float");
 						else
 							s.Append(estCouleur ? "vec3(0.0)" : "0.0");
+						s.Append(";\n");
+					} else if (t == NkString(NK_MN_MATH) || t == NkString(NK_MN_MIX_COLOR)) {
+						// ── LES DEUX NOEUDS DONT LE CALCUL EST CHOISI PAR UNE
+						//    PROPRIETE ────────────────────────────────────────
+						// Jusqu'ici une propriete portait une VALEUR ; celles-ci
+						// portent une DECISION. C'est le premier endroit du
+						// compilateur ou une propriete pilote le CODE EMIS.
+						const bool couleur = (t == NkString(NK_MN_MIX_COLOR));
+						const NkGraphValue *pop = g.FindProp(n->id, NK_MPROP_OPERATION);
+
+						// ⚠️ UNE OPERATION INCONNUE FAIT ECHOUER LA COMPILATION.
+						// La tentation est de retomber sur la premiere de la
+						// liste — « ajouter » — parce que ca « marche ». Ce serait
+						// le pire des choix : le materiau compilerait, rendrait,
+						// et calculerait AUTRE CHOSE que ce que le fichier dit.
+						// Un fichier ecrit par une version future, ou une faute de
+						// frappe, passerait inapercu jusqu'au resultat.
+						//
+						// Une propriete ABSENTE, elle, est un cas different et
+						// legitime : le noeud vient d'etre pose et l'auteur n'a
+						// pas encore choisi. On prend alors le premier, et c'est
+						// ecrit ici pour que ce ne soit pas confondu avec le cas
+						// precedent.
+						int32 iop = 0;
+						if (pop && pop->IsSet()) {
+							iop = NkMatTrouveOperation(couleur, pop->text.CStr());
+							if (iop < 0) {
+								r.error = NkString("operation inconnue sur ");
+								r.error.Append(n->type);
+								r.error.Append(" : ");
+								r.error.Append(pop->text);
+								r.source = NkString("");
+								return r;
+							}
+						}
+						// ⚠️ LE POINTEUR EST VERIFIE, PAS SUPPOSE. Une mutation qui
+						// retirait le refus ci-dessus laissait `iop` a -1, et ce
+						// `->cle` dereferencait un pointeur NUL : le banc mourait
+						// au lieu d'echouer. Un code qui ne peut se tromper QUE
+						// par un plantage n'est pas robuste, il est chanceux.
+						const NkMatOperation *opd =
+							(iop >= 0) ? NkMatOperationAt(couleur, (uint32)iop) : nullptr;
+						if (!opd) {
+							r.error = NkString("operation hors table sur ");
+							r.error.Append(n->type);
+							r.source = NkString("");
+							return r;
+						}
+						const char *op = opd->cle;
+
+						s.Append("    ");
+						s.Append(couleur ? "vec3 " : "float ");
+						detail::PutNom(s, n->id, "val");
+						s.Append(" = ");
+
+						if (!couleur) {
+							// Math : deux reels, une operation.
+							const NkString a = NkString("a"), b = NkString("b");
+							auto ecrisA = [&]() { ecrisEntree(*n, "a", "float", nullptr); };
+							auto ecrisB = [&]() { ecrisEntree(*n, "b", "float", nullptr); };
+							if (detail::OpEst(op, "ajouter")) {
+								ecrisA();
+								s.Append(" + ");
+								ecrisB();
+							} else if (detail::OpEst(op, "soustraire")) {
+								ecrisA();
+								s.Append(" - ");
+								ecrisB();
+							} else if (detail::OpEst(op, "multiplier")) {
+								ecrisA();
+								s.Append(" * ");
+								ecrisB();
+							} else if (detail::OpEst(op, "diviser")) {
+								// ⚠️ DIVISION PAR ZERO : on rend 0, comme Blender.
+								// Laisser passer une division nue produirait un
+								// NaN qui contamine tout le reste du graphe, et
+								// qui se voit comme un pixel noir ou blanc selon
+								// le backend — donc un defaut qui change d'aspect
+								// d'une machine a l'autre.
+								s.Append("((");
+								ecrisB();
+								s.Append(") == 0.0 ? 0.0 : (");
+								ecrisA();
+								s.Append(") / (");
+								ecrisB();
+								s.Append("))");
+							} else if (detail::OpEst(op, "minimum")) {
+								s.Append("min(");
+								ecrisA();
+								s.Append(", ");
+								ecrisB();
+								s.Append(")");
+							} else if (detail::OpEst(op, "maximum")) {
+								s.Append("max(");
+								ecrisA();
+								s.Append(", ");
+								ecrisB();
+								s.Append(")");
+							} else { // puissance
+								// `pow` d'une base negative n'est pas defini : on
+								// borne, comme Blender, plutot que de laisser le
+								// resultat dependre du backend.
+								s.Append("pow(max(");
+								ecrisA();
+								s.Append(", 0.0), ");
+								ecrisB();
+								s.Append(")");
+							}
+						} else {
+							// Mix Color : le facteur melange color1 avec le
+							// RESULTAT de l'operation, exactement comme Blender —
+							// et non les deux couleurs directement.
+							s.Append("mix(");
+							ecrisEntree(*n, "color1", "vec3", nullptr);
+							s.Append(", ");
+							if (detail::OpEst(op, "melanger")) {
+								ecrisEntree(*n, "color2", "vec3", nullptr);
+							} else if (detail::OpEst(op, "multiplier")) {
+								ecrisEntree(*n, "color1", "vec3", nullptr);
+								s.Append(" * ");
+								ecrisEntree(*n, "color2", "vec3", nullptr);
+							} else if (detail::OpEst(op, "ajouter")) {
+								ecrisEntree(*n, "color1", "vec3", nullptr);
+								s.Append(" + ");
+								ecrisEntree(*n, "color2", "vec3", nullptr);
+							} else if (detail::OpEst(op, "soustraire")) {
+								ecrisEntree(*n, "color1", "vec3", nullptr);
+								s.Append(" - ");
+								ecrisEntree(*n, "color2", "vec3", nullptr);
+							} else if (detail::OpEst(op, "eclaircir")) {
+								s.Append("max(");
+								ecrisEntree(*n, "color1", "vec3", nullptr);
+								s.Append(", ");
+								ecrisEntree(*n, "color2", "vec3", nullptr);
+								s.Append(")");
+							} else { // assombrir
+								s.Append("min(");
+								ecrisEntree(*n, "color1", "vec3", nullptr);
+								s.Append(", ");
+								ecrisEntree(*n, "color2", "vec3", nullptr);
+								s.Append(")");
+							}
+							s.Append(", clamp(");
+							ecrisEntree(*n, "fac", "float", nullptr);
+							s.Append(", 0.0, 1.0))");
+						}
 						s.Append(";\n");
 					} else if (t == NkString(NK_MN_OUTPUT)) {
 						// ── LE PUITS : ombrage puis ecriture ────────────────

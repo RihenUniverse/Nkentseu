@@ -109,6 +109,66 @@ namespace nkentseu {
 				return t;
 			}
 
+			// ── LES OPERATIONS RECONNUES ─────────────────────────────────────
+			// UN SEUL endroit. Le compilateur les lit, le banc les enumere, et
+			// l'interface les proposera. Trois listes finiraient par diverger, et
+			// c'est le compilateur qui aurait raison sans que personne le sache.
+			//
+			// ⚠️ Ce sont des MOTS, jamais des numeros. Un numero d'enumeration se
+			// decale des qu'on insere une valeur au milieu, et les graphes deja
+			// enregistres se mettent alors a calculer autre chose EN SILENCE.
+			struct NkMatOperation {
+					const char *cle;	 ///< ce qui s'ecrit dans le fichier
+					const char *libelle; ///< ce qui s'affiche, traduisible
+			};
+
+			namespace detail {
+				static const NkMatOperation kOpsMath[] = {
+					{"ajouter", "Add"},		  {"soustraire", "Subtract"}, {"multiplier", "Multiply"},
+					{"diviser", "Divide"},	  {"minimum", "Minimum"},	  {"maximum", "Maximum"},
+					{"puissance", "Power"},
+				};
+				static const uint32 kOpsMathCount = 7;
+
+				static const NkMatOperation kOpsMix[] = {
+					{"melanger", "Mix"},		{"multiplier", "Multiply"}, {"ajouter", "Add"},
+					{"soustraire", "Subtract"}, {"eclaircir", "Lighten"},	{"assombrir", "Darken"},
+				};
+				static const uint32 kOpsMixCount = 6;
+			} // namespace detail
+
+			inline uint32 NkMatOperationCount(bool pourMelangeCouleur) {
+				return pourMelangeCouleur ? detail::kOpsMixCount : detail::kOpsMathCount;
+			}
+
+			inline const NkMatOperation *NkMatOperationAt(bool pourMelangeCouleur, uint32 i) {
+				const uint32 n = NkMatOperationCount(pourMelangeCouleur);
+				if (i >= n)
+					return nullptr;
+				return pourMelangeCouleur ? &detail::kOpsMix[i] : &detail::kOpsMath[i];
+			}
+
+			// Rend -1 si la cle est inconnue. ⚠️ L'appelant doit REFUSER dans ce
+			// cas, jamais retomber sur la premiere operation : une operation
+			// inconnue traitee comme « ajouter » produit un materiau qui compile,
+			// qui rend, et qui calcule autre chose que ce que le fichier disait.
+			inline int32 NkMatTrouveOperation(bool pourMelangeCouleur, const char *cle) {
+				if (!cle)
+					return -1;
+				const uint32 n = NkMatOperationCount(pourMelangeCouleur);
+				for (uint32 i = 0; i < n; ++i) {
+					const char *a = NkMatOperationAt(pourMelangeCouleur, i)->cle;
+					const char *b = cle;
+					while (*a && *a == *b) {
+						++a;
+						++b;
+					}
+					if (!*a && !*b)
+						return (int32)i;
+				}
+				return -1;
+			}
+
 			// ── PROTOTYPES DE NOEUDS ─────────────────────────────────────────
 			// Un prototype decrit la FORME d'un noeud : sa cle de type, son
 			// libelle, et ses prises NOMMEES. Les noms sont des CLES stables :
@@ -168,6 +228,17 @@ namespace nkentseu {
 			static const char *const NK_MPROP_VALUE = "valeur";
 			static const char *const NK_MPROP_COLOR = "couleur";
 
+			// `Math` et `Mix Color` : les deux premiers noeuds dont le CALCUL lui
+			// meme est choisi par une propriete. Jusqu'ici une propriete portait
+			// une valeur ; celles-ci portent une DECISION.
+			static const char *const NK_MN_MATH = "mat.math";
+			static const char *const NK_MN_MIX_COLOR = "mat.melange_couleur";
+			// La cle de l'operation, commune aux deux : le consommateur lit un
+			// mot, jamais un numero. Un numero d'enumeration se decale des qu'on
+			// insere une valeur au milieu, et les graphes enregistres se mettent
+			// alors a calculer autre chose SANS que rien ne le dise.
+			static const char *const NK_MPROP_OPERATION = "operation";
+
 			namespace detail {
 
 				// Principled REDUIT a ce qui a un sens dans un rasteriseur, et
@@ -226,6 +297,22 @@ namespace nkentseu {
 					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
 				};
 
+				static const NkMatSocketDecl kMath[] = {
+					{"a", NK_MT_REAL, NkSocketDir::Input, false},
+					{"b", NK_MT_REAL, NkSocketDir::Input, false},
+					{"value", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+
+				// Mix Color : le `fac` d'abord, comme chez Blender, puis les deux
+				// couleurs. L'ordre des prises EST leur index, et les liens s'y
+				// referent : le changer casserait les graphes enregistres.
+				static const NkMatSocketDecl kMixColor[] = {
+					{"fac", NK_MT_REAL, NkSocketDir::Input, false},
+					{"color1", NK_MT_COLOR, NkSocketDir::Input, false},
+					{"color2", NK_MT_COLOR, NkSocketDir::Input, false},
+					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
+				};
+
 				static const NkMatNodeProto kProtos[] = {
 					{NK_MN_PRINCIPLED, "Principled BSDF", kPrincipled, 6},
 					{NK_MN_DIFFUSE, "Diffuse BSDF", kDiffuse, 4},
@@ -234,8 +321,10 @@ namespace nkentseu {
 					{NK_MN_OUTPUT, "Material Output", kOutput, 1},
 					{NK_MN_VALUE, "Value", kValue, 1},
 					{NK_MN_RGB, "RGB", kRGB, 1},
+					{NK_MN_MATH, "Math", kMath, 3},
+					{NK_MN_MIX_COLOR, "Mix Color", kMixColor, 4},
 				};
-				static const uint32 kProtoCount = 7;
+				static const uint32 kProtoCount = 9;
 
 			} // namespace detail
 

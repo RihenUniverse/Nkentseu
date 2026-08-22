@@ -373,6 +373,36 @@ static bool GrapheMelange(float32 fac, NkString &out) {
 	return r.ok;
 }
 
+// Le graphe qui prouve qu'une PROPRIETE ENUMEREE change le pixel :
+//     RGB(rouge) --color1--> Mix Color --color--> Emission --> sortie
+//     RGB(vert)  --color2-->
+// L'emission garde albedo = 0 et metallic = 0, donc l'invariant achromatique
+// tient : tout ce qui n'est pas l'emission reste gris, et la soustraction de
+// deux canaux elimine ce gris inconnu.
+static bool GrapheMelangeCouleur(const char *operation, float32 fac, NkString &out) {
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId emis = NkMatAddNode(g, NK_MN_EMISSION);
+	const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_COLOR);
+	const NkNodeId rouge = NkMatAddNode(g, NK_MN_RGB);
+	const NkNodeId vert = NkMatAddNode(g, NK_MN_RGB);
+	g.Connect(emis, "emission", sortie, "surface");
+	g.Connect(mix, "color", emis, "color");
+	g.Connect(rouge, "color", mix, "color1");
+	g.Connect(vert, "color", mix, "color2");
+	const float32 cr[3] = {kE, 0.f, 0.f};
+	const float32 cv[3] = {0.f, kE, 0.f};
+	g.SetProp(rouge, NK_MPROP_COLOR, NkValueVec(t.color, cr, 3));
+	g.SetProp(vert, NK_MPROP_COLOR, NkValueVec(t.color, cv, 3));
+	g.SetProp(mix, NK_MPROP_OPERATION, NkValueText(t.real, operation));
+	g.SetSocketDefault(mix, "fac", NkSocketDir::Input, NkValueReal(t.real, fac));
+	g.SetSocketDefault(emis, "strength", NkSocketDir::Input, NkValueReal(t.real, 1.f));
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	out = r.source;
+	return r.ok;
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -472,7 +502,42 @@ int main() {
 			d);
 	}
 
-	// ── 6. le fond de repli n'a jamais ete lu ────────────────────────────
+	// ── 6. Mix Color : l'OPERATION choisie change le pixel, d'un facteur
+	//    exactement calculable ──────────────────────────────────────────
+	uint8 melange[4] = {}, eclairci[4] = {};
+	ok = GrapheMelangeCouleur("melanger", 0.5f, src) && ctx.RendreEtLire(src, "matgraph_mixmelange", melange);
+	{
+		// « melanger » a fac = 0,5 : mix((E,0,0), (0,E,0), 0,5) = (E/2, E/2, 0).
+		// Les deux ecarts valent donc la MOITIE de l'ecart de reference.
+		const int32 dR = (int32)melange[0] - (int32)melange[2];
+		const int32 dV = (int32)melange[1] - (int32)melange[2];
+		Cas("rendu/mixcolor-melanger",
+			ok && melange[0] == melange[1] && dR == kEcartAttendu / 2 && dV == kEcartAttendu / 2,
+			NkFormat("pixel=({0},{1},{2}) | R==V : {3} | ecarts R-B={4} V-B={5} (attendu {6})", melange[0],
+					 melange[1], melange[2], NkString(melange[0] == melange[1] ? "oui" : "NON"), dR, dV,
+					 kEcartAttendu / 2));
+	}
+
+	ok = GrapheMelangeCouleur("eclaircir", 1.f, src) && ctx.RendreEtLire(src, "matgraph_mixeclair", eclairci);
+	{
+		// ⚠️ LE CAS QUI PROUVE QUE LA PROPRIETE PILOTE VRAIMENT LE CALCUL.
+		// « eclaircir » a fac = 1 : max((E,0,0), (0,E,0)) = (E, E, 0). Les deux
+		// ecarts valent donc l'ecart PLEIN — exactement le DOUBLE du cas
+		// precedent. Un compilateur qui ignorerait l'operation et melangerait
+		// toujours rendrait 64 ici comme la, et la difference entre les deux
+		// cas est la seule chose qui le denonce.
+		const int32 dR = (int32)eclairci[0] - (int32)eclairci[2];
+		const int32 dV = (int32)eclairci[1] - (int32)eclairci[2];
+		const int32 dRefR = (int32)melange[0] - (int32)melange[2];
+		Cas("rendu/mixcolor-eclaircir-double-melanger",
+			ok && eclairci[0] == eclairci[1] && dR == kEcartAttendu && dV == kEcartAttendu && dR == 2 * dRefR,
+			NkFormat("pixel=({0},{1},{2}) | R==V : {3} | ecarts={4}/{5} (attendu {6}) | vaut le DOUBLE de "
+					 "melanger : {7}",
+					 eclairci[0], eclairci[1], eclairci[2], NkString(eclairci[0] == eclairci[1] ? "oui" : "NON"),
+					 dR, dV, kEcartAttendu, NkString(dR == 2 * dRefR ? "oui" : "NON")));
+	}
+
+	// ── 7. le fond de repli n'a jamais ete lu ────────────────────────────
 	{
 		// ⚠️ LE CAS QUI EMPECHE DE SE REJOUIR TROP VITE. Si le trace avait
 		// echoue sans le dire, on lirait le MAGENTA d'effacement. Comme il est

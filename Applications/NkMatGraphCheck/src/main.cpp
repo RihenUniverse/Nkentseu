@@ -1374,11 +1374,17 @@ static void CasMenuPriseCouleurEtReelle() {
 	const NkMatNodeProto *mc[16], *mr[16];
 	const uint32 nc = NkMatNoeudsPourPriseDe(g, NK_MN_PRINCIPLED, "base_color", mc, 16);
 	const uint32 nr = NkMatNoeudsPourPriseDe(g, NK_MN_PRINCIPLED, "roughness", mr, 16);
-	const bool couleurOk = DansLeMenu(mc, nc, NK_MN_RGB) && DansLeMenu(mc, nc, NK_MN_VALUE);
-	const bool reelOk = DansLeMenu(mr, nr, NK_MN_VALUE) && !DansLeMenu(mr, nr, NK_MN_RGB);
-	Cas("biblio/menu-asymetrique-couleur-reel", nc == 2 && nr == 1 && couleurOk && reelOk,
-		NkFormat("base_color : {0} propositions (RGB+Value attendus, ok={1}) | roughness : {2} (Value SEUL, RGB "
-				 "doit etre absent, ok={3})",
+	// Ce qui produit une COULEUR ou peut s'y convertir : RGB, Mix Color, et
+	// Value (un reel se diffuse en gris). Math aussi, pour la meme raison.
+	const bool couleurOk = DansLeMenu(mc, nc, NK_MN_RGB) && DansLeMenu(mc, nc, NK_MN_VALUE) &&
+						   DansLeMenu(mc, nc, NK_MN_MIX_COLOR) && DansLeMenu(mc, nc, NK_MN_MATH);
+	// Ce qui produit un REEL : Value et Math. Ni RGB ni Mix Color, parce que
+	// `couleur -> reel` n'est PAS declaree — et c'est la tout le cas.
+	const bool reelOk = DansLeMenu(mr, nr, NK_MN_VALUE) && DansLeMenu(mr, nr, NK_MN_MATH) &&
+						!DansLeMenu(mr, nr, NK_MN_RGB) && !DansLeMenu(mr, nr, NK_MN_MIX_COLOR);
+	Cas("biblio/menu-asymetrique-couleur-reel", nc == 4 && nr == 2 && couleurOk && reelOk,
+		NkFormat("base_color : {0} propositions (RGB+MixColor+Value+Math, ok={1}) | roughness : {2} (Value+Math "
+				 "SEULS, RGB et MixColor doivent etre absents, ok={3})",
 				 nc, couleurOk ? 1 : 0, nr, reelOk ? 1 : 0));
 }
 
@@ -1471,6 +1477,111 @@ static void CasCompileValeurVersRoughness() {
 				 bonType ? 1 : 0));
 }
 
+
+// ── Math et Mix Color : une propriete qui porte une DECISION ─────────────────
+
+static void CasOperationInconnueRefusee() {
+	// ⚠️ LE CAS LE PLUS IMPORTANT DE LA SERIE. Une operation que le compilateur
+	// ne connait pas doit FAIRE ECHOUER la compilation, jamais retomber sur la
+	// premiere de la liste. Un repli sur « ajouter » produirait un materiau qui
+	// compile, qui rend, et qui calcule AUTRE CHOSE que ce que le fichier dit —
+	// un fichier ecrit par une version future, ou une simple faute de frappe,
+	// passerait inapercu jusqu'au resultat.
+	//
+	// DISCRIMINE aussi le cas VOISIN et legitime : une propriete ABSENTE (le
+	// noeud vient d'etre pose, l'auteur n'a pas choisi) doit, elle, compiler.
+	// Un controle qui refuserait les deux serait aussi faux qu'un qui accepte
+	// les deux.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId math = NkMatAddNode(g, NK_MN_MATH);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	g.Connect(math, "value", bsdf, "roughness");
+
+	// (a) propriete absente -> doit compiler
+	NkMatCompileResult sansProp = NkMatCompileToNkSL(g);
+	// (b) operation inconnue -> doit ECHOUER, et nommer la faute
+	g.SetProp(math, NK_MPROP_OPERATION, NkValueText(t.real, "racine_carree_hyperbolique"));
+	NkMatCompileResult inconnue = NkMatCompileToNkSL(g);
+	// (c) operation valide -> doit compiler de nouveau
+	g.SetProp(math, NK_MPROP_OPERATION, NkValueText(t.real, "multiplier"));
+	NkMatCompileResult valide = NkMatCompileToNkSL(g);
+
+	const bool nomme = !inconnue.ok && Apres(inconnue.error, "racine_carree_hyperbolique") > 0;
+	const bool rienEmis = inconnue.source.Size() == 0;
+	Cas("compile/operation-inconnue-refusee",
+		sansProp.ok && !inconnue.ok && nomme && rienEmis && valide.ok,
+		NkFormat("propriete absente compile={0} | inconnue refusee={1} en la nommant={2} rien emis={3} | valide "
+				 "recompile={4} | message : {5}",
+				 sansProp.ok ? 1 : 0, inconnue.ok ? 0 : 1, nomme ? 1 : 0, rienEmis ? 1 : 0, valide.ok ? 1 : 0,
+				 inconnue.error));
+}
+
+static void CasToutesLesOperationsCompilent() {
+	// DISCRIMINE : on ne teste pas UNE operation, on les teste TOUTES, sur les
+	// quatre backends. Une branche oubliee dans l'emetteur — le `else` final qui
+	// avale un cas non prevu — ne se verrait pas autrement. Et le compte vient de
+	// la table, pas d'un nombre ecrit ici : ajouter une operation sans l'emettre
+	// mettra ce cas au rouge tout seul.
+	uint32 okMath = 0, okMix = 0;
+	NkString premierEchec;
+	for (uint32 pass = 0; pass < 2; ++pass) {
+		const bool couleur = (pass == 1);
+		for (uint32 i = 0; i < NkMatOperationCount(couleur); ++i) {
+			NkNodeGraph g;
+			const NkMatTypes t = NkMatRegisterTypes(g);
+			const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+			const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+			g.Connect(bsdf, "bsdf", out, "surface");
+			const NkNodeId n = NkMatAddNode(g, couleur ? NK_MN_MIX_COLOR : NK_MN_MATH);
+			g.Connect(n, couleur ? "color" : "value", bsdf, couleur ? "base_color" : "roughness");
+			g.SetProp(n, NK_MPROP_OPERATION, NkValueText(t.real, NkMatOperationAt(couleur, i)->cle));
+			NkMatCompileResult r = NkMatCompileToNkSL(g);
+			NkString be, err;
+			const uint32 nb = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+			if (r.ok && nb == 4) {
+				if (couleur)
+					++okMix;
+				else
+					++okMath;
+			} else if (premierEchec.Size() == 0) {
+				premierEchec = NkString(NkMatOperationAt(couleur, i)->cle);
+				premierEchec.Append(" : ");
+				premierEchec.Append(r.ok ? be : r.error);
+			}
+		}
+	}
+	const uint32 attMath = NkMatOperationCount(false), attMix = NkMatOperationCount(true);
+	Cas("compile/toutes-les-operations-4-backends", okMath == attMath && okMix == attMix,
+		NkFormat("Math {0}/{1} | Mix Color {2}/{3} (sur les 4 backends chacune) {4}", okMath, attMath, okMix,
+				 attMix, premierEchec));
+}
+
+static void CasDivisionParZeroGardee() {
+	// DISCRIMINE : une division nue produirait un NaN, qui contamine tout l'aval
+	// et se voit comme un pixel noir OU blanc selon le backend — un defaut qui
+	// change d'aspect d'une machine a l'autre, donc le pire a diagnostiquer.
+	// On verifie que le code emis porte la garde, ET qu'il compile partout.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId math = NkMatAddNode(g, NK_MN_MATH);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	g.Connect(math, "value", bsdf, "roughness");
+	g.SetProp(math, NK_MPROP_OPERATION, NkValueText(t.real, "diviser"));
+	g.SetSocketDefault(math, "a", NkSocketDir::Input, NkValueReal(t.real, 1.f));
+	g.SetSocketDefault(math, "b", NkSocketDir::Input, NkValueReal(t.real, 0.f));
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	const bool garde = r.ok && ContientSansCasse(r.source, "== 0.0 ? 0.0");
+	Cas("compile/division-par-zero-gardee", r.ok && ok == 4 && garde,
+		NkFormat("emis={0} | {1}| garde presente dans le code emis={2}", r.ok ? 1 : 0, be, garde ? 1 : 0));
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -1536,6 +1647,11 @@ int main() {
 	CasPriseConstanteSeulement();
 	CasCompileRGBVersBaseColor();
 	CasCompileValeurVersRoughness();
+
+	// -- Math et Mix Color : une propriete qui porte une DECISION --------
+	CasOperationInconnueRefusee();
+	CasToutesLesOperationsCompilent();
+	CasDivisionParZeroGardee();
 
 	logger.Info("\n-- {0} cas, {1} echec(s) --", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;
