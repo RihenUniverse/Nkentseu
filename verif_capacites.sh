@@ -126,10 +126,10 @@ T0=$(date +%s)
 # =============================================================================
 # Entre le heredoc qui ecrit ce fichier, le shell qui le lit et awk qui compile
 # ses chaines, il y a trois couches d'echappement — et deux d'entre elles
-# mangent un « 
- » en silence. Resultat trois fois de suite : un printf awk
-# coupe par un VRAI saut de ligne, l'awk qui refuse de compiler, et une section
-# du rapport RESTEE VIDE. Une section vide se lit « rien a signaler ».
+# mangent un saut de ligne de format en silence. Resultat trois fois de suite :
+# un printf awk coupe par un VRAI saut de ligne, l awk qui refuse de compiler,
+# et une section du rapport RESTEE VIDE. Une section vide se lit
+# « rien a signaler ».
 #
 # ⚠️ C'est la forme exacte que ce chantier traque : un outil casse et un depot
 # sain rendent la meme sortie. On ne s'en remet donc pas a la relecture.
