@@ -48,6 +48,7 @@
 // journal, sans difference d'image. C'est la panne mesuree le 22/08.
 #include "NKRenderer/Materials/NkMaterialBindings.h"
 
+#include <math.h>  // powf : la seule fonction transcendante de l evaluateur processeur
 #include <stdio.h> // snprintf : formatage des litteraux, pas de flux
 
 namespace nkentseu {
@@ -79,6 +80,36 @@ namespace nkentseu {
 					NkString prise;
 			};
 
+			// ── (a) UNE SORTIE NOMMEE, PAR MATERIAU, COTE PROCESSEUR ─────────
+			//
+			// Ce que le code de jeu recupere : un nom, un nombre de composantes,
+			// une valeur. Rien d'autre — pas de handle, pas de pointeur dans le
+			// graphe, parce que le graphe peut etre recompile et cette valeur doit
+			// survivre.
+			struct NkMatSortieMateriau {
+					NkString nom;	///< le nom PUBLIC, celui qu'emploie le code de jeu
+					NkString etage; ///< le MOT choisi par l'auteur, recopie tel quel
+					uint32 composantes = 0;			  ///< 1 (un reel) ou 3 (une couleur)
+					float32 valeur[3] = {0.f, 0.f, 0.f};
+
+					// ⚠️ CE DONT LA VALEUR DEPEND, ET POURQUOI CE CHAMP EXISTE.
+					//
+					// L'etage (a) est « evalue une fois a la compilation OU AU
+					// CHANGEMENT DE PARAMETRE ». Sans cette liste, la seconde
+					// moitie de la phrase est inapplicable : le moteur ne saurait
+					// pas QUAND reevaluer, et devrait soit tout recalculer a
+					// chaque image — ce qui detruit l'argument « cout quasi nul »
+					// — soit ne jamais recalculer, et la sortie se figerait sur la
+					// valeur du jour de la compilation pendant que le parametre
+					// bouge sous elle. Le second defaut est silencieux : la valeur
+					// reste PLAUSIBLE, simplement perimee.
+					//
+					// Vide = constante pour toujours, aucune reevaluation.
+					NkVector<NkString> dependDe;
+
+					NkNodeId noeud = NK_NODE_INVALID; ///< pour qu'un message puisse la designer
+			};
+
 			struct NkMatCompileResult {
 					bool ok = false;
 					NkString source; ///< le NkSL emis
@@ -100,7 +131,12 @@ namespace nkentseu {
 					// change.
 					uint64 jeton = 0;
 
+					// Les sorties nommees d'etage (a). Vide quand le graphe n'en
+					// declare aucune — le cas de tous les graphes existants.
+					NkVector<NkMatSortieMateriau> sorties;
+
 					const NkMatParamExpose *TrouveParam(const char *nom) const;
+					const NkMatSortieMateriau *TrouveSortie(const char *nom) const;
 			};
 
 			// ⚠️ L'API DU MOTEUR EST PAR NOM. Un decalage retenu par du code de jeu
@@ -119,6 +155,24 @@ namespace nkentseu {
 					}
 					if (!*a && !*b)
 						return &params[i];
+				}
+				return nullptr;
+			}
+
+			// Meme discipline que pour les parametres : PAR NOM. Un rang dans le
+			// tableau se decale des qu'on ajoute une sortie au graphe.
+			inline const NkMatSortieMateriau *NkMatCompileResult::TrouveSortie(const char *nom) const {
+				if (!nom)
+					return nullptr;
+				for (uint32 i = 0; i < (uint32)sorties.Size(); ++i) {
+					const char *a = sorties[i].nom.CStr();
+					const char *b = nom;
+					while (*a && *a == *b) {
+						++a;
+						++b;
+					}
+					if (!*a && !*b)
+						return &sorties[i];
 				}
 				return nullptr;
 			}
@@ -308,6 +362,420 @@ namespace nkentseu {
 			// prise. C'est precisement pour cette derniere branche que les
 			// defauts de prise ont ete ajoutes au coeur : sans eux, un
 			// `Principled` non cable n'a aucune couleur a emettre.
+			// ═════════════════════════════════════════════════════════════════
+			//  (a) LES SORTIES NOMMEES EVALUEES SUR LE PROCESSEUR
+			// ═════════════════════════════════════════════════════════════════
+
+			namespace detail {
+
+				// ── LA CONTAGION « PAR PIXEL » ───────────────────────────────
+				//
+				// Un noeud est par pixel s'il l'est INTRINSEQUEMENT (le registre
+				// le dit) OU si l'une de ses entrees CONNECTEES vient d'un noeud
+				// qui l'est. C'est une contagion, pas une propriete locale — et
+				// c'est tout l'interet : personne ne branche `Texture Coordinate`
+				// directement sur une sortie, on branche trois `Math` d'ecart.
+				//
+				// ⚠️ UNE PRISE EXPOSEE NE CONTAMINE PAS. Un parametre expose est
+				// un UNIFORME : il vaut la meme chose pour tous les pixels du
+				// materiau. Il rend la sortie DEPENDANTE — il faudra la reevaluer
+				// quand il change — jamais par pixel. Confondre les deux
+				// interdirait la moitie des usages utiles de l'etage (a).
+				struct NkMatContagion {
+						NkVector<NkNodeId> ids;
+						NkVector<uint8> parPixel;
+
+						bool Lit(NkNodeId id) const {
+							for (uint32 i = 0; i < (uint32)ids.Size(); ++i)
+								if (ids[i] == id)
+									return parPixel[i] != 0;
+							return false;
+						}
+						void Ecris(NkNodeId id, bool v) {
+							ids.PushBack(id);
+							parPixel.PushBack(v ? (uint8)1 : (uint8)0);
+						}
+				};
+
+				// `ordre` est TOPOLOGIQUE : quand on traite un noeud, tous ses
+				// amonts sont deja decides. C'est ce qui rend la passe lineaire au
+				// lieu de recursive, et surtout ce qui la rend SURE — pas de pile
+				// a borner, pas de cycle a craindre, TopoSort ayant deja echoue si
+				// le graphe en avait un.
+				inline void CalculeContagion(const NkNodeGraph &g, const NkVector<NkNodeId> &ordre,
+											 NkMatContagion &out) {
+					for (uint32 i = 0; i < (uint32)ordre.Size(); ++i) {
+						const NkNode *n = g.Find(ordre[i]);
+						if (!n)
+							continue;
+						bool pp = false;
+						const NkMatNodeProto *pr = NkMatFindProto(n->type.CStr());
+						if (pr && pr->parPixel)
+							pp = true;
+						if (!pp) {
+							for (uint32 k = 0; k < (uint32)n->sockets.Size() && !pp; ++k) {
+								if (n->sockets[k].dir != NkSocketDir::Input)
+									continue;
+								const graph::NkLink *l = g.IncomingOf(n->id, (int32)k);
+								if (l && out.Lit(l->fromNode))
+									pp = true;
+							}
+						}
+						out.Ecris(n->id, pp);
+					}
+				}
+
+				// ── LE PREMIER NOEUD PAR PIXEL EN AMONT, POUR LE NOMMER ──────
+				//
+				// Refuser ne suffit pas : « cette sortie depend du pixel » laisse
+				// l'auteur chercher lequel de ses quinze noeuds est coupable. On
+				// remonte donc jusqu'a la SOURCE intrinseque et on la nomme.
+				inline NkNodeId TrouveSourceParPixel(const NkNodeGraph &g, NkNodeId depart,
+													 const NkMatContagion &c, NkVector<NkNodeId> &vus) {
+					for (uint32 i = 0; i < (uint32)vus.Size(); ++i)
+						if (vus[i] == depart)
+							return NK_NODE_INVALID;
+					vus.PushBack(depart);
+					const NkNode *n = g.Find(depart);
+					if (!n)
+						return NK_NODE_INVALID;
+					const NkMatNodeProto *pr = NkMatFindProto(n->type.CStr());
+					// On remonte D'ABORD : la source la plus profonde est la vraie
+					// cause. Rendre le noeud courant des qu'il est intrinseque
+					// nommerait le dernier maillon plutot que le premier, et
+					// l'auteur corrigerait au mauvais endroit.
+					for (uint32 k = 0; k < (uint32)n->sockets.Size(); ++k) {
+						if (n->sockets[k].dir != NkSocketDir::Input)
+							continue;
+						const graph::NkLink *l = g.IncomingOf(n->id, (int32)k);
+						if (!l || !c.Lit(l->fromNode))
+							continue;
+						const NkNodeId r = TrouveSourceParPixel(g, l->fromNode, c, vus);
+						if (r != NK_NODE_INVALID)
+							return r;
+					}
+					return (pr && pr->parPixel) ? depart : NK_NODE_INVALID;
+				}
+
+				// ── LA VALEUR, SUR LE PROCESSEUR ─────────────────────────────
+				struct NkMatValeurCPU {
+						uint32 n = 0; ///< 1 = reel, 3 = vecteur ou couleur
+						float32 v[3] = {0.f, 0.f, 0.f};
+				};
+
+				// ⚠️ CE QUE CET EVALUATEUR DOIT A LA LETTRE : DONNER LE MEME
+				// RESULTAT QUE LE SHADER.
+				//
+				// Deux implementations d'une meme formule finissent toujours par
+				// diverger. Ici la divergence serait INVISIBLE : personne ne
+				// compare la valeur rendue au code de jeu avec ce que le pixel a
+				// affiche, et les deux resteraient plausibles chacune de son cote.
+				// La regle de survie est donc simple — toute formule ci-dessous
+				// reproduit celle du shader, division par zero comprise, qui rend
+				// 0 et non un NaN.
+				struct NkMatEvalCPU {
+						const NkNodeGraph *g = nullptr;
+						NkMatTypes t;
+						NkVector<NkString> *dependDe = nullptr;
+						NkString erreur;
+
+						bool Echoue(const char *quoi, const NkNode *n) {
+							if (erreur.Size() == 0) {
+								erreur = NkString(quoi);
+								if (n) {
+									erreur.Append(" : ");
+									erreur.Append(n->type);
+								}
+							}
+							return false;
+						}
+
+						// reel -> vecteur : on REPLIQUE, comme le shader ecrit
+						// `vec3(x)`. Vecteur -> reel n'arrive jamais ici : la
+						// conversion n'est pas permise et le graphe l'a refusee.
+						static void Adapte(const NkMatValeurCPU &in, uint32 comp, NkMatValeurCPU &out) {
+							out.n = comp;
+							for (uint32 i = 0; i < 3; ++i)
+								out.v[i] = (in.n == 1u) ? in.v[0] : (i < in.n ? in.v[i] : 0.f);
+						}
+
+						void NoteDependance(const NkNode &n, const char *prise) {
+							if (!dependDe)
+								return;
+							NkString cle(NK_MPROP_EXPOSE_PREFIX);
+							cle.Append(prise);
+							for (uint32 i = 0; i < (uint32)n.props.Size(); ++i) {
+								if (!(n.props[i].name == cle))
+									continue;
+								const NkString &nom = n.props[i].value.text;
+								if (nom.Size() == 0)
+									return;
+								for (uint32 k = 0; k < (uint32)dependDe->Size(); ++k)
+									if ((*dependDe)[k] == nom)
+										return;
+								dependDe->PushBack(nom);
+								return;
+							}
+						}
+
+						bool Prop(const NkNode &n, const char *cle, const NkGraphValue **out) const {
+							for (uint32 i = 0; i < (uint32)n.props.Size(); ++i)
+								if (n.props[i].name == NkString(cle)) {
+									*out = &n.props[i].value;
+									return true;
+								}
+							return false;
+						}
+
+						bool Entree(const NkNode &n, const char *prise, uint32 comp, NkMatValeurCPU &out);
+						bool Sortie(NkNodeId id, int32 socket, NkMatValeurCPU &out);
+				};
+
+				inline bool NkMatEvalCPU::Entree(const NkNode &n, const char *prise, uint32 comp,
+												 NkMatValeurCPU &out) {
+					const int32 idx = n.FindSocket(prise, NkSocketDir::Input);
+					if (idx < 0)
+						return Echoue("prise inconnue a l evaluation", &n);
+					const graph::NkLink *l = g->IncomingOf(n.id, idx);
+					if (l) {
+						NkMatValeurCPU amont;
+						if (!Sortie(l->fromNode, l->fromSocket, amont))
+							return false;
+						Adapte(amont, comp, out);
+						return true;
+					}
+					// Prise non connectee : sa valeur COURANTE est son defaut. Si
+					// elle est exposee, ce defaut est aussi la valeur de depart du
+					// parametre — et la sortie devient dependante de lui.
+					NoteDependance(n, prise);
+					const NkGraphValue &d = n.sockets[(uint32)idx].defaultValue;
+					NkMatValeurCPU brut;
+					if (d.IsSet() && d.numbers.Size() > 0) {
+						brut.n = (uint32)d.numbers.Size() > 3u ? 3u : (uint32)d.numbers.Size();
+						for (uint32 i = 0; i < brut.n; ++i)
+							brut.v[i] = d.numbers[i];
+					} else {
+						brut.n = comp;
+						for (uint32 i = 0; i < 3; ++i)
+							brut.v[i] = 0.f;
+					}
+					Adapte(brut, comp, out);
+					return true;
+				}
+
+			} // namespace detail
+
+			namespace detail {
+
+				inline float32 NkMatMixF(float32 a, float32 b, float32 f) {
+					return a + (b - a) * f;
+				}
+				inline float32 NkMatClampF(float32 v, float32 a, float32 b) {
+					return v < a ? a : (v > b ? b : v);
+				}
+
+				// La valeur d'une prise de SORTIE. Chaque branche reproduit la
+				// ligne de shader citee en commentaire — c'est la seule protection
+				// contre une divergence que personne ne verrait.
+				inline bool NkMatEvalCPU::Sortie(NkNodeId id, int32 socket, NkMatValeurCPU &out) {
+					const NkNode *n = g->Find(id);
+					if (!n)
+						return Echoue("noeud absent a l evaluation", nullptr);
+					const NkString ty = n->type;
+
+					if (ty == NkString(NK_MN_VALUE)) {
+						const NkGraphValue *p = nullptr;
+						out.n = 1;
+						out.v[0] = (Prop(*n, NK_MPROP_VALUE, &p) && p->IsSet() && p->numbers.Size() > 0)
+									   ? p->numbers[0]
+									   : 0.f;
+						return true;
+					}
+					if (ty == NkString(NK_MN_RGB)) {
+						const NkGraphValue *p = nullptr;
+						out.n = 3;
+						const bool ok = Prop(*n, NK_MPROP_COLOR, &p) && p->IsSet() && p->numbers.Size() >= 3;
+						for (uint32 i = 0; i < 3; ++i)
+							out.v[i] = ok ? p->numbers[i] : 0.f;
+						return true;
+					}
+					if (ty == NkString(NK_MN_MATH)) {
+						NkMatValeurCPU a, b;
+						if (!Entree(*n, "a", 1, a) || !Entree(*n, "b", 1, b))
+							return false;
+						const NkGraphValue *p = nullptr;
+						const char *op = (Prop(*n, NK_MPROP_OPERATION, &p) && p->IsSet()) ? p->text.CStr() : "ajouter";
+						if (NkMatTrouveOperation(false, op) < 0)
+							return Echoue("operation inconnue a l evaluation", n);
+						out.n = 1;
+						if (OpEst(op, "ajouter"))
+							out.v[0] = a.v[0] + b.v[0];
+						else if (OpEst(op, "soustraire"))
+							out.v[0] = a.v[0] - b.v[0];
+						else if (OpEst(op, "multiplier"))
+							out.v[0] = a.v[0] * b.v[0];
+						else if (OpEst(op, "diviser"))
+							// ⚠️ REND 0, exactement comme la garde du shader, et
+							// pour la meme raison : un NaN contamine tout l'aval.
+							// Si cette ligne divisait nue, la valeur rendue au code
+							// de jeu serait un NaN la ou le pixel affiche 0 — deux
+							// verites differentes pour un seul graphe.
+							out.v[0] = (b.v[0] == 0.f) ? 0.f : a.v[0] / b.v[0];
+						else if (OpEst(op, "minimum"))
+							out.v[0] = a.v[0] < b.v[0] ? a.v[0] : b.v[0];
+						else if (OpEst(op, "maximum"))
+							out.v[0] = a.v[0] > b.v[0] ? a.v[0] : b.v[0];
+						else if (OpEst(op, "puissance")) {
+							// `pow` d'une base negative est indefini en GLSL comme
+							// en C. Le shader emet `pow` nu ; on rend 0 plutot
+							// qu'un NaN, et on le DIT ici pour que la difference
+							// soit connue au lieu d'etre subie.
+							out.v[0] = (a.v[0] < 0.f) ? 0.f : (float32)powf(a.v[0], b.v[0]);
+						} else
+							return Echoue("operation non evaluable", n);
+						return true;
+					}
+					if (ty == NkString(NK_MN_MIX_COLOR)) {
+						NkMatValeurCPU f, c1, c2;
+						if (!Entree(*n, "fac", 1, f) || !Entree(*n, "color1", 3, c1) ||
+							!Entree(*n, "color2", 3, c2))
+							return false;
+						const NkGraphValue *p = nullptr;
+						const char *op = (Prop(*n, NK_MPROP_OPERATION, &p) && p->IsSet()) ? p->text.CStr() : "melanger";
+						if (NkMatTrouveOperation(true, op) < 0)
+							return Echoue("operation de melange inconnue a l evaluation", n);
+						// `mix(color1, OP(color1, color2), clamp(fac, 0, 1))` — le
+						// facteur melange color1 avec le RESULTAT, pas les deux
+						// couleurs. Meme choix que Blender, meme ligne que le
+						// shader ; l'inverser donnerait un resultat credible et faux.
+						const float32 fc = NkMatClampF(f.v[0], 0.f, 1.f);
+						out.n = 3;
+						for (uint32 i = 0; i < 3; ++i) {
+							float32 r = c2.v[i];
+							if (OpEst(op, "melanger"))
+								r = c2.v[i];
+							else if (OpEst(op, "multiplier"))
+								r = c1.v[i] * c2.v[i];
+							else if (OpEst(op, "ajouter"))
+								r = c1.v[i] + c2.v[i];
+							else if (OpEst(op, "soustraire"))
+								r = c1.v[i] - c2.v[i];
+							else if (OpEst(op, "eclaircir"))
+								r = c1.v[i] > c2.v[i] ? c1.v[i] : c2.v[i];
+							else if (OpEst(op, "assombrir"))
+								r = c1.v[i] < c2.v[i] ? c1.v[i] : c2.v[i];
+							else
+								return Echoue("operation de melange non evaluable", n);
+							out.v[i] = NkMatMixF(c1.v[i], r, fc);
+						}
+						return true;
+					}
+					if (ty == NkString(NK_MN_MAPPING)) {
+						NkMatValeurCPU v, sc, lo;
+						if (!Entree(*n, "vector", 3, v) || !Entree(*n, "location", 3, lo))
+							return false;
+						// L'echelle vaut 1 par defaut, PAS 0 : un Mapping fraichement
+						// pose ne doit rien changer. Meme neutre multiplicatif que
+						// le shader, et c'est le genre de detail dont l'oubli rend
+						// une sortie nulle sans qu'aucune erreur ne le dise.
+						const int32 iv = n->FindSocket("scale", NkSocketDir::Input);
+						const bool cable = iv >= 0 && g->IncomingOf(n->id, iv) != nullptr;
+						const NkGraphValue *d = iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+						if (cable || (d && d->IsSet())) {
+							if (!Entree(*n, "scale", 3, sc))
+								return false;
+						} else {
+							sc.n = 3;
+							sc.v[0] = sc.v[1] = sc.v[2] = 1.f;
+						}
+						out.n = 3;
+						for (uint32 i = 0; i < 3; ++i)
+							out.v[i] = v.v[i] * sc.v[i] + lo.v[i];
+						return true;
+					}
+					if (ty == NkString(NK_MN_SEPARATE_XYZ)) {
+						NkMatValeurCPU v;
+						if (!Entree(*n, "vector", 3, v))
+							return false;
+						// La composante vient du NUMERO DE PRISE DE SORTIE, pas
+						// d'une propriete : x, y, z sont trois prises distinctes.
+						const NkSocket *sk = (socket >= 0 && socket < (int32)n->sockets.Size())
+												 ? &n->sockets[(uint32)socket]
+												 : nullptr;
+						if (!sk || sk->dir != NkSocketDir::Output)
+							return Echoue("prise de sortie invalide sur separer_xyz", n);
+						uint32 c = 0;
+						if (sk->name == NkString("y"))
+							c = 1;
+						else if (sk->name == NkString("z"))
+							c = 2;
+						else if (!(sk->name == NkString("x")))
+							return Echoue("prise inattendue sur separer_xyz", n);
+						out.n = 1;
+						out.v[0] = v.v[c];
+						return true;
+					}
+					if (ty == NkString(NK_MN_COLOR_RAMP)) {
+						NkMatValeurCPU f;
+						if (!Entree(*n, "fac", 1, f))
+							return false;
+						// ⚠️ MEME DECOUPAGE QUE LE SHADER, par le MEME appel.
+						// Redecouper les arrets a la main ici serait la divergence
+						// annoncee : deux lectures d'un meme tableau finissent par
+						// ne plus lire la meme chose, et c'est le compilateur qui
+						// aurait raison sans que personne le sache.
+						const NkGraphValue *ps = g->FindProp(n->id, NK_MPROP_STOPS);
+						uint32 arrets = 0;
+						const NkMatRampeErreur re = NkMatLisRampe(ps, &arrets);
+						static const float32 kDefaut[8] = {0.f, 0.f, 0.f, 0.f, 1.f, 1.f, 1.f, 1.f};
+						const float32 *st = kDefaut;
+						if (re == NkMatRampeErreur::Absente)
+							arrets = 2;
+						else if (re != NkMatRampeErreur::Ok)
+							return Echoue("rampe invalide a l evaluation", n);
+						else
+							st = ps->numbers.Data();
+
+						const NkGraphValue *pi = g->FindProp(n->id, NK_MPROP_INTERP);
+						int32 ii = 0;
+						if (pi && pi->IsSet()) {
+							ii = NkMatTrouveInterp(pi->text.CStr());
+							if (ii < 0)
+								return Echoue("interpolation inconnue a l evaluation", n);
+						}
+						const NkMatOperation *idd = NkMatInterpAt((uint32)ii);
+						if (!idd)
+							return Echoue("interpolation hors table a l evaluation", n);
+						const bool constante = OpEst(idd->cle, "constante");
+
+						const float32 fc = NkMatClampF(f.v[0], 0.f, 1.f);
+						out.n = 3;
+						for (uint32 c = 0; c < 3; ++c)
+							out.v[c] = st[1 + c];
+						for (uint32 k = 1; k < arrets; ++k) {
+							const float32 p0 = st[(k - 1) * NK_RAMP_REELS_PAR_ARRET];
+							const float32 p1 = st[k * NK_RAMP_REELS_PAR_ARRET];
+							const float32 w = constante ? (fc >= p1 ? 1.f : 0.f)
+														: NkMatClampF((fc - p0) / (p1 - p0), 0.f, 1.f);
+							for (uint32 c = 0; c < 3; ++c)
+								out.v[c] = NkMatMixF(out.v[c], st[k * NK_RAMP_REELS_PAR_ARRET + 1 + c], w);
+						}
+						return true;
+					}
+
+					// ⚠️ TOUT LE RESTE REFUSE EN SE NOMMANT.
+					//
+					// Il n'y a PAS de repli ici, et c'est deliberé : rendre zero
+					// pour un noeud qu'on ne sait pas evaluer donnerait une sortie
+					// parfaitement formee, d'une valeur inventee, que le code de
+					// jeu utiliserait sans defiance. Un refus qui nomme le type du
+					// noeud coute une minute a l'auteur ; une valeur inventee coute
+					// la confiance dans toutes les autres.
+					return Echoue("noeud non evaluable sur le processeur", n);
+				}
+
+			} // namespace detail
+
 			inline NkMatCompileResult NkMatCompileToNkSL(const NkNodeGraph &g) {
 				NkMatCompileResult r;
 
@@ -1633,6 +2101,22 @@ namespace nkentseu {
 						s.Append("    vec3 diffuse = surfAlbedo * (NdotL + 0.18);\n");
 						s.Append("    vec3 specular = specColor * spec * (surfMetallic * 0.7 + 0.3);\n");
 						s.Append("    fragColor = vec4(diffuse + specular + surfEmission, 1.0);\n");
+					} else if (t == NkString(NK_MN_OUTPUT_VALUE)) {
+						// ⚠️ LE SEUL NOEUD QUE L'EMETTEUR SAUTE LEGITIMEMENT, et
+						// il faut dire pourquoi sous peine de voir la regle
+						// ci-dessous se faire elargir « par symetrie ».
+						//
+						// La regle generale — REFUSER un noeud inconnu plutot que
+						// le sauter — protege contre un consommateur qui lirait
+						// une locale jamais declaree. Ici il n'y a AUCUN
+						// consommateur possible : ce noeud est un PUITS, il n'a
+						// pas une seule prise de sortie, donc rien en aval ne peut
+						// attendre une locale de sa part.
+						//
+						// Et il ne produit deliberement aucune ligne : c'est ce
+						// qui rend l'etage (a) quasi gratuit. Le jour ou l'etage
+						// (b1) arrivera, c'est ICI qu'une ligne apparaitra — pour
+						// lui seulement, jamais pour (a).
 					} else {
 						// ⚠️ ON REFUSE, on n'ignore pas. Un noeud inconnu qu'on
 						// sauterait laisserait son consommateur lire une locale
@@ -1662,7 +2146,165 @@ namespace nkentseu {
 					}
 					r.jeton = h;
 				}
+				// ── (a) LA PASSE DES SORTIES NOMMEES ────────────────────────
+				//
+				// Placee APRES l'emission : elle ne touche pas au shader. Une
+				// sortie d'etage (a) ne produit AUCUNE ligne de NkSL — c'est
+				// exactement ce qui la rend quasi gratuite. Si un jour une ligne
+				// apparaissait ici, l'argument de cout serait perdu et il faudrait
+				// le redire, pas le supposer.
+				{
+					detail::NkMatContagion contagion;
+					detail::CalculeContagion(g, ordre, contagion);
+
+					for (uint32 i = 0; i < (uint32)ordre.Size(); ++i) {
+						const NkNode *n = g.Find(ordre[i]);
+						if (!n || !(n->type == NkString(NK_MN_OUTPUT_VALUE)))
+							continue;
+
+						auto refuse = [&](const char *quoi) {
+							r.error = NkString("sortie nommee : ");
+							r.error.Append(quoi);
+							r.source = NkString("");
+							r.sorties.Clear();
+						};
+
+						NkMatSortieMateriau so;
+						so.noeud = n->id;
+
+						// 1. Le nom. Meme grammaire qu'un parametre expose, et
+						// pour la meme raison : c'est une cle que du code de jeu
+						// ecrira, pas un libelle d'interface.
+						const NkGraphValue *pn = g.FindProp(n->id, NK_MPROP_SORTIE_NOM);
+						if (!pn || !pn->IsSet() || !NkMatNomPublicValide(pn->text.CStr())) {
+							refuse("nom absent ou invalide (lettres, chiffres et souligne, ne commencant pas "
+								   "par un chiffre)");
+							return r;
+						}
+						so.nom = pn->text;
+						for (uint32 k = 0; k < (uint32)r.sorties.Size(); ++k) {
+							if (r.sorties[k].nom == so.nom) {
+								// Deux sorties du meme nom : la seconde masquerait
+								// la premiere dans toute recherche par nom, et le
+								// code de jeu lirait une valeur sans savoir
+								// laquelle des deux il a obtenue.
+								NkString m("deux sorties portent le nom « ");
+								m.Append(so.nom);
+								m.Append(" »");
+								refuse(m.CStr());
+								return r;
+							}
+						}
+
+						// 2. L'etage. AUCUN DEFAUT.
+						//
+						// ⚠️ Se replier sur (a) quand la propriete manque serait le
+						// repli plausible qu'on refuse partout ailleurs : une
+						// sortie voulue par pixel deviendrait silencieusement une
+						// constante calculee une fois, et elle rendrait une valeur
+						// parfaitement credible pour toujours.
+						const NkGraphValue *pe = g.FindProp(n->id, NK_MPROP_SORTIE_ETAGE);
+						if (!pe || !pe->IsSet() || pe->text.Size() == 0) {
+							refuse("etage non renseigne (choisir « par_materiau », « par_pixel_cible » ou "
+								   "« par_pixel_processeur » — il n'y a pas de defaut)");
+							return r;
+						}
+						const detail::NkMatEtageSortie *et = NkMatTrouveEtageSortie(pe->text.CStr());
+						if (!et) {
+							NkString m("etage inconnu « ");
+							m.Append(pe->text);
+							m.Append(" »");
+							refuse(m.CStr());
+							return r;
+						}
+						if (!et->implemente) {
+							// Refuse EN SE NOMMANT, avec la raison. Un « non
+							// supporte » sec laisserait croire a un oubli ; ici
+							// l'auteur apprend ce qui manque et pourquoi.
+							NkString m("etage « ");
+							m.Append(et->cle);
+							m.Append(" » indisponible — ");
+							m.Append(et->pourquoiPas);
+							refuse(m.CStr());
+							return r;
+						}
+						so.etage = pe->text;
+
+						// 3. Exactement une prise alimentee.
+						const int32 iv = n->FindSocket("value", NkSocketDir::Input);
+						const int32 ic = n->FindSocket("color", NkSocketDir::Input);
+						const graph::NkLink *lv = iv >= 0 ? g.IncomingOf(n->id, iv) : nullptr;
+						const graph::NkLink *lc = ic >= 0 ? g.IncomingOf(n->id, ic) : nullptr;
+						if (!lv && !lc) {
+							NkString m("« ");
+							m.Append(so.nom);
+							m.Append(" » n'a aucune source : ni « value » ni « color » n'est connectee");
+							refuse(m.CStr());
+							return r;
+						}
+						if (lv && lc) {
+							NkString m("« ");
+							m.Append(so.nom);
+							m.Append(" » a DEUX sources : « value » et « color » sont connectees toutes les "
+									 "deux, et rien ne dit laquelle rendre");
+							refuse(m.CStr());
+							return r;
+						}
+
+						// 4. 🔴 LE REFUS QUI JUSTIFIE TOUTE LA PASSE.
+						//
+						// Une sortie « par materiau » promet UNE valeur pour tout
+						// le materiau. Si son calcul descend jusqu'a une source
+						// par pixel, cette promesse est fausse : on rendrait la
+						// valeur d'un pixel arbitraire. Elle serait plausible —
+						// un reel entre 0 et 1, une couleur credible — et
+						// personne ne verrait jamais qu'elle ne veut rien dire.
+						//
+						// On NOMME le noeud coupable. « depend du pixel » tout
+						// court laisserait l'auteur fouiller son graphe entier.
+						const graph::NkLink *l = lv ? lv : lc;
+						if (contagion.Lit(l->fromNode)) {
+							NkVector<NkNodeId> vus;
+							const NkNodeId src = detail::TrouveSourceParPixel(g, l->fromNode, contagion, vus);
+							const NkNode *sn = src != NK_NODE_INVALID ? g.Find(src) : nullptr;
+							NkString m("« ");
+							m.Append(so.nom);
+							m.Append(" » est declaree « par_materiau » mais son calcul depend du pixel");
+							if (sn) {
+								m.Append(" : il remonte jusqu'a ");
+								m.Append(sn->type);
+							}
+							m.Append(". Une valeur par materiau ne peut pas dependre d'une coordonnee, d'une "
+									 "texture ni d'une derivee");
+							refuse(m.CStr());
+							return r;
+						}
+
+						// 5. L'evaluation.
+						detail::NkMatEvalCPU ev;
+						ev.g = &g;
+						ev.t = t;
+						ev.dependDe = &so.dependDe;
+						detail::NkMatValeurCPU val;
+						const uint32 comp = lv ? 1u : 3u;
+						if (!ev.Sortie(l->fromNode, l->fromSocket, val)) {
+							NkString m("« ");
+							m.Append(so.nom);
+							m.Append(" » : ");
+							m.Append(ev.erreur);
+							refuse(m.CStr());
+							return r;
+						}
+						detail::NkMatEvalCPU::Adapte(val, comp, val);
+						so.composantes = comp;
+						for (uint32 k = 0; k < 3; ++k)
+							so.valeur[k] = val.v[k];
+						r.sorties.PushBack(so);
+					}
+				}
+
 				r.ok = true;
+
 				return r;
 			}
 

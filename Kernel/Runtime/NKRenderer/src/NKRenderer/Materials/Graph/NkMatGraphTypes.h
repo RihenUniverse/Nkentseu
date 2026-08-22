@@ -431,6 +431,28 @@ namespace nkentseu {
 					const char *label; ///< libelle par defaut, traduisible
 					const NkMatSocketDecl *sockets;
 					uint32 socketCount;
+
+					// ⚠️ SOURCE INTRINSEQUEMENT PAR PIXEL.
+					//
+					// Vrai quand le noeud produit une valeur qui CHANGE d'un pixel
+					// a l'autre meme si aucune de ses entrees n'est connectee :
+					// il lit une coordonnee interpolee, echantillonne une texture,
+					// ou derive (`dFdx`). Faux quand le noeud n'est par pixel que
+					// PAR CONTAGION, c'est-a-dire si l'une de ses entrees l'est.
+					//
+					// A quoi ca sert : une sortie « par materiau » promet une
+					// valeur unique pour tout le materiau. Si son calcul descend
+					// jusqu'a un de ces noeuds, cette promesse est fausse — on
+					// rendrait la valeur d'UN pixel arbitraire en la faisant
+					// passer pour celle du materiau. Elle serait parfaitement
+					// PLAUSIBLE, et c'est precisement ce qui la rend dangereuse.
+					//
+					// La distinction n'est PAS « noeud de texture ou non » :
+					// `Mapping` transforme une coordonnee sans en fabriquer une,
+					// il est donc faux ici et devient par pixel uniquement si on
+					// lui branche une source qui l'est. Le classer a vue aurait
+					// donne l'inverse.
+					bool parPixel = false;
 			};
 
 			// Cles des noeuds de cette premiere tranche. On n'en declare que ce
@@ -599,6 +621,91 @@ namespace nkentseu {
 			static const char *const NK_MN_VORONOI = "mat.voronoi";
 			static const char *const NK_MN_WAVE = "mat.onde";
 			static const char *const NK_MN_BRICK = "mat.briques";
+			// ── LES SORTIES NOMMEES : (a) PAR MATERIAU, COTE PROCESSEUR ──────
+			//
+			// Un graphe ne produit pas qu'une apparence. Il peut aussi repondre a
+			// une question que le code de jeu se pose : « ce materiau est-il
+			// transparent ? », « quelle est sa teinte dominante ? ». C'est une
+			// SORTIE NOMMEE, et l'auteur choisit son ETAGE sur le noeud, comme il
+			// choisit `expose` sur une prise.
+			//
+			// ⚠️ TROIS ETAGES, ET LE SECOND EST CELUI QU'ON OUBLIE (22/08/2026) :
+			//
+			//   (a)  par materiau, cote processeur — la valeur ne depend pas du
+			//        pixel. Cout quasi nul : evaluee une fois, a la compilation
+			//        ou au changement de parametre. **SEUL ETAGE IMPLEMENTE.**
+			//
+			//   (b1) par pixel, mais qui RESTE sur la carte — une cible de rendu
+			//        de plus, consommee par une autre passe (masque de bloom,
+			//        post-traitement). Cout MODERE : memoire et bande passante.
+			//        Ce n'est PAS l'etage cher, et c'est l'erreur a ne pas
+			//        refaire : tout moteur fait cela pour ses masques.
+			//
+			//   (b2) par pixel, RELU par le processeur — la meme, rapatriee en
+			//        memoire centrale. 🔴 C'est CELUI-LA qui coute, et il ne coute
+			//        pas en calcul : la relecture SYNCHRONISE, le processeur
+			//        attend la carte, et tout le pipelinage s'effondre. Le
+			//        symptome est « le jeu rame », jamais « la relecture est
+			//        lente » — on met des semaines a l'imputer. S'il existe un
+			//        jour, ce sera une relecture DIFFEREE de plusieurs images,
+			//        jamais synchrone.
+			//
+			// Ce qui coute n'est donc pas le calcul par pixel, c'est le RETOUR
+			// vers le processeur.
+			static const char *const NK_MN_OUTPUT_VALUE = "mat.sortie_valeur";
+			// Le nom public de la sortie : meme grammaire qu'un parametre expose,
+			// et pour la meme raison — c'est une cle que du code de jeu ecrira.
+			static const char *const NK_MPROP_SORTIE_NOM = "nom";
+			// L'etage, porte par un MOT. Meme discipline que les operations : un
+			// numero d'enumeration se decale des qu'on insere une valeur au
+			// milieu, et les graphes enregistres se mettent alors a promettre un
+			// autre etage SANS que rien ne le dise.
+			static const char *const NK_MPROP_SORTIE_ETAGE = "etage";
+
+			namespace detail {
+				struct NkMatEtageSortie {
+						const char *cle;
+						const char *libelle;
+						bool implemente;
+						const char *pourquoiPas; ///< non nul quand implemente == false
+				};
+				static const NkMatEtageSortie kEtages[] = {
+					{"par_materiau", "par materiau, cote processeur", true, nullptr},
+					{"par_pixel_cible", "par pixel, vers une cible de rendu", false,
+					 "etage (b1) pas encore construit : il attend que les entrees exposees arrivent jusqu au "
+					 "pixel. Il n est pas refuse par principe, il est refuse par honnetete"},
+					{"par_pixel_processeur", "par pixel, relu par le processeur", false,
+					 "etage (b2) volontairement absent : une relecture SYNCHRONE ferait attendre le processeur "
+					 "et s afficherait comme « le jeu rame », jamais comme « la relecture est lente ». S il "
+					 "existe un jour ce sera une relecture DIFFEREE de plusieurs images, sur demande explicite"},
+				};
+				static const uint32 kEtagesCount = 3;
+			} // namespace detail
+
+			inline uint32 NkMatEtageSortieCount() {
+				return detail::kEtagesCount;
+			}
+
+			inline const detail::NkMatEtageSortie *NkMatEtageSortieAt(uint32 i) {
+				return i < detail::kEtagesCount ? &detail::kEtages[i] : nullptr;
+			}
+
+			inline const detail::NkMatEtageSortie *NkMatTrouveEtageSortie(const char *cle) {
+				if (!cle)
+					return nullptr;
+				for (uint32 i = 0; i < detail::kEtagesCount; ++i) {
+					const char *a = detail::kEtages[i].cle;
+					const char *b = cle;
+					while (*a && *a == *b) {
+						++a;
+						++b;
+					}
+					if (!*a && !*b)
+						return &detail::kEtages[i];
+				}
+				return nullptr;
+			}
+
 			// Le type de degrade, meme discipline que les operations : un MOT.
 			static const char *const NK_MPROP_TYPE = "type";
 			static const char *const NK_MPROP_STOPS = "arrets";
@@ -770,6 +877,24 @@ namespace nkentseu {
 					{"fac", NK_MT_REAL, NkSocketDir::Output, false},
 				};
 
+				// La sortie nommee, sur la forme du noeud AOV Output de Blender :
+				// DEUX prises d'entree, un reel et une couleur. Une seule prise
+				// typee reel aurait refuse une source couleur, car les conversions
+				// sont DIRIGEES : reel -> couleur est permis, couleur -> reel ne
+				// l'est pas (elle perdrait deux composantes en silence).
+				//
+				// Exactement une des deux doit etre alimentee. Aucune : la sortie
+				// ne promet rien. Les deux : on ne saurait pas laquelle rendre, et
+				// choisir la premiere donnerait une valeur PLAUSIBLE.
+				//
+				// Aucune prise de SORTIE : ce noeud est un puits. Il ne se branche
+				// pas dans l'apparence, il repond a une question posee par le code
+				// de jeu.
+				static const NkMatSocketDecl kOutputValue[] = {
+					{"value", NK_MT_REAL, NkSocketDir::Input, false},
+					{"color", NK_MT_COLOR, NkSocketDir::Input, false},
+				};
+
 				static const NkMatSocketDecl kColorRamp[] = {
 					{"fac", NK_MT_REAL, NkSocketDir::Input, false},
 					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
@@ -792,30 +917,42 @@ namespace nkentseu {
 				};
 
 				static const NkMatNodeProto kProtos[] = {
-					{NK_MN_PRINCIPLED, "Principled BSDF", kPrincipled, 6},
-					{NK_MN_DIFFUSE, "Diffuse BSDF", kDiffuse, 4},
-					{NK_MN_EMISSION, "Emission", kEmission, 3},
-					{NK_MN_MIX_SHADER, "Mix Shader", kMixShader, 4},
-					{NK_MN_OUTPUT, "Material Output", kOutput, 1},
-					{NK_MN_VALUE, "Value", kValue, 1},
-					{NK_MN_RGB, "RGB", kRGB, 1},
-					{NK_MN_MATH, "Math", kMath, 3},
-					{NK_MN_MIX_COLOR, "Mix Color", kMixColor, 4},
-					{NK_MN_COLOR_RAMP, "ColorRamp", kColorRamp, 2},
-					{NK_MN_IMAGE_TEXTURE, "Image Texture", kImageTexture, 3},
-					{NK_MN_TEX_COORD, "Texture Coordinate", kTexCoord, 1},
-					{NK_MN_MAPPING, "Mapping", kMapping, 4},
-					{NK_MN_NORMAL_MAP, "Normal Map", kNormalMap, 3},
-					{NK_MN_BUMP, "Bump", kBump, 4},
-					{NK_MN_SEPARATE_XYZ, "Separate XYZ", kSeparateXYZ, 4},
-					{NK_MN_NOISE, "Noise Texture", kNoise, 5},
-					{NK_MN_GRADIENT, "Gradient Texture", kGradient, 3},
-					{NK_MN_CHECKER, "Checker Texture", kChecker, 6},
-					{NK_MN_VORONOI, "Voronoi Texture", kVoronoi, 4},
-					{NK_MN_WAVE, "Wave Texture", kWave, 4},
-					{NK_MN_BRICK, "Brick Texture", kBrick, 7},
+					// Le cinquieme champ est `parPixel` — voir la note longue sur
+					// NkMatNodeProto. Il n'est PAS deductible du nom : `Mapping`
+					// transforme une coordonnee sans en fabriquer une.
+					{NK_MN_PRINCIPLED, "Principled BSDF", kPrincipled, 6, false},
+					{NK_MN_DIFFUSE, "Diffuse BSDF", kDiffuse, 4, false},
+					{NK_MN_EMISSION, "Emission", kEmission, 3, false},
+					{NK_MN_MIX_SHADER, "Mix Shader", kMixShader, 4, false},
+					{NK_MN_OUTPUT, "Material Output", kOutput, 1, false},
+					{NK_MN_VALUE, "Value", kValue, 1, false},
+					{NK_MN_RGB, "RGB", kRGB, 1, false},
+					{NK_MN_MATH, "Math", kMath, 3, false},
+					{NK_MN_MIX_COLOR, "Mix Color", kMixColor, 4, false},
+					{NK_MN_COLOR_RAMP, "ColorRamp", kColorRamp, 2, false},
+					// echantillonne a une coordonnee interpolee
+					{NK_MN_IMAGE_TEXTURE, "Image Texture", kImageTexture, 3, true},
+					// REND une coordonnee interpolee — c'est la source meme
+					{NK_MN_TEX_COORD, "Texture Coordinate", kTexCoord, 1, true},
+					// TRANSFORME une coordonnee sans en fabriquer : par contagion seulement
+					{NK_MN_MAPPING, "Mapping", kMapping, 4, false},
+					// lit la base tangente, qui n'existe que par pixel
+					{NK_MN_NORMAL_MAP, "Normal Map", kNormalMap, 3, true},
+					// derive : dFdx/dFdy n'ont aucun sens hors d'un quad de pixels
+					{NK_MN_BUMP, "Bump", kBump, 4, true},
+					{NK_MN_SEPARATE_XYZ, "Separate XYZ", kSeparateXYZ, 4, false},
+					// Les six proceduraux : coordonnee d'objet PAR DEFAUT, donc par
+					// pixel meme sans aucune entree connectee.
+					{NK_MN_NOISE, "Noise Texture", kNoise, 5, true},
+					{NK_MN_GRADIENT, "Gradient Texture", kGradient, 3, true},
+					{NK_MN_CHECKER, "Checker Texture", kChecker, 6, true},
+					{NK_MN_VORONOI, "Voronoi Texture", kVoronoi, 4, true},
+					{NK_MN_WAVE, "Wave Texture", kWave, 4, true},
+					{NK_MN_BRICK, "Brick Texture", kBrick, 7, true},
+					// Un puits, jamais une source : il ne fabrique aucune valeur.
+					{NK_MN_OUTPUT_VALUE, "Named Output", kOutputValue, 2, false},
 				};
-				static const uint32 kProtoCount = 22;
+				static const uint32 kProtoCount = 23;
 
 			} // namespace detail
 

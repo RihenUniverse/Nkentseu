@@ -2830,6 +2830,413 @@ static void CasBriquesJointsDecales() {
 				 employe ? 1 : 0));
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  (a) LES SORTIES NOMMEES, PAR MATERIAU, COTE PROCESSEUR
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Pose un noeud de sortie nommee complet. Le nom et l'etage sont des MOTS, et
+// l'etage n'a PAS de defaut : il faut le dire a chaque fois, ici comme partout.
+static NkNodeId PoseSortie(NkNodeGraph &g, const NkMatTypes &t, const char *nom, const char *etage) {
+	const NkNodeId s = NkMatAddNode(g, NK_MN_OUTPUT_VALUE);
+	if (nom)
+		g.SetProp(s, NK_MPROP_SORTIE_NOM, NkValueText(t.real, nom));
+	if (etage)
+		g.SetProp(s, NK_MPROP_SORTIE_ETAGE, NkValueText(t.real, etage));
+	return s;
+}
+
+static bool Proche(float32 a, float32 b) {
+	const float32 d = a - b;
+	return (d < 0.f ? -d : d) < 0.0005f;
+}
+
+static void CasSortieValeurCalculee() {
+	// ⚠️ L'ATTENDU EST CALCULABLE A LA MAIN, et c'est tout l'interet :
+	// 0.25 * 4 = 1.0. Un banc qui se contenterait de « une sortie existe »
+	// passerait avec un evaluateur qui rend zero.
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	MonteUnPrincipled(g, t, &out);
+
+	const NkNodeId v = NkMatAddNode(g, NK_MN_VALUE);
+	g.SetProp(v, NK_MPROP_VALUE, NkValueReal(t.real, 0.25f));
+	const NkNodeId m = NkMatAddNode(g, NK_MN_MATH);
+	g.SetProp(m, NK_MPROP_OPERATION, NkValueText(t.real, "multiplier"));
+	g.Connect(v, "value", m, "a");
+	g.SetSocketDefault(m, "b", NkSocketDir::Input, NkValueReal(t.real, 4.0f));
+	const NkNodeId s = PoseSortie(g, t, "usure", "par_materiau");
+	g.Connect(m, "value", s, "value");
+
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkMatSortieMateriau *so = r.ok ? r.TrouveSortie("usure") : nullptr;
+	const bool bonne = so && so->composantes == 1 && Proche(so->valeur[0], 1.0f);
+	// Une sortie d'etage (a) ne doit produire AUCUNE ligne de shader : c'est
+	// ce qui la rend quasi gratuite. Si le nom public apparaissait dans le
+	// NkSL, l'argument de cout serait faux sans que rien ne le dise.
+	const bool riendansleshader = r.ok && !ContientSansCasse(r.source, "usure");
+	// Aucune dependance : la chaine est entierement constante, donc la valeur
+	// ne sera JAMAIS a reevaluer.
+	const bool constante = so && so->dependDe.Size() == 0;
+	Cas("sortie/par-materiau-valeur-calculee", bonne && riendansleshader && constante,
+		NkFormat("ok={0} | valeur={1} (attendu 1.0 : 0.25 * 4) | composantes={2} | absente du shader={3} | "
+				 "dependances={4} (0 attendu)",
+				 r.ok ? 1 : 0, so ? so->valeur[0] : -1.f, so ? so->composantes : 0u,
+				 riendansleshader ? 1 : 0, so ? (uint32)so->dependDe.Size() : 999u));
+}
+
+static void CasSortieCouleurEtRampe() {
+	// Deux choses d'un coup, et la seconde est la plus utile : la rampe est la
+	// seule formule non triviale que l'evaluateur reproduit. Rampe par defaut
+	// noir -> blanc, lue en 0.5 => gris 0.5 exactement.
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	MonteUnPrincipled(g, t, &out);
+
+	const NkNodeId ramp = NkMatAddNode(g, NK_MN_COLOR_RAMP);
+	g.SetSocketDefault(ramp, "fac", NkSocketDir::Input, NkValueReal(t.real, 0.5f));
+	const NkNodeId s = PoseSortie(g, t, "teinte", "par_materiau");
+	g.Connect(ramp, "color", s, "color");
+
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkMatSortieMateriau *so = r.ok ? r.TrouveSortie("teinte") : nullptr;
+	const bool trois = so && so->composantes == 3;
+	const bool gris = so && Proche(so->valeur[0], 0.5f) && Proche(so->valeur[1], 0.5f) &&
+					  Proche(so->valeur[2], 0.5f);
+	Cas("sortie/couleur-rampe-evaluee", trois && gris,
+		NkFormat("composantes={0} (3 attendu) | valeur=({1}, {2}, {3}) attendu (0.5, 0.5, 0.5) : rampe noir "
+				 "vers blanc lue en 0.5 | erreur={4}",
+				 so ? so->composantes : 0u, so ? so->valeur[0] : -1.f, so ? so->valeur[1] : -1.f,
+				 so ? so->valeur[2] : -1.f, r.error));
+}
+
+static void CasSortieRefusParPixel() {
+	// 🔴 LE CAS QUI JUSTIFIE TOUTE LA PASSE.
+	//
+	// Le noeud par pixel est a DEUX noeuds d'ecart de la sortie : c'est la
+	// situation reelle. Une verification qui ne regarderait que le voisin
+	// immediat serait verte ici et laisserait passer le graphe.
+	//
+	// Et le refus doit NOMMER le coupable : « depend du pixel » tout court
+	// obligerait l'auteur a fouiller son graphe entier.
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	MonteUnPrincipled(g, t, &out);
+
+	const NkNodeId bruit = NkMatAddNode(g, NK_MN_NOISE);
+	const NkNodeId m1 = NkMatAddNode(g, NK_MN_MATH);
+	const NkNodeId m2 = NkMatAddNode(g, NK_MN_MATH);
+	g.Connect(bruit, "fac", m1, "a");
+	g.Connect(m1, "value", m2, "a");
+	const NkNodeId s = PoseSortie(g, t, "densite", "par_materiau");
+	g.Connect(m2, "value", s, "value");
+
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const bool refuse = !r.ok;
+	// ⚠️ NE PAS SE CONTENTER DE « mat.bruit APPARAIT DANS LE MESSAGE ».
+	// Mutation du 22/08 : en supprimant la CONTAGION, le graphe est quand meme
+	// refuse — mais par l EVALUATEUR, qui ne sait pas evaluer un bruit et
+	// nomme lui aussi « mat.bruit ». Le cas restait vert en ne mesurant plus
+	// rien. On exige donc le MOTIF du refus, pas seulement le nom du coupable :
+	// c est la quatrieme fois dans ce chantier que chercher un nom se revele
+	// n etre pas chercher un usage.
+	const bool bonMotif = Apres(r.error, "depend du pixel") > 0;
+	const bool nommeLeCoupable = bonMotif && Apres(r.error, "mat.bruit") > 0;
+	const bool nommeLaSortie = Apres(r.error, "densite") > 0;
+	// Un refus doit laisser le resultat VIDE. Rendre a la fois une erreur et
+	// une source utilisable inviterait un appelant a ignorer l'erreur.
+	const bool vide = !r.ok && r.source.Size() == 0 && r.sorties.Size() == 0;
+	Cas("sortie/refus-par-pixel-a-deux-noeuds-en-nommant",
+		refuse && nommeLeCoupable && nommeLaSortie && vide,
+		NkFormat("refuse={0} | nomme le noeud coupable={1} | nomme la sortie={2} | resultat vide={3} | "
+				 "message={4}",
+				 refuse ? 1 : 0, nommeLeCoupable ? 1 : 0, nommeLaSortie ? 1 : 0, vide ? 1 : 0, r.error));
+}
+
+static void CasSortieMappageNEstPasParPixel() {
+	// ⚠️ LE CAS QUI DISCRIMINE UNE CLASSIFICATION FAITE A VUE.
+	//
+	// `Mapping` a tout l'air d'un noeud de texture. Il ne fabrique pourtant
+	// aucune coordonnee : il transforme celle qu'on lui donne. Le MEME noeud
+	// est donc acceptable ou refuse selon son amont — et c'est la seule facon
+	// de prouver que la contagion se propage vraiment au lieu d'etre une
+	// liste de noms.
+	NkNodeGraph g1;
+	NkMatTypes t1 = NkMatRegisterTypes(g1);
+	NkNodeId o1;
+	MonteUnPrincipled(g1, t1, &o1);
+	const NkNodeId mp1 = NkMatAddNode(g1, NK_MN_MAPPING);
+	const float32 trois[3] = {3.f, 0.f, 0.f};
+	g1.SetSocketDefault(mp1, "vector", NkSocketDir::Input, NkValueVec(t1.vector, trois, 3));
+	const NkNodeId sx1 = NkMatAddNode(g1, NK_MN_SEPARATE_XYZ);
+	g1.Connect(mp1, "vector_out", sx1, "vector");
+	const NkNodeId s1 = PoseSortie(g1, t1, "largeur", "par_materiau");
+	g1.Connect(sx1, "x", s1, "value");
+	NkMatCompileResult r1 = NkMatCompileToNkSL(g1);
+	const NkMatSortieMateriau *so1 = r1.ok ? r1.TrouveSortie("largeur") : nullptr;
+	// L'echelle par defaut vaut 1 (neutre MULTIPLICATIF), la position 0 :
+	// 3 * 1 + 0 = 3. Un evaluateur qui prendrait 0 comme echelle par defaut
+	// rendrait 0, ce qui reste parfaitement plausible pour une largeur.
+	const bool accepte = so1 && Proche(so1->valeur[0], 3.f);
+
+	NkNodeGraph g2;
+	NkMatTypes t2 = NkMatRegisterTypes(g2);
+	NkNodeId o2;
+	MonteUnPrincipled(g2, t2, &o2);
+	const NkNodeId tc = NkMatAddNode(g2, NK_MN_TEX_COORD);
+	const NkNodeId mp2 = NkMatAddNode(g2, NK_MN_MAPPING);
+	g2.Connect(tc, "uv", mp2, "vector");
+	const NkNodeId sx2 = NkMatAddNode(g2, NK_MN_SEPARATE_XYZ);
+	g2.Connect(mp2, "vector_out", sx2, "vector");
+	const NkNodeId s2 = PoseSortie(g2, t2, "largeur", "par_materiau");
+	g2.Connect(sx2, "x", s2, "value");
+	NkMatCompileResult r2 = NkMatCompileToNkSL(g2);
+	// Meme garde que dans le cas precedent, et pour la meme mutation : sans
+	// contagion, l evaluateur refuse en nommant « mat.coord_texture » lui aussi.
+	const bool refuse = !r2.ok && Apres(r2.error, "depend du pixel") > 0 &&
+						Apres(r2.error, "mat.coord_texture") > 0;
+
+	Cas("sortie/mappage-par-contagion-seulement", accepte && refuse,
+		NkFormat("mappage sur une constante : accepte={0} valeur={1} (attendu 3.0 = 3 * 1 + 0) | le MEME "
+				 "mappage nourri par une coordonnee : refuse en nommant la source={2} | message={3}",
+				 accepte ? 1 : 0, so1 ? so1->valeur[0] : -1.f, refuse ? 1 : 0, r2.error));
+}
+
+static void CasSortieExposeNeContaminePas() {
+	// ⚠️ UN PARAMETRE EXPOSE EST UN UNIFORME, PAS UNE VALEUR PAR PIXEL.
+	//
+	// Il vaut la meme chose pour tous les pixels du materiau. Le confondre
+	// avec une source par pixel interdirait la moitie des usages utiles de
+	// l'etage (a) — precisement ceux ou le code de jeu veut relire l'effet
+	// d'un reglage qu'il vient d'ecrire.
+	//
+	// En revanche la sortie DEPEND de lui : sans cette liste, « reevalue au
+	// changement de parametre » serait inapplicable et la valeur se figerait
+	// sur celle du jour de la compilation, en restant plausible.
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	const NkNodeId bsdf = MonteUnPrincipled(g, t, &out);
+	(void)bsdf;
+
+	const NkNodeId m = NkMatAddNode(g, NK_MN_MATH);
+	g.SetProp(m, NK_MPROP_OPERATION, NkValueText(t.real, "ajouter"));
+	g.SetSocketDefault(m, "a", NkSocketDir::Input, NkValueReal(t.real, 0.2f));
+	g.SetSocketDefault(m, "b", NkSocketDir::Input, NkValueReal(t.real, 0.5f));
+	NkString cle(NK_MPROP_EXPOSE_PREFIX);
+	cle.Append("a");
+	g.SetProp(m, cle.CStr(), NkValueText(t.real, "usure_globale"));
+	const NkNodeId s = PoseSortie(g, t, "somme", "par_materiau");
+	g.Connect(m, "value", s, "value");
+
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkMatSortieMateriau *so = r.ok ? r.TrouveSortie("somme") : nullptr;
+	const bool accepte = so != nullptr;
+	// 0.2 + 0.5 = 0.7 : le defaut de la prise exposee EST sa valeur de depart.
+	const bool valeur = so && Proche(so->valeur[0], 0.7f);
+	const bool depend = so && so->dependDe.Size() == 1 && so->dependDe[0] == NkString("usure_globale");
+	Cas("sortie/expose-ne-contamine-pas-mais-cree-une-dependance", accepte && valeur && depend,
+		NkFormat("accepte={0} | valeur={1} (attendu 0.7 = defaut expose 0.2 + 0.5) | dependances={2} | "
+				 "premiere={3} (attendu usure_globale) | erreur={4}",
+				 accepte ? 1 : 0, so ? so->valeur[0] : -1.f, so ? (uint32)so->dependDe.Size() : 999u,
+				 (so && so->dependDe.Size() > 0) ? so->dependDe[0] : NkString("-"), r.error));
+}
+
+static void CasSortieEtagesRefuses() {
+	// Les deux etages non construits refusent EN SE NOMMANT, et l'absence
+	// d'etage refuse aussi : il n'y a pas de defaut. Se replier sur (a) quand
+	// la propriete manque transformerait silencieusement une sortie voulue par
+	// pixel en constante calculee une seule fois.
+	struct Jeu {
+			const char *etage;
+			const char *attendu;
+	};
+	const Jeu jeux[4] = {{nullptr, "etage non renseigne"},
+						 {"par_pixel_cible", "par_pixel_cible"},
+						 {"par_pixel_processeur", "par_pixel_processeur"},
+						 {"par_pixel_magique", "par_pixel_magique"}};
+	uint32 bons = 0;
+	NkString detail;
+	for (uint32 i = 0; i < 4; ++i) {
+		NkNodeGraph g;
+		NkMatTypes t = NkMatRegisterTypes(g);
+		NkNodeId out;
+		MonteUnPrincipled(g, t, &out);
+		const NkNodeId v = NkMatAddNode(g, NK_MN_VALUE);
+		g.SetProp(v, NK_MPROP_VALUE, NkValueReal(t.real, 1.f));
+		const NkNodeId s = PoseSortie(g, t, "essai", jeux[i].etage);
+		g.Connect(v, "value", s, "value");
+		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		const bool ok = !r.ok && Apres(r.error, jeux[i].attendu) > 0;
+		if (ok)
+			++bons;
+		detail.Append(NkFormat("[{0} -> refus nomme={1}] ", NkString(jeux[i].etage ? jeux[i].etage : "(absent)"),
+							   ok ? 1 : 0));
+	}
+	// Et (b2) doit dire POURQUOI, pas seulement « indisponible » : la
+	// relecture synchrone se manifeste par « le jeu rame », jamais par « la
+	// relecture est lente », et c'est ce qui coute des semaines a imputer.
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	MonteUnPrincipled(g, t, &out);
+	const NkNodeId v = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId s = PoseSortie(g, t, "essai", "par_pixel_processeur");
+	g.Connect(v, "value", s, "value");
+	NkMatCompileResult rb2 = NkMatCompileToNkSL(g);
+	const bool ditPourquoi = Apres(rb2.error, "SYNCHRONE") > 0 || Apres(rb2.error, "synchrone") > 0;
+
+	Cas("sortie/etages-non-construits-refusent-en-se-nommant", bons == 4 && ditPourquoi,
+		NkFormat("{0}| (b2) dit pourquoi={1}", detail, ditPourquoi ? 1 : 0));
+}
+
+static void CasSortieSourcesEtNoms() {
+	// Zero source, deux sources, nom invalide, nom en double : quatre etats
+	// qu'aucune interface n'empechera puisqu'il n'y en a pas encore.
+	uint32 bons = 0;
+	NkString detail;
+
+	{ // aucune source
+		NkNodeGraph g;
+		NkMatTypes t = NkMatRegisterTypes(g);
+		NkNodeId out;
+		MonteUnPrincipled(g, t, &out);
+		PoseSortie(g, t, "vide", "par_materiau");
+		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		const bool ok = !r.ok && Apres(r.error, "aucune source") > 0;
+		bons += ok ? 1 : 0;
+		detail.Append(NkFormat("[aucune source refusee={0}] ", ok ? 1 : 0));
+	}
+	{ // deux sources
+		NkNodeGraph g;
+		NkMatTypes t = NkMatRegisterTypes(g);
+		NkNodeId out;
+		MonteUnPrincipled(g, t, &out);
+		const NkNodeId v = NkMatAddNode(g, NK_MN_VALUE);
+		const NkNodeId c = NkMatAddNode(g, NK_MN_RGB);
+		const NkNodeId s = PoseSortie(g, t, "double_source", "par_materiau");
+		g.Connect(v, "value", s, "value");
+		g.Connect(c, "color", s, "color");
+		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		const bool ok = !r.ok && Apres(r.error, "DEUX sources") > 0;
+		bons += ok ? 1 : 0;
+		detail.Append(NkFormat("[deux sources refusees={0}] ", ok ? 1 : 0));
+	}
+	{ // nom invalide
+		NkNodeGraph g;
+		NkMatTypes t = NkMatRegisterTypes(g);
+		NkNodeId out;
+		MonteUnPrincipled(g, t, &out);
+		const NkNodeId v = NkMatAddNode(g, NK_MN_VALUE);
+		const NkNodeId s = PoseSortie(g, t, "2 mots", "par_materiau");
+		g.Connect(v, "value", s, "value");
+		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		const bool ok = !r.ok && Apres(r.error, "nom absent ou invalide") > 0;
+		bons += ok ? 1 : 0;
+		detail.Append(NkFormat("[nom invalide refuse={0}] ", ok ? 1 : 0));
+	}
+	{ // deux sorties du meme nom
+		NkNodeGraph g;
+		NkMatTypes t = NkMatRegisterTypes(g);
+		NkNodeId out;
+		MonteUnPrincipled(g, t, &out);
+		const NkNodeId v1 = NkMatAddNode(g, NK_MN_VALUE);
+		const NkNodeId v2 = NkMatAddNode(g, NK_MN_VALUE);
+		const NkNodeId s1 = PoseSortie(g, t, "meme", "par_materiau");
+		const NkNodeId s2 = PoseSortie(g, t, "meme", "par_materiau");
+		g.Connect(v1, "value", s1, "value");
+		g.Connect(v2, "value", s2, "value");
+		NkMatCompileResult r = NkMatCompileToNkSL(g);
+		const bool ok = !r.ok && Apres(r.error, "deux sorties portent le nom") > 0;
+		bons += ok ? 1 : 0;
+		detail.Append(NkFormat("[doublon refuse={0}] ", ok ? 1 : 0));
+	}
+	Cas("sortie/sources-et-noms-quatre-refus", bons == 4, detail);
+}
+
+static void CasSortiePlusieursEtGraphesExistants() {
+	// Deux controles que rien d'autre ne couvre :
+	//   - plusieurs sorties coexistent et se retrouvent CHACUNE par son nom ;
+	//   - un graphe SANS aucune sortie nommee — c'est-a-dire tous les graphes
+	//     ecrits jusqu'ici — rend une liste VIDE et compile comme avant. Une
+	//     passe neuve qui casserait l'existant se verrait ici, et nulle part
+	//     ailleurs dans ce banc.
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	MonteUnPrincipled(g, t, &out);
+	const NkNodeId a = NkMatAddNode(g, NK_MN_VALUE);
+	g.SetProp(a, NK_MPROP_VALUE, NkValueReal(t.real, 0.125f));
+	const NkNodeId b = NkMatAddNode(g, NK_MN_RGB);
+	const float32 rouge[3] = {0.9f, 0.1f, 0.2f};
+	g.SetProp(b, NK_MPROP_COLOR, NkValueVec(t.color, rouge, 3));
+	const NkNodeId s1 = PoseSortie(g, t, "opacite", "par_materiau");
+	const NkNodeId s2 = PoseSortie(g, t, "teinte_dominante", "par_materiau");
+	g.Connect(a, "value", s1, "value");
+	g.Connect(b, "color", s2, "color");
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkMatSortieMateriau *o1 = r.ok ? r.TrouveSortie("opacite") : nullptr;
+	const NkMatSortieMateriau *o2 = r.ok ? r.TrouveSortie("teinte_dominante") : nullptr;
+	const bool deux = r.sorties.Size() == 2 && o1 && o2;
+	const bool valeurs = o1 && o2 && Proche(o1->valeur[0], 0.125f) && Proche(o2->valeur[0], 0.9f) &&
+						 Proche(o2->valeur[2], 0.2f);
+	// Un nom absent doit rendre nullptr, pas la premiere sortie venue.
+	const bool absentEstNul = r.TrouveSortie("nexiste_pas") == nullptr;
+
+	NkNodeGraph g0;
+	NkMatTypes t0 = NkMatRegisterTypes(g0);
+	NkNodeId out0;
+	MonteUnPrincipled(g0, t0, &out0);
+	NkMatCompileResult r0 = NkMatCompileToNkSL(g0);
+	const bool existantIntact = r0.ok && r0.sorties.Size() == 0 && r0.source.Size() > 100;
+
+	Cas("sortie/plusieurs-et-graphes-sans-sortie", deux && valeurs && absentEstNul && existantIntact,
+		NkFormat("deux sorties retrouvees par nom={0} | valeurs justes={1} | nom absent rend nul={2} | "
+				 "graphe sans sortie nommee intact={3} (liste={4}, shader={5} octets)",
+				 deux ? 1 : 0, valeurs ? 1 : 0, absentEstNul ? 1 : 0, existantIntact ? 1 : 0,
+				 (uint32)r0.sorties.Size(), (uint32)r0.source.Size()));
+}
+
+
+static void CasSortieDivisionParZero() {
+	// ⚠️ LE SEUL ENDROIT DU CHANTIER OU DEUX IMPLEMENTATIONS CALCULENT LA MEME
+	// CHOSE — le shader et l evaluateur processeur — ET OU LEUR DESACCORD SERAIT
+	// INVISIBLE. Personne ne compare la valeur rendue au code de jeu avec ce que
+	// le pixel affiche : les deux resteraient plausibles chacune de son cote.
+	//
+	// Le shader garde la division et rend 0. Si l evaluateur divisait nu, il
+	// rendrait un NaN — et un NaN se compare faux a TOUT, y compris a lui-meme,
+	// donc le code de jeu prendrait des decisions inversees sans qu aucune
+	// erreur ne soit levee.
+	//
+	// Mutation du 22/08 : ce cas a ete ecrit APRES avoir constate qu en retirant
+	// la garde AUCUN des huit autres cas ne tombait.
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	MonteUnPrincipled(g, t, &out);
+	const NkNodeId m = NkMatAddNode(g, NK_MN_MATH);
+	g.SetProp(m, NK_MPROP_OPERATION, NkValueText(t.real, "diviser"));
+	g.SetSocketDefault(m, "a", NkSocketDir::Input, NkValueReal(t.real, 1.f));
+	g.SetSocketDefault(m, "b", NkSocketDir::Input, NkValueReal(t.real, 0.f));
+	const NkNodeId s = PoseSortie(g, t, "quotient", "par_materiau");
+	g.Connect(m, "value", s, "value");
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkMatSortieMateriau *so = r.ok ? r.TrouveSortie("quotient") : nullptr;
+	const bool zero = so && so->valeur[0] == 0.f;
+	// Un NaN se detecte par sa seule propriete stable : il differe de lui-meme.
+	// Tester « == 0 » seul ne suffirait pas a le NOMMER dans le detail.
+	const bool nan = so && !(so->valeur[0] == so->valeur[0]);
+	// Et le shader, lui, garde bien la division : les deux doivent s accorder.
+	const bool gardeDansLeShader = r.ok && ContientSansCasse(r.source, "== 0.0");
+	Cas("sortie/division-par-zero-accorde-avec-le-shader", zero && !nan && gardeDansLeShader,
+		NkFormat("valeur={0} (attendu 0, comme la garde du shader) | est un NaN={1} | le shader garde aussi "
+				 "la division={2}",
+				 so ? so->valeur[0] : -1.f, nan ? 1 : 0, gardeDansLeShader ? 1 : 0));
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -2935,6 +3342,15 @@ int main() {
 	CasIncludeNeSeResoutPas();
 
 	// -- rang 2 : le procedural ------------------------------------------
+	CasSortieValeurCalculee();
+	CasSortieCouleurEtRampe();
+	CasSortieRefusParPixel();
+	CasSortieMappageNEstPasParPixel();
+	CasSortieExposeNeContaminePas();
+	CasSortieEtagesRefuses();
+	CasSortieSourcesEtNoms();
+	CasSortiePlusieursEtGraphesExistants();
+	CasSortieDivisionParZero();
 	CasProceduralCompile();
 	CasBriquesRecopieesVerbatim();
 	CasBriquesSeulementSiUtiles();
