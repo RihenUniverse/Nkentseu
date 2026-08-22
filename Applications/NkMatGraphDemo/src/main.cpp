@@ -86,6 +86,8 @@
 // commentaires, eux, gardent leur typographie : ils ne sont jamais imprimes.
 #include "NKContainers/String/NkFormat.h"
 #include "NKLogger/NkLog.h"
+#include "NKSL/Compiler/NkSLCompiler.h"
+#include <stdio.h> // fwrite : ecrire une source SANS passer par le formateur
 
 // NkShaderStage existe DEUX FOIS : celui du RHI (bitmask, = NkSLStage) et
 // celui de renderer/NkShaderBackend.h. Sans cet alias, toute mention du nom
@@ -851,6 +853,219 @@ static void MatriceDeuxBlocs(DemoContexte &ctx) {
 	logger.Info("");
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  LES PARAMETRES EXPOSES, CABLES JUSQU'AU PIXEL
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ CE CABLAGE EST COMMITE, ET C'EST LE POINT.
+//
+// Un premier essai avait ete monte puis RETIRE sans jamais etre commite. Il a
+// fallu trois jours pour s'apercevoir qu'on raisonnait sur un SOUVENIR de code
+// au lieu d'un code : impossible de le relire, impossible de le bissecter,
+// impossible de dire ce qu'il faisait vraiment. La lecon n'est pas « il ne
+// fallait pas le retirer », c'est **un echafaudage qui a produit une mesure
+// doit survivre a la mesure**. Meme rouge. Surtout rouge.
+//
+// La forme du cas est celle d'origine, et pas une plus simple : DEUX valeurs
+// ecrites dans le meme tampon entre deux tirs, et l'ecart de canal qui suit.
+// Un cas qui ne rendrait qu'une fois prouverait que le bloc arrive, pas qu'un
+// `SetFloat` PILOTE quoi que ce soit — or c'est exactement la question.
+
+// Un graphe dont l'emission est un PARAMETRE EXPOSE. Le reste est identique
+// aux cas d'emission deja verts : meme noeud, meme puits, meme chaine.
+// Seule difference : la couleur ne vient plus d'un defaut de prise fige dans
+// le shader, elle vient du bloc uniforme.
+static bool GrapheEmissionExposee(NkMatCompileResult &r, bool avecLeReelDevant) {
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId sortie = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId b = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	g.Connect(b, "bsdf", sortie, "surface");
+	// ⚠️ DEUX parametres exposes, et le choix des deux prises n'est PAS libre.
+	//
+	// Premier essai, ecarte : exposer `strength` et `color` d'un noeud Emission.
+	// Le shader les MULTIPLIE l'un par l'autre -- donc si l'un des deux
+	// n'arrivait pas, le pixel tombait au plancher achromatique dans les DEUX
+	// cas, et le cas etait incapable de dire LEQUEL manquait. C'est la regle
+	// deja gravee au CLAUDE.md parent : un cas neutre ne teste pas ce qui
+	// multiplie par zero, et ici c'est pire -- il ne teste pas non plus ce qui
+	// EST multiplie.
+	//
+	// Forme retenue : `roughness` (un reel) et `emission` (un vecteur). La
+	// rugosite ne touche QUE le speculaire, qui est achromatique quand
+	// metallic vaut zero -- elle s'annule donc dans un ecart entre canaux. Ce
+	// que l'ecart mesure est alors l'emission SEULE, et un ecart nul accuse
+	// l'emission sans ambiguite.
+	//
+	// Et l'ordre compte : en std140 un reel puis un vecteur donnent 0 puis 16.
+	// Sans le reel devant, le vecteur serait au decalage ZERO et un banc qui
+	// ecrirait a l'offset 0 par paresse passerait quand meme.
+	g.SetSocketDefault(b, "roughness", NkSocketDir::Input, NkValueReal(t.real, 0.5f));
+	const float32 noir[3] = {0.f, 0.f, 0.f};
+	g.SetSocketDefault(b, "emission", NkSocketDir::Input, NkValueVec(t.color, noir, 3));
+	if (avecLeReelDevant) {
+		NkString c1(NK_MPROP_EXPOSE_PREFIX);
+		c1.Append("roughness");
+		g.SetProp(b, c1.CStr(), NkValueText(t.real, "usure"));
+	}
+	NkString c2(NK_MPROP_EXPOSE_PREFIX);
+	c2.Append("emission");
+	g.SetProp(b, c2.CStr(), NkValueText(t.real, "teinte"));
+	r = NkMatCompileToNkSL(g);
+	return r.ok;
+}
+
+// Rend DEUX fois le meme materiau en ne changeant QUE le contenu du bloc de
+// parametres entre les deux tirs. Pipeline, sets et tampon sont montes UNE
+// fois : c'est le regime reel, celui ou du code de jeu ecrit un parametre
+// entre deux images.
+static bool RendreParamsDeuxValeurs(DemoContexte &ctx, const NkMatCompileResult &r, const char *nom,
+									const char *nomParam, const float32 valA[3], const float32 valB[3],
+									uint8 rgbaA[4], uint8 rgbaB[4], NkString &pourquoiPas) {
+	const NkMatParamExpose *p = r.TrouveParam(nomParam);
+	if (!p) {
+		pourquoiPas = NkString("parametre absent du resultat de compilation");
+		return false;
+	}
+	// ⚠️ ON ECRIT AU DECALAGE DECLARE PAR LE COMPILATEUR, jamais a un decalage
+	// deduit du rang. En std140 un vec3 s'aligne sur 16 et en occupe 12 : une
+	// deduction par l'ordre de declaration ecrirait a cote des le premier vec3,
+	// sans erreur et avec une valeur credible.
+	const uint32 taille = r.paramsTaille < 16u ? 16u : r.paramsTaille;
+	NkVector<uint8> octets;
+	octets.Resize(taille);
+
+	NkBufferHandle ubo = ctx.device->CreateBuffer(NkBufferDesc::Uniform(taille));
+	if (!ubo.IsValid()) {
+		pourquoiPas = NkString("tampon de parametres refuse");
+		return false;
+	}
+
+	// ── Les layouts, dans l'ordre que le SHADER declare ─────────────────────
+	// Le shader engendre met la camera en set 0 et les parametres en set 2. La
+	// liste des layouts doit donc porter trois entrees, celle du milieu VIDE.
+	// Forme prouvee par la ligne 6 de la matrice, avec un premier bloc de meme
+	// taille que le CameraUBO : ce n'est pas une supposition.
+	NkDescSetHandle lCam, lVide, lPar;
+	{
+		NkDescriptorSetLayoutDesc d;
+		d.Add(0, NkDescriptorType::NK_UNIFORM_BUFFER, RHIStage::NK_ALL_GRAPHICS);
+		lCam = ctx.device->CreateDescriptorSetLayout(d);
+	}
+	{
+		NkDescriptorSetLayoutDesc d;
+		lVide = ctx.device->CreateDescriptorSetLayout(d);
+	}
+	{
+		NkDescriptorSetLayoutDesc d;
+		d.Add(NK_MATBIND_GRAPH_PARAMS, NkDescriptorType::NK_UNIFORM_BUFFER, RHIStage::NK_ALL_GRAPHICS);
+		lPar = ctx.device->CreateDescriptorSetLayout(d);
+	}
+	if (!lCam.IsValid() || !lVide.IsValid() || !lPar.IsValid()) {
+		pourquoiPas = NkString("un des trois layouts est refuse");
+		return false;
+	}
+	NkDescSetHandle sCam = ctx.device->AllocateDescriptorSet(lCam);
+	NkDescSetHandle sPar = ctx.device->AllocateDescriptorSet(lPar);
+	if (!sCam.IsValid() || !sPar.IsValid()) {
+		pourquoiPas = NkString("allocation d un set refusee");
+		return false;
+	}
+	NkDescriptorWrite w[2] = {};
+	w[0].set = sCam;
+	w[0].binding = 0;
+	w[0].type = NkDescriptorType::NK_UNIFORM_BUFFER;
+	w[0].buffer = ctx.ubo;
+	w[0].bufferRange = sizeof(DemoCameraUBO);
+	w[1].set = sPar;
+	w[1].binding = NK_MATBIND_GRAPH_PARAMS;
+	w[1].type = NkDescriptorType::NK_UNIFORM_BUFFER;
+	w[1].buffer = ubo;
+	w[1].bufferRange = taille;
+	ctx.device->UpdateDescriptorSets(w, 2);
+
+	// ── Le pipeline, monte UNE fois ─────────────────────────────────────────
+	::nkentseu::NkShaderHandle prog = ctx.shaders.CompileVF(NkString(kVertexNkSL), r.source, NkString(nom));
+	::nkentseu::NkShaderHandle rhi = ctx.shaders.GetRHIHandle(prog);
+	if (!rhi.IsValid()) {
+		pourquoiPas = NkString("le shader engendre ne compile pas");
+		return false;
+	}
+	NkGraphicsPipelineDesc pd;
+	pd.shader = rhi;
+	pd.vertexLayout.AddBinding(0, (uint32)sizeof(DemoVertex))
+		.AddAttribute(0, 0, NkGPUFormat::NK_RGB32_FLOAT, 0, "POSITION", 0);
+	pd.rasterizer.cullMode = NkCullMode::NK_NONE;
+	pd.depthStencil = NkDepthStencilDesc::NoDepth();
+	pd.renderPass = ctx.cible.GetRP();
+	pd.descriptorSetLayouts.PushBack(lCam);
+	pd.descriptorSetLayouts.PushBack(lVide);
+	pd.descriptorSetLayouts.PushBack(lPar);
+	pd.debugName = nom;
+	NkPipelineHandle pipe = ctx.device->CreateGraphicsPipeline(pd);
+	if (!pipe.IsValid()) {
+		pourquoiPas = NkString("pipeline refuse");
+		return false;
+	}
+
+	// ── Les DEUX tirs, seul le contenu du tampon change ─────────────────────
+	for (uint32 tir = 0; tir < 2; ++tir) {
+		const float32 *v = (tir == 0) ? valA : valB;
+		for (uint32 i = 0; i < (uint32)octets.Size(); ++i)
+			octets[i] = 0;
+		const uint32 nb = (p->taille >= 12u) ? 3u : 1u;
+		for (uint32 c = 0; c < nb; ++c) {
+			const float32 f = v[c];
+			const uint8 *src = (const uint8 *)&f;
+			for (uint32 k = 0; k < 4; ++k)
+				octets[p->decalage + c * 4u + k] = src[k];
+		}
+		// Le reel est ecrit lui aussi, a SON decalage, et il vaut 0.5 aux deux
+		// tirs : il ne doit rien expliquer de l'ecart mesure, seulement occuper
+		// la place qui pousse la couleur a un decalage non nul.
+		const NkMatParamExpose *pi = r.TrouveParam("usure");
+		if (pi) {
+			const float32 un = 0.5f;
+			const uint8 *su = (const uint8 *)&un;
+			for (uint32 k = 0; k < 4; ++k)
+				octets[pi->decalage + k] = su[k];
+		}
+		ctx.device->WriteBuffer(ubo, octets.Data(), (uint32)octets.Size());
+
+		NkICommandBuffer *cmd = ctx.device->CreateCommandBuffer();
+		if (!cmd || !cmd->Begin()) {
+			pourquoiPas = NkString("command buffer refuse");
+			return false;
+		}
+		ctx.cible.BeginCapture(cmd, true, NkVec4f{1.f, 0.f, 1.f, 1.f}, false);
+		cmd->BindGraphicsPipeline(pipe);
+		// LES DEUX SETS SONT LIES. Lier le set 0 ne lie pas le set 2.
+		cmd->BindDescriptorSet(sCam, 0);
+		cmd->BindDescriptorSet(sPar, 2);
+		cmd->BindVertexBuffer(0, ctx.vbo);
+		cmd->Draw(3);
+		ctx.cible.EndCapture(cmd);
+		cmd->End();
+		ctx.device->Submit(&cmd, 1);
+		ctx.device->WaitIdle();
+
+		const uint32 n = ctx.largeur * ctx.hauteur * 4u;
+		NkVector<uint8> px;
+		px.Resize(n);
+		if (!ctx.cible.ReadbackPixels(px.Data(), ctx.largeur * 4u)) {
+			pourquoiPas = NkString("relecture refusee");
+			return false;
+		}
+		const uint32 c = ((ctx.hauteur / 2u) * ctx.largeur + (ctx.largeur / 2u)) * 4u;
+		uint8 *dst = (tir == 0) ? rgbaA : rgbaB;
+		for (uint32 i = 0; i < 4; ++i)
+			dst[i] = px[c + i];
+	}
+	ctx.device->DestroyPipeline(pipe);
+	return true;
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -1150,6 +1365,75 @@ int main() {
 		NkString d;
 		d = NkFormat("premier pixel=({0},{1},{2}) | magenta d'effacement lu : {3}", rouge[0], rouge[1], rouge[2], magenta ? "OUI -- le trace n'a pas eu lieu" : "non");
 		Cas("rendu/le-trace-a-bien-eu-lieu", !magenta, d);
+	}
+
+	// ── 11. LES PARAMETRES EXPOSES PILOTENT LE PIXEL ─────────────────────
+	{
+		// ⚠️ LA FORME EST CELLE D'ORIGINE, PAS UNE PLUS SIMPLE. Deux valeurs
+		// ecrites dans le MEME tampon entre deux tirs, pipeline et sets montes
+		// une seule fois. Un cas qui ne rendrait qu'une fois prouverait que le
+		// bloc arrive ; il ne prouverait PAS qu'un parametre PILOTE quoi que ce
+		// soit, et c'est toute la question posee depuis trois jours.
+		//
+		// L'attendu est calculable et sans tolerance : albedo nul annule le
+		// diffus, et le speculaire est ACHROMATIQUE quand metallic vaut zero --
+		// il s'annule donc dans un ecart entre canaux. Ce qui reste est
+		// exactement la valeur ecrite dans le bloc.
+		//
+		// 🔴 DEUX VARIANTES, ET C'EST LA COMPARAISON QUI EST LA MESURE.
+		// Un seul parametre expose (un vec3 seul, bloc de 16 octets) contre
+		// deux (un reel PUIS un vec3, bloc de 32). Tout le reste est identique
+		// -- meme graphe, meme cablage, meme code, meme tir. Une variante qui
+		// passe pendant que l'autre tombe designe l'axe elle-meme, sans qu'on
+		// ait a le deviner.
+		const float32 valA[3] = {kE, 0.f, 0.f};			   // rouge 128/255
+		const float32 valB[3] = {0.f, 192.f / 255.f, 0.f}; // vert  192/255
+		bool toutVert = true;
+		NkString detail;
+		for (uint32 variante = 0; variante < 2; ++variante) {
+			const bool avecReel = (variante == 1);
+			NkMatCompileResult rp;
+			const bool compile = GrapheEmissionExposee(rp, avecReel);
+			uint8 pa[4] = {}, pb[4] = {};
+			NkString pourquoi;
+			if (compile && getenv("NK_DUMP_PARAMS")) {
+				// fwrite, PAS le journal : une source de shader est pleine
+				// d accolades litterales, et le formateur les detruit.
+				FILE *f = fopen(avecReel ? "mesures_matgraph/params_2.nksl" : "mesures_matgraph/params_1.nksl", "wb");
+				if (f) {
+					fwrite(rp.source.CStr(), 1, (size_t)rp.source.Size(), f);
+					fclose(f);
+				}
+				// Et le HLSL REELLEMENT produit : c est lui que la carte execute,
+				// pas le NkSL. Les regles de rangement d un cbuffer HLSL ne sont
+				// PAS celles de std140.
+				NkSLCompiler cc;
+				NkSLCompileResult hr = cc.Compile(rp.source, NkSLStage::NK_FRAGMENT, NkSLTarget::NK_HLSL_DX11);
+				FILE *fh = fopen(avecReel ? "mesures_matgraph/params_2.hlsl" : "mesures_matgraph/params_1.hlsl", "wb");
+				if (fh) {
+					fwrite(hr.source.CStr(), 1, (size_t)hr.source.Size(), fh);
+					fclose(fh);
+				}
+			}
+			const bool rendu = compile && RendreParamsDeuxValeurs(ctx, rp, avecReel ? "matgraph_params2" : "matgraph_params1",
+																  "teinte", valA, valB, pa, pb, pourquoi);
+			const int32 ecartA = (int32)pa[0] - (int32)pa[1];
+			const int32 ecartB = (int32)pb[1] - (int32)pb[0];
+			const bool bonA = rendu && pa[1] == pa[2] && ecartA == kEcartAttendu;
+			const bool bonB = rendu && pb[0] == pb[2] && ecartB == 192;
+			// Deux tirs identiques signeraient un tampon jamais relu par la
+			// carte -- precisement la panne qu'on traque.
+			const bool ontChange = rendu && !(pa[0] == pb[0] && pa[1] == pb[1] && pa[2] == pb[2]);
+			const bool ok = bonA && bonB && ontChange;
+			toutVert = toutVert && ok;
+			const NkMatParamExpose *pt = rp.ok ? rp.TrouveParam("teinte") : nullptr;
+			detail.Append(NkFormat("[{0} param(s), bloc {1}o, teinte au decalage {2} : tir1=({3},{4},{5}) "
+								   "ecart={6} | tir2=({7},{8},{9}) ecart={10} | different={11} -> {12}] ",
+								   (uint32)rp.params.Size(), rp.paramsTaille, pt ? pt->decalage : 9999u,
+								   pa[0], pa[1], pa[2], ecartA, pb[0], pb[1], pb[2], ecartB,
+								   ontChange ? 1 : 0, NkString(ok ? "OK" : "ECHEC")));
+		}
+		Cas("rendu/parametre-expose-pilote-le-pixel", toutVert, detail);
 	}
 
 	ctx.Demonter();
