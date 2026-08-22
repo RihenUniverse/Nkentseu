@@ -1041,7 +1041,21 @@ static void CasMasqueCompileSurLesBackends() {
 							   NkString(echantillonne ? "" : "(pas echantillonne!)"),
 							   NkString(bonRegistre ? "" : "(mauvais registre!)")));
 	}
-	Cas("phase0/masque-compile-4-backends", ok == 4 && lectureTexturePartout && corps.Size() > 100, detail);
+	// Cinquieme verdict : le seul rendu par un vrai compilateur (glslang, via
+	// NK_SPIRV). Lu au MOT MAGIQUE, jamais a `success` -- voir la note longue
+	// dans CompileSurLesBackends : quand glslang refuse, success reste a 1.
+	{
+		NkSLCompileResult sp = c.Compile(shader, NkSLStage::NK_FRAGMENT, NkSLTarget::NK_SPIRV);
+		bool vrai = false;
+		if (sp.bytecode.Size() >= 4) {
+			const uint8 *o = sp.bytecode.Data();
+			vrai = (o[0] == 0x03 && o[1] == 0x02 && o[2] == 0x23 && o[3] == 0x07);
+		}
+		if (vrai)
+			++ok;
+		detail.Append(NkFormat("GLSLANG={0} ", NkString(vrai ? "ok" : "ECHEC")));
+	}
+	Cas("phase0/masque-gen-4-backends-plus-glslang", ok == 5 && lectureTexturePartout && corps.Size() > 100, detail);
 }
 
 // ── le compilateur : graphe -> NkSL -> quatre backends ───────────────────────
@@ -1067,7 +1081,42 @@ static uint32 CompileSurLesBackends(const NkString &nksl, NkString &detail, NkSt
 			++ok;
 		else if (premiereErreur && premiereErreur->Size() == 0 && r.errors.Size() > 0)
 			*premiereErreur = r.errors[0].message;
-		detail.Append(NkFormat("{0}={1} ", NkString(cibles[t].nom), NkString(r.success ? "ok" : "ECHEC")));
+		// ⚠️ « ok » ici ne veut PAS dire « compile ». Mesure du 22/08 :
+		// NkSLCompiler::Compile ne consulte AUCUN compilateur natif pour ces
+		// quatre cibles -- il appelle le GENERATEUR NkSL et rend son verdict.
+		// L'analyse semantique existe mais est DELIBEREMENT non bloquante
+		// (NkSLCompiler.cpp:290) : fonction jamais declaree, variable inconnue,
+		// mismatch de type remontent en AVERTISSEMENTS. Un shader appelant
+		// « NkFonctionQuiNExistePas » rend GL=ok VK=ok DX11=ok DX12=ok.
+		// Ces quatre colonnes attestent la GENERATION, jamais la COMPILATION.
+		detail.Append(NkFormat("{0}={1} ", NkString(cibles[t].nom), NkString(r.success ? "gen" : "ECHEC")));
+	}
+
+	// ── Le CINQUIEME verdict, et le seul rendu par un vrai compilateur ────────
+	// La cible NK_SPIRV genere le GLSL Vulkan puis le passe a glslang EMBARQUE
+	// (NkGLSLToSPIRV). glslang, lui, REFUSE une fonction non declaree.
+	//
+	// 🔴 MAIS ON NE PEUT PAS LIRE SON VERDICT DANS `success`. Quand glslang
+	// refuse, NkSLCompiler.cpp:325 rattrape l'echec, REND LE TEXTE GLSL a la
+	// place du bytecode et LAISSE success=1. Le seul bit qui distingue les deux
+	// cas est le MOT MAGIQUE : du vrai SPIR-V commence par 0x07230203 ; le texte
+	// rendu par defaut commence par « #ver ». Mesure du 22/08, les deux sens :
+	//   shader invalide -> success=1, octets=186, magie = 35 118 101 114 (#ver)
+	//   shader valide   -> success=1, octets=560, magie = 3 2 35 7 (SPIR-V)
+	//
+	// NE REMPLACE PAS CE TEST PAR `r.success` EN LE CROYANT EQUIVALENT.
+	// C'est exactement l'erreur qui a fait passer pour « compile sur 4 backends »
+	// une chaine qui n'en compilait aucun.
+	{
+		NkSLCompileResult sp = c.Compile(nksl, NkSLStage::NK_FRAGMENT, NkSLTarget::NK_SPIRV);
+		bool vrai = false;
+		if (sp.bytecode.Size() >= 4) {
+			const uint8 *o = sp.bytecode.Data();
+			vrai = (o[0] == 0x03 && o[1] == 0x02 && o[2] == 0x23 && o[3] == 0x07);
+		}
+		if (vrai)
+			++ok;
+		detail.Append(NkFormat("GLSLANG={0} ", NkString(vrai ? "ok" : "ECHEC")));
 	}
 	return ok;
 }
@@ -1107,7 +1156,7 @@ static void CasCompilePrincipled() {
 	const bool porteLeRouge = r.ok && ContientSansCasse(r.source, "0.800000012");
 	NkString d;
 	d = NkFormat("emis={0} ({1} o) | {2}| defaut de base_color present={3} {4}", r.ok ? 1 : 0, (uint32)r.source.Size(), be, porteLeRouge ? 1 : 0, r.ok ? "" : (r.error.Size() ? r.error.CStr() : ""));
-	Cas("compile/principled-4-backends", r.ok && ok == 4 && porteLeRouge, d);
+	Cas("compile/principled-4-backends", r.ok && ok == 5 && porteLeRouge, d);
 	if (ok != 4 && err.Size() > 0)
 		logger.Info("      premiere erreur du backend : {0}", err.CStr());
 }
@@ -1170,7 +1219,7 @@ static void CasCompileMixShader() {
 	// Le puits emet lui aussi un `mix` (specColor) : on en attend donc 4 + 1.
 	NkString d;
 	d = NkFormat("emis={0} ({1} o) | {2}| {3} cite {4} fois (1 declaration + {5} composantes) {6}", r.ok ? 1 : 0, (uint32)r.source.Size(), be, nomFac, nbFac, NkMatComposanteCount(), r.ok ? NkString("") : r.error);
-	Cas("compile/melange-deux-bsdf-4-backends", r.ok && ok == 4 && nbFac == NkMatComposanteCount() + 1u, d);
+	Cas("compile/melange-deux-bsdf-4-backends", r.ok && ok == 5 && nbFac == NkMatComposanteCount() + 1u, d);
 	// NK_DUMP=1 imprime le NkSL engendre. Ce n est pas un echafaudage oublie :
 	// quand un cas de compilation tombe, la question est toujours « qu a-t-il
 	// donc ecrit ? », et un banc qui ne sait pas le montrer oblige a rajouter
@@ -1205,7 +1254,7 @@ static void CasCompileOrdreRespecte() {
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 	NkString d;
 	d = NkFormat("declaration de {0} a {1}, lecture du puits a {2} (declaration AVANT attendue) | {3}", nomAlbedo, premiere, lecture, be);
-	Cas("compile/ordre-topologique-respecte", r.ok && ok == 4 && premiere > 0 && lecture > premiere, d);
+	Cas("compile/ordre-topologique-respecte", r.ok && ok == 5 && premiere > 0 && lecture > premiere, d);
 }
 
 static void CasCompileRefuseAvantDeGenerer() {
@@ -1289,7 +1338,7 @@ static void CasCompileEntreeNiCableeNiRenseignee() {
 	const bool neutreNoir = r.ok && ContientSansCasse(r.source, "vec3(0.0)");
 	NkString d;
 	d = NkFormat("emis={0} | {1}| neutre noir present={2} (le blanc flatterait un materiau non fini)", r.ok ? 1 : 0, be, neutreNoir ? 1 : 0);
-	Cas("compile/entree-vide-donne-le-neutre", r.ok && ok == 4 && neutreNoir, d);
+	Cas("compile/entree-vide-donne-le-neutre", r.ok && ok == 5 && neutreNoir, d);
 }
 
 static void CasCompileGrapheVenuDunFichier() {
@@ -1318,7 +1367,7 @@ static void CasCompileGrapheVenuDunFichier() {
 	const uint32 ok = apres.ok ? CompileSurLesBackends(apres.source, be, &err) : 0u;
 	NkString d;
 	d = NkFormat("relu={0} | shader identique apres aller-retour={1} ({2} vs {3} o) | {4}", relu ? 1 : 0, memeShader ? 1 : 0, (uint32)direct.source.Size(), (uint32)apres.source.Size(), be);
-	Cas("compile/graphe-venu-d-un-fichier", relu && memeShader && ok == 4, d);
+	Cas("compile/graphe-venu-d-un-fichier", relu && memeShader && ok == 5, d);
 }
 
 // ── la bibliotheque interrogee PAR TYPE DE PRISE ─────────────────────────────
@@ -1470,7 +1519,7 @@ static void CasCompileRGBVersBaseColor() {
 	// La locale porte le nom de la PRISE source : `RGB` sort sur « color ».
 	const NkString nomVal = NkFormat("n{0}_color", (uint32)rgb);
 	const bool lien = r.ok && Apres(r.source, nomVal.CStr()) > 0;
-	Cas("compile/rgb-vers-base-color", e == NkLinkError::Ok && r.ok && ok == 4 && porteLaValeur && lien,
+	Cas("compile/rgb-vers-base-color", e == NkLinkError::Ok && r.ok && ok == 5 && porteLaValeur && lien,
 		NkFormat("lien={0} | {1}| valeur de la propriete presente={2} | le BSDF lit {3}={4}",
 				 NkString(NkLinkErrorName(e)), be, porteLaValeur ? 1 : 0, nomVal, lien ? 1 : 0));
 }
@@ -1494,7 +1543,7 @@ static void CasCompileValeurVersRoughness() {
 	// `Value` sort sur « value ».
 	const NkString decl = NkFormat("float n{0}_value = 0.125", (uint32)val);
 	const bool bonType = r.ok && Apres(r.source, decl.CStr()) > 0;
-	Cas("compile/valeur-vers-roughness", e == NkLinkError::Ok && r.ok && ok == 4 && bonType,
+	Cas("compile/valeur-vers-roughness", e == NkLinkError::Ok && r.ok && ok == 5 && bonType,
 		NkFormat("lien={0} | {1}| declaration '{2}' presente={3}", NkString(NkLinkErrorName(e)), be, decl,
 				 bonType ? 1 : 0));
 }
@@ -1563,7 +1612,7 @@ static void CasToutesLesOperationsCompilent() {
 			NkMatCompileResult r = NkMatCompileToNkSL(g);
 			NkString be, err;
 			const uint32 nb = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
-			if (r.ok && nb == 4) {
+			if (r.ok && nb == 5) {
 				if (couleur)
 					++okMix;
 				else
@@ -1600,7 +1649,7 @@ static void CasDivisionParZeroGardee() {
 	NkString be, err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 	const bool garde = r.ok && ContientSansCasse(r.source, "== 0.0 ? 0.0");
-	Cas("compile/division-par-zero-gardee", r.ok && ok == 4 && garde,
+	Cas("compile/division-par-zero-gardee", r.ok && ok == 5 && garde,
 		NkFormat("emis={0} | {1}| garde presente dans le code emis={2}", r.ok ? 1 : 0, be, garde ? 1 : 0));
 }
 
@@ -1663,7 +1712,7 @@ static void CasRampeChargeVariable() {
 		const uint32 attendus = jeux[j].arrets - 1u + 2u;
 		NkString be, err;
 		const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
-		if (r.ok && ok == 4 && nbMix == attendus)
+		if (r.ok && ok == 5 && nbMix == attendus)
 			++bons;
 		detail.Append(NkFormat("{0} arrets->{1} mix (attendu {2}) ", jeux[j].arrets, nbMix, attendus));
 	}
@@ -1742,7 +1791,7 @@ static void CasRampeInterpolation() {
 	const bool stepEnConstante = cst.ok && ContientSansCasse(cst.source, "step(");
 	const bool nomme = !inc.ok && Apres(inc.error, "spline_de_bezier_cubique") > 0;
 	Cas("colorramp/interpolations-et-refus",
-		lin.ok && cst.ok && ok1 == 4 && ok2 == 4 && pasDeStepEnLineaire && stepEnConstante && nomme,
+		lin.ok && cst.ok && ok1 == 5 && ok2 == 5 && pasDeStepEnLineaire && stepEnConstante && nomme,
 		NkFormat("lineaire {0}| constante {1}| step absent en lineaire={2} present en constante={3} | inconnue "
 				 "refusee en la nommant={4}",
 				 be1, be2, pasDeStepEnLineaire ? 1 : 0, stepEnConstante ? 1 : 0, nomme ? 1 : 0));
@@ -1859,7 +1908,7 @@ static void CasTexturePlafondRefusNomme() {
 	const uint32 ok = pile.ok ? CompileSurLesBackends(pile.source, be, &err) : 0u;
 	const NkString attendu = NkFormat("ce graphe demande {0} textures, le plafond est {1}", plafond + 1, plafond);
 	const bool ditLeCompte = !trop.ok && Apres(trop.error, attendu.CStr()) > 0;
-	Cas("imgtex/plafond-refus-nomme", pile.ok && ok == 4 && !trop.ok && ditLeCompte && trop.source.Size() == 0,
+	Cas("imgtex/plafond-refus-nomme", pile.ok && ok == 5 && !trop.ok && ditLeCompte && trop.source.Size() == 0,
 		NkFormat("{0} textures : compile={1} {2}| {3} textures : refuse={4} en disant le compte={5} | message : {6}",
 				 plafond, pile.ok ? 1 : 0, be, plafond + 1, trop.ok ? 0 : 1, ditLeCompte ? 1 : 0, trop.error));
 }
@@ -1948,7 +1997,7 @@ static void CasTextureDeuxSorties() {
 	NkString be, err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 	Cas("imgtex/deux-sorties-distinctes",
-		e1 == NkLinkError::Ok && e2 == NkLinkError::Ok && r.ok && ok == 4 && deux,
+		e1 == NkLinkError::Ok && e2 == NkLinkError::Ok && r.ok && ok == 5 && deux,
 		NkFormat("liens {0}/{1} | {2}| locales '{3}' et '{4}' presentes={5}", NkString(NkLinkErrorName(e1)),
 				 NkString(NkLinkErrorName(e2)), be, nc, na, deux ? 1 : 0));
 }
@@ -2010,7 +2059,7 @@ static void CasTextureCoordonneeEtMappage() {
 	const bool echelle = avecMap.ok && ContientSansCasse(avecMap.source, "vec3(4.0, 4.0, 1.0)");
 	NkString be, err;
 	const uint32 ok = avecMap.ok ? CompileSurLesBackends(avecMap.source, be, &err) : 0u;
-	Cas("imgtex/uv-par-defaut-et-mappage", litUV && litMap && nePlusLireUV && ok == 4 && echelle,
+	Cas("imgtex/uv-par-defaut-et-mappage", litUV && litMap && nePlusLireUV && ok == 5 && echelle,
 		NkFormat("sans mappage lit vUV={0} | l'appel de texture CITE {1}={2} | ne lit plus l'UV brut={3} | echelle 4 "
 				 "presente={4} | {5}",
 				 litUV ? 1 : 0, nomMap, litMap ? 1 : 0, nePlusLireUV ? 1 : 0, echelle ? 1 : 0, be));
@@ -2090,7 +2139,7 @@ static void CasBaseTangenteSeulementSiUtile() {
 	const bool presente = avec.ok && Apres(avec.source, "nkT") > 0 && ContientSansCasse(avec.source, "dFdx(vUV)");
 	NkString be, err;
 	const uint32 ok = avec.ok ? CompileSurLesBackends(avec.source, be, &err) : 0u;
-	Cas("normalmap/base-tangente-seulement-si-utile", absente && presente && ok == 4,
+	Cas("normalmap/base-tangente-seulement-si-utile", absente && presente && ok == 5,
 		NkFormat("sans Normal Map : base tangente absente={0} | avec : presente={1} | {2}", absente ? 1 : 0,
 				 presente ? 1 : 0, be));
 }
@@ -2163,7 +2212,7 @@ static void CasBumpDeriveesEtGarde() {
 	const bool garde = r.ok && ContientSansCasse(r.source, "< 1e-12 ? 1e-12");
 	NkString be, err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
-	Cas("bump/derivees-et-garde-du-determinant", r.ok && ok == 4 && derive && garde,
+	Cas("bump/derivees-et-garde-du-determinant", r.ok && ok == 5 && derive && garde,
 		NkFormat("{0}| derivee de la hauteur presente={1} | determinant garde={2}", be, derive ? 1 : 0,
 				 garde ? 1 : 0));
 }
@@ -2199,7 +2248,7 @@ static void CasSepareTroisSorties() {
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 	(void)t;
 	(void)lecture;
-	Cas("separate/trois-sorties-distinctes", r.ok && ok == 4 && trois && distinctes,
+	Cas("separate/trois-sorties-distinctes", r.ok && ok == 5 && trois && distinctes,
 		NkFormat("{0}| trois locales presentes={1} | le BSDF lit x et y separement={2}", be, trois ? 1 : 0,
 				 distinctes ? 1 : 0));
 }
@@ -2245,7 +2294,7 @@ static void CasExposeLitLeBloc() {
 	const bool bloc = r.ok && Apres(r.source, "uniform NkGraphParams") > 0;
 	NkString be, err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
-	Cas("variable/expose-lit-le-bloc", r.ok && ok == 4 && lit && plusDeLitteral && bloc && r.params.Size() == 1,
+	Cas("variable/expose-lit-le-bloc", r.ok && ok == 5 && lit && plusDeLitteral && bloc && r.params.Size() == 1,
 		NkFormat("{0}| bloc declare={1} lit nkParams.usure={2} | le litteral 0.35 a disparu={3} | {4} parametre(s)",
 				 be, bloc ? 1 : 0, lit ? 1 : 0, plusDeLitteral ? 1 : 0, (uint32)r.params.Size()));
 }
@@ -2274,7 +2323,7 @@ static void CasDecalagesStd140() {
 					  r.paramsTaille == 32u;
 	NkString be, err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
-	Cas("variable/decalages-std140", r.ok && ok == 4 && bons,
+	Cas("variable/decalages-std140", r.ok && ok == 5 && bons,
 		NkFormat("metal@{0} teinte@{1} usure@{2} | bloc={3} o | attendus 0/16/28 et 32 (PAS 0/4/16) | {4}",
 				 a ? a->decalage : 999u, b ? b->decalage : 999u, c ? c->decalage : 999u, r.paramsTaille, be));
 }
@@ -2514,7 +2563,7 @@ static void CasBlocEtTexturesNeSeMarchentPasDessus() {
 	NkString be, err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 	Cas("imgtex/bloc-et-textures-ne-se-marchent-pas-dessus",
-		r.ok && ok == 4 && compte && distincts && blocHorsDesTextures,
+		r.ok && ok == 5 && compte && distincts && blocHorsDesTextures,
 		NkFormat("{0} bindings emis [{1}] (attendu {2}) | deux a deux distincts={3} | le slot du bloc ({4}) est "
 				 "hors de la table des textures={5} | {6}",
 				 n, liste, renderer::NK_MATBIND_GRAPH_SLOT_COUNT + 1u, distincts ? 1 : 0,
@@ -2592,7 +2641,7 @@ static void CasProceduralCompile() {
 		const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 		uint32 bind[16] = {};
 		slotsUtilises += r.ok ? RelieveBindingsSet2(r.source, bind, 16) : 0u;
-		if (r.ok && ok == 4)
+		if (r.ok && ok == 5)
 			++bons;
 		detail.Append(NkFormat("{0}={1} ", NkString(jeux[i].cle), r.ok ? be : r.error));
 	}
@@ -2667,7 +2716,7 @@ static void CasDegradeTypesEtRefus() {
 		NkMatCompileResult r = CompileProcedural(NK_MN_GRADIENT, "fac", "roughness",
 												 NkMatTypeDegradeAt(i)->cle);
 		NkString be, err;
-		if (r.ok && CompileSurLesBackends(r.source, be, &err) == 4)
+		if (r.ok && CompileSurLesBackends(r.source, be, &err) == 5)
 			++ok4;
 		sources[i] = r.source;
 	}
@@ -2701,7 +2750,7 @@ static void CasOctavesBornees() {
 					   ContientSansCasse(r.source, ", 1.0, 8.0)");
 	NkString be, err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
-	Cas("procedural/octaves-bornees-dans-le-shader", r.ok && ok == 4 && borne,
+	Cas("procedural/octaves-bornees-dans-le-shader", r.ok && ok == 5 && borne,
 		NkFormat("{0}| borne [1,8] presente dans le code emis={1}", be, borne ? 1 : 0));
 }
 
@@ -2714,7 +2763,7 @@ static void CasOndeTypesEtRefus() {
 	for (uint32 i = 0; i < NkMatTypeOndeCount(); ++i) {
 		NkMatCompileResult r = CompileProcedural(NK_MN_WAVE, "fac", "roughness", NkMatTypeOndeAt(i)->cle);
 		NkString be, err;
-		if (r.ok && CompileSurLesBackends(r.source, be, &err) == 4)
+		if (r.ok && CompileSurLesBackends(r.source, be, &err) == 5)
 			++ok;
 		if (i == 0)
 			a = r.source;
@@ -2754,7 +2803,7 @@ static void CasVoronoiBorneFixe() {
 	NkString be, err;
 	const uint32 ok = avec.ok ? CompileSurLesBackends(avec.source, be, &err) : 0u;
 	Cas("procedural/voronoi-voisinage-borne",
-		ok == 4 && bornes && absenteSansVoronoi && presenteAvec && dependanceDeclaree,
+		ok == 5 && bornes && absenteSansVoronoi && presenteAvec && dependanceDeclaree,
 		NkFormat("{0}| voisinage 3x3 litteral={1} | fonction absente sans Voronoi={2} presente avec={3} | sa "
 				 "dependance NkHash22 declaree={4}",
 				 be, bornes ? 1 : 0, absenteSansVoronoi ? 1 : 0, presenteAvec ? 1 : 0, dependanceDeclaree ? 1 : 0));
@@ -2776,7 +2825,7 @@ static void CasBriquesJointsDecales() {
 	const bool employe = r.ok && Apres(r.source, usage.CStr()) > 0;
 	NkString be, err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
-	Cas("procedural/briques-joints-decales", ok == 4 && calcule && employe,
+	Cas("procedural/briques-joints-decales", ok == 5 && calcule && employe,
 		NkFormat("{0}| decalage calcule={1} | ET employe dans la coordonnee={2}", be, calcule ? 1 : 0,
 				 employe ? 1 : 0));
 }
