@@ -240,6 +240,25 @@ namespace nkentseu {
 				void AllowConversion(NkTypeId from, NkTypeId to);
 				bool Accepts(NkTypeId socketType, NkTypeId valueType) const;
 
+				// ENUMERATION des conversions. Elle existe pour une raison precise :
+				// un sous-graphe cree pour accueillir un GROUPE tient son PROPRE
+				// registre. Sans pouvoir relire les conversions du parent, il
+				// refuserait a l interieur un lien que le parent acceptait -- et le
+				// fil serait perdu en silence, Connect() rendant une erreur que
+				// personne ne lit. Lecture seule : on ne rend jamais la table.
+				uint32 ConversionCount() const {
+					return (uint32)mConversions.Size();
+				}
+				bool ConversionAt(uint32 i, NkTypeId *outFrom, NkTypeId *outTo) const {
+					if (i >= (uint32)mConversions.Size())
+						return false;
+					if (outFrom)
+						*outFrom = (NkTypeId)(mConversions[i] >> 32);
+					if (outTo)
+						*outTo = (NkTypeId)(mConversions[i] & 0xFFFFFFFFull);
+					return true;
+				}
+
 				// ── NOEUDS ───────────────────────────────────────────────────────
 				NkNodeId AddNode(const char *type, const char *label = nullptr);
 				bool AddSocket(NkNodeId n, const char *name, NkTypeId type, NkSocketDir dir);

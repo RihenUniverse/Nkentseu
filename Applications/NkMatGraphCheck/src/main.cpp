@@ -29,6 +29,9 @@
 // mecanique des GROUPES. Le banc s en sert pour MESURER ou vit le refus de
 // recursion -- a l insertion, ou seulement a l aplatissement.
 #include "NKGraph/NkGraphDocument.h"
+// REGROUPER / DEGROUPER : l operation demandee en R9, et son critere
+// d acceptation -- grouper puis degrouper rend le graphe identique.
+#include "NKGraph/NkGraphGroup.h"
 #include <stdio.h> // fwrite : ecrire la source SANS passer par le formateur
 
 // ── POURQUOI CE BANC N'IMPRIME PLUS AVEC printf ─────────────────────────────
@@ -4010,6 +4013,554 @@ static void CasGroupeRecursionRefuseeMaisOu() {
 	Cas("groupe/recursion-refusee-a-l-aplatissement", construitSansRefus && refuseALaFin && planVide, d);
 }
 
+// ── regroupement/ : LE CONTROLE, ECRIT AVANT L'OPERATION ────────────────────
+//
+// Consigne de Rodolf (R9) : « grouper puis degrouper doit rendre le graphe
+// identique, octet pour octet apres serialisation, aux identifiants pres », et
+// « ecris ce controle AVANT d'ecrire le regroupement ». C'est ce que fait ce
+// bloc : il a ete ecrit en premier, et l'operation a ete ecrite pour le
+// satisfaire.
+//
+// ⚠️ POURQUOI PAS UNE COMPARAISON DU TEXTE SERIALISE, alors que c'est la lettre
+// de la consigne. Parce que « aux identifiants pres » n'est pas une retouche
+// cosmetique : apres un aller-retour, les noeuds sont RECREES, donc renumerotes
+// ET reordonnes dans la table. Renumeroter le texte par ordre d'apparition
+// alignerait deux ordres differents et comparerait des noeuds qui n'ont rien a
+// voir -- le controle rendrait « different » sur un aller-retour parfait, puis
+// serait relache jusqu'a ne plus rien dire.
+//
+// La forme CANONIQUE ci-dessous range donc les noeuds par leur CONTENU, jamais
+// par leur rang : un noeud est decrit par son type, son libelle, sa position,
+// ses prises (nom, type, sens, defaut) et ses proprietes ; les liens sont
+// decrits par les DESCRIPTEURS de leurs extremites, jamais par des numeros.
+// Deux graphes egaux modulo les identifiants ont exactement la meme forme.
+//
+// ⚠️ ET SA LIMITE, ecrite ici pour ne pas etre oubliee : si DEUX noeuds ont le
+// meme descripteur (meme type, meme libelle, meme position, memes prises), la
+// forme canonique ne peut plus les distinguer, et un lien deplace de l'un a
+// l'autre passerait inapercu. Le controle le DETECTE et le DIT (`ambigu`) au
+// lieu de rendre un vert trompeur -- un cas qui ne peut pas discriminer doit
+// l'annoncer, pas se taire.
+
+static bool ChaineMoinsQue(const NkString &a, const NkString &b) {
+	const char *p = a.CStr();
+	const char *q = b.CStr();
+	const uint32 na = (uint32)a.Size();
+	const uint32 nb = (uint32)b.Size();
+	const uint32 n = na < nb ? na : nb;
+	for (uint32 i = 0; i < n; ++i) {
+		if ((unsigned char)p[i] != (unsigned char)q[i])
+			return (unsigned char)p[i] < (unsigned char)q[i];
+	}
+	return na < nb;
+}
+
+static void TrieChaines(NkVector<NkString> &v) {
+	// Tri par insertion : quelques dizaines d'elements, et un tri simple qu'on
+	// relit est preferable ici a un tri rapide qu'on relit mal.
+	for (uint32 i = 1; i < (uint32)v.Size(); ++i) {
+		NkString cle = v[i];
+		uint32 j = i;
+		while (j > 0 && ChaineMoinsQue(cle, v[j - 1])) {
+			v[j] = v[j - 1];
+			--j;
+		}
+		v[j] = cle;
+	}
+}
+
+static NkString DecritValeur(const NkNodeGraph &g, const NkGraphValue &v) {
+	if (!v.IsSet())
+		return NkString("-");
+	const NkString *tn = g.TypeName(v.type);
+	NkString s = tn ? *tn : NkString("?");
+	s.Append("(");
+	for (uint32 i = 0; i < (uint32)v.numbers.Size(); ++i) {
+		if (i)
+			s.Append(",");
+		s.Append(NkFormat("{0}", v.numbers[i]));
+	}
+	s.Append(";");
+	s.Append(v.text);
+	s.Append(")");
+	return s;
+}
+
+// Le descripteur d'un noeud : tout ce qui le definit SAUF son identifiant.
+static NkString DecritNoeud(const NkNodeGraph &g, const NkNode &n) {
+	NkString s = NkFormat("T={0} L={1} P=({2},{3})", n.type, n.label, n.x, n.y);
+	// Les prises sont decrites DANS LEUR ORDRE : c'est lui qui porte l'ordre de
+	// l'interface d'un groupe, et R9 exige qu'il soit deterministe.
+	for (uint32 i = 0; i < (uint32)n.sockets.Size(); ++i) {
+		const NkSocket &k = n.sockets[i];
+		const NkString *tn = g.TypeName(k.type);
+		s.Append(NkFormat(" |S {0}:{1}:{2}:{3}", k.name, tn ? *tn : NkString("?"),
+						  k.dir == NkSocketDir::Input ? NkString("in") : NkString("out"),
+						  DecritValeur(g, k.defaultValue)));
+	}
+	for (uint32 i = 0; i < (uint32)n.props.Size(); ++i)
+		s.Append(NkFormat(" |R {0}:{1}", n.props[i].name, DecritValeur(g, n.props[i].value)));
+	return s;
+}
+
+// La forme canonique complete. `outAmbigu` passe a vrai si deux noeuds portent
+// le meme descripteur -- auquel cas le controle ne peut plus discriminer et doit
+// le dire.
+static NkString FormeCanonique(const NkNodeGraph &g, bool *outAmbigu) {
+	NkVector<NkString> descr;	 // descripteur du noeud i (table BRUTE, vivants seuls)
+	NkVector<NkNodeId> ids;		 // son identifiant, pour retrouver les liens
+	for (uint32 i = 0; i < g.RawNodeCount(); ++i) {
+		const NkNode *n = g.RawNodeAt(i);
+		if (!n || !n->alive)
+			continue;
+		descr.PushBack(DecritNoeud(g, *n));
+		ids.PushBack(n->id);
+	}
+
+	if (outAmbigu) {
+		*outAmbigu = false;
+		for (uint32 i = 0; i < (uint32)descr.Size() && !*outAmbigu; ++i)
+			for (uint32 j = i + 1; j < (uint32)descr.Size() && !*outAmbigu; ++j)
+				if (descr[i] == descr[j])
+					*outAmbigu = true;
+	}
+
+	// Les liens sont decrits par le DESCRIPTEUR de leurs extremites et le NOM de
+	// leurs prises -- jamais par des index, qui ne survivent pas a un
+	// aller-retour.
+	NkVector<NkString> lignes;
+	for (uint32 i = 0; i < (uint32)descr.Size(); ++i)
+		lignes.PushBack(NkFormat("N {0}", descr[i]));
+	for (uint32 i = 0; i < g.LinkCount(); ++i) {
+		const NkLink *l = g.LinkAt(i);
+		if (!l || !l->alive)
+			continue;
+		const NkNode *a = g.Find(l->fromNode);
+		const NkNode *b = g.Find(l->toNode);
+		if (!a || !b)
+			continue;
+		if (l->fromSocket < 0 || l->fromSocket >= (int32)a->sockets.Size())
+			continue;
+		if (l->toSocket < 0 || l->toSocket >= (int32)b->sockets.Size())
+			continue;
+		lignes.PushBack(NkFormat("L [{0}].{1} -> [{2}].{3}", DecritNoeud(g, *a), a->sockets[(uint32)l->fromSocket].name,
+								 DecritNoeud(g, *b), b->sockets[(uint32)l->toSocket].name));
+	}
+	TrieChaines(lignes);
+
+	NkString out;
+	for (uint32 i = 0; i < (uint32)lignes.Size(); ++i) {
+		out.Append(lignes[i]);
+		out.Append("\n");
+	}
+	return out;
+}
+
+// ── le graphe d'essai du regroupement ────────────────────────────────────────
+// Il est dessine pour porter LES QUATRE PIEGES de R9 a la fois :
+//   - `val` (un Value) alimente DEUX noeuds internes depuis l'exterieur : une
+//     seule entree doit en sortir, pas deux (piege 1 : deduplication) ;
+//   - un reel alimente une prise COULEUR a travers la frontiere : la conversion
+//     dirigee doit survivre au passage dans le sous-graphe ;
+//   - la sortie interne alimente DEUX noeuds exterieurs : une seule sortie
+//     (piege 2) ;
+//   - deux prises internes destinataires portent des noms DIFFERENTS, et l'ordre
+//     doit etre reproductible (pieges 3 et 4).
+//
+// `outSel` recoit la selection a grouper : les deux Math internes.
+static void MonteGrapheAGrouper(NkNodeGraph &g, const NkMatTypes &t, NkVector<NkNodeId> &outSel, NkNodeId *outVal,
+								NkNodeId *outMix, NkNodeId *outEmi) {
+	const NkNodeId val = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId m1 = NkMatAddNode(g, NK_MN_MATH);
+	const NkNodeId m2 = NkMatAddNode(g, NK_MN_MATH);
+	const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_COLOR);
+	const NkNodeId emi = NkMatAddNode(g, NK_MN_EMISSION);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+
+	// Des positions DISTINCTES : elles font partie du descripteur, et deux
+	// noeuds Math superposes rendraient la forme canonique ambigue -- ce que le
+	// controle signalerait, mais autant ne pas s'infliger le cas.
+	NkNode *p = nullptr;
+	p = g.Find(m1);
+	if (p) {
+		p->x = 10.f;
+		p->y = 20.f;
+	}
+	p = g.Find(m2);
+	if (p) {
+		p->x = 10.f;
+		p->y = 60.f;
+	}
+
+	// ⚠️ DES DEFAUTS DE PRISE ET DES PROPRIETES, et ils ne sont pas decoratifs.
+	// Sans eux, deux mutations SURVIVAIENT a l'aller-retour -- « le defaut de
+	// prise n'est pas recopie » et « la propriete n'est pas recopiee » -- parce
+	// que le graphe d'essai n'en portait aucun. Un controle ne peut pas voir
+	// disparaitre ce qui n'existe pas : c'est la MATIERE du cas qui manquait,
+	// pas l'assertion. Mesure faite, pas devinee.
+	//
+	// Un defaut sur une prise LIBRE (`m2.a`) et un sur une prise CABLEE (`m1.b`) :
+	// le second est celui qu'une recopie « intelligente » sauterait, en jugeant
+	// qu'un defaut masque par un lien ne sert a rien -- il sert des qu'on
+	// debranche.
+	g.SetSocketDefault(m2, "a", NkSocketDir::Input, NkValueReal(t.real, 0.25f));
+	g.SetSocketDefault(m1, "b", NkSocketDir::Input, NkValueReal(t.real, 0.75f));
+	g.SetProp(m1, "operation", NkValueText(t.real, "multiplier"));
+	g.SetProp(m2, "operation", NkValueText(t.real, "ajouter"));
+
+	// `val` traverse la frontiere DEUX FOIS, depuis la MEME prise : une seule
+	// entree de groupe doit en resulter.
+	g.Connect(val, "value", m1, "a");
+	g.Connect(val, "value", m2, "b");
+	// et la sortie de m1 traverse vers DEUX destinataires exterieurs, dont une
+	// prise COULEUR (conversion dirigee reel -> couleur).
+	g.Connect(m1, "value", mix, "color1");
+	g.Connect(m1, "value", mix, "fac");
+	g.Connect(mix, "color", emi, "color");
+	g.Connect(emi, "emission", out, "surface");
+	// un lien PUREMENT INTERNE, qui doit rester a l'interieur sans devenir une
+	// prise : c'est le troisieme cas du tableau de R9.
+	g.Connect(m2, "value", m1, "b");
+
+	outSel.PushBack(m1);
+	outSel.PushBack(m2);
+	if (outVal)
+		*outVal = val;
+	if (outMix)
+		*outMix = mix;
+	if (outEmi)
+		*outEmi = emi;
+}
+
+static void CasRegroupementAllerRetourIdentique() {
+	// LE CRITERE D'ACCEPTATION DE R9, tel qu'il est ecrit : grouper puis
+	// degrouper rend le graphe identique, aux identifiants pres.
+	//
+	// DISCRIMINE : il attrape d'un seul coup un lien oublie a la frontiere, un
+	// defaut de prise perdu au passage, une propriete non recopiee, une position
+	// ecrasee, et un lien interne promu en prise par erreur. Aucun de ces
+	// defauts ne se voit a l'oeil sur un graphe rendu -- tous se voient ici.
+	NkGraphDocument doc;
+	const uint32 racine = doc.AddGraph("racine");
+	doc.SetRoot(racine);
+	NkMatTypes t;
+	NkVector<NkNodeId> sel;
+	{
+		NkNodeGraph &g = doc.GraphAt(racine);
+		t = NkMatRegisterTypes(g);
+		MonteGrapheAGrouper(g, t, sel, nullptr, nullptr, nullptr);
+	}
+
+	bool ambiguAvant = false;
+	const NkString avant = FormeCanonique(doc.GraphAt(racine), &ambiguAvant);
+
+	NkNodeId inst = NK_NODE_INVALID;
+	const NkGroupError eg = NkGrouper(doc, racine, sel.Data(), (uint32)sel.Size(), "mon groupe", &inst);
+	const NkGroupError ed = NkDegrouper(doc, racine, inst);
+
+	bool ambiguApres = false;
+	const NkString apres = FormeCanonique(doc.GraphAt(racine), &ambiguApres);
+	const bool identique = avant == apres;
+
+	NkString d;
+	d = NkFormat("grouper='{0}' degrouper='{1}' | identique={2} ({3} vs {4} o) | ambigu avant={5} apres={6} (0 "
+				 "attendu des deux cotes)",
+				 NkString(NkGroupErrorName(eg)), NkString(NkGroupErrorName(ed)), identique ? 1 : 0,
+				 (uint32)avant.Size(), (uint32)apres.Size(), ambiguAvant ? 1 : 0, ambiguApres ? 1 : 0);
+	Cas("regroupement/aller-retour-identique",
+		eg == NkGroupError::Ok && ed == NkGroupError::Ok && identique && !ambiguAvant && !ambiguApres, d);
+}
+
+static void CasRegroupementInterfaceDeduite() {
+	// ⚠️ CE QUE L'ALLER-RETOUR NE PROUVE PAS, et c'est pour ca que ce cas existe.
+	//
+	// Une deduplication RATEE peut parfaitement survivre a l'aller-retour : un
+	// groupe qui creerait CINQ entrees identiques pour une constante partagee
+	// par cinq noeuds les redistribuerait correctement au degroupement, et le
+	// graphe reviendrait identique. Le critere de R9 est necessaire, il n'est
+	// pas suffisant -- il faut regarder l'INTERFACE elle-meme.
+	//
+	// DISCRIMINE : `val` traverse la frontiere DEUX FOIS depuis la MEME prise,
+	// et la sortie de `m1` la traverse DEUX FOIS vers deux destinataires. Une
+	// implantation qui compterait les LIENS au lieu des PRISES SOURCES rendrait
+	// deux entrees et deux sorties, et ce cas tomberait.
+	NkGraphDocument doc;
+	const uint32 racine = doc.AddGraph("racine");
+	doc.SetRoot(racine);
+	NkVector<NkNodeId> sel;
+	{
+		NkNodeGraph &g = doc.GraphAt(racine);
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		MonteGrapheAGrouper(g, t, sel, nullptr, nullptr, nullptr);
+	}
+	NkNodeId inst = NK_NODE_INVALID;
+	const NkGroupError eg = NkGrouper(doc, racine, sel.Data(), (uint32)sel.Size(), "mon groupe", &inst);
+
+	uint32 nIn = 0, nOut = 0;
+	const NkNode *n = doc.GraphAt(racine).Find(inst);
+	if (n)
+		for (uint32 i = 0; i < (uint32)n->sockets.Size(); ++i)
+			(n->sockets[i].dir == NkSocketDir::Input ? nIn : nOut) += 1u;
+
+	// L'interface du sous-graphe et celle de l'instance doivent s'accorder :
+	// c'est `BuildPlan` qui le juge, par le controle d'interface deja en place.
+	NkEvalPlan plan;
+	const NkPlanError ep = doc.BuildPlan(plan);
+
+	NkString d;
+	d = NkFormat("grouper='{0}' | entrees={1} (1 attendue : meme prise source deux fois) sorties={2} (1 attendue : "
+				 "meme sortie interne vers deux destinataires) | aplatissement='{3}' etapes={4}",
+				 NkString(NkGroupErrorName(eg)), nIn, nOut, NkString(NkPlanErrorName(ep)), plan.Size());
+	Cas("regroupement/interface-deduite-et-dedupliquee",
+		eg == NkGroupError::Ok && nIn == 1 && nOut == 1 && ep == NkPlanError::Ok, d);
+}
+
+// Le graphe de l'ORDRE. Il est distinct du precedent parce qu'il lui faut
+// PLUSIEURS entrees et PLUSIEURS sorties : avec une seule de chaque, l'ordre est
+// une propriete vide, et le cas qui l'a mesure d'abord ne pouvait rien attraper.
+//
+// Trois sources exterieures distinctes alimentent trois noeuds internes empiles
+// verticalement, et chacun ressort vers une prise differente d'un Mix. Les trois
+// prises internes s'appellent TOUTES `a`, et les trois sorties TOUTES `value` :
+// la desambiguisation des homonymes (R9, piege 4) est donc exercee elle aussi.
+//
+// `ordreInverse` ne change pas le graphe : il change l'ORDRE DE CREATION DES
+// LIENS. C'est le vrai scenario -- deux auteurs obtiennent le meme graphe par
+// deux histoires d'edition differentes -- et c'est ce qui fait varier l'ordre
+// dans lequel les croisements sont decouverts.
+static void MonteGrapheOrdre(NkNodeGraph &g, const NkMatTypes &t, NkVector<NkNodeId> &outSel, bool ordreInverse) {
+	(void)t;
+	const NkNodeId v1 = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId v2 = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId v3 = NkMatAddNode(g, NK_MN_VALUE);
+	const NkNodeId m1 = NkMatAddNode(g, NK_MN_MATH);
+	const NkNodeId m2 = NkMatAddNode(g, NK_MN_MATH);
+	const NkNodeId m3 = NkMatAddNode(g, NK_MN_MATH);
+	const NkNodeId mix = NkMatAddNode(g, NK_MN_MIX_COLOR);
+
+	// Des LIBELLES distincts sur les sources : c'est par eux que le cas
+	// identifiera QUELLE source aboutit sur QUELLE prise du groupe. Sans eux,
+	// trois noeuds `Value` seraient indiscernables et le controle comparerait
+	// des noms de prises sans savoir ce qu'il y a derriere.
+	NkNode *p = nullptr;
+	p = g.Find(v1);
+	if (p)
+		p->label = NkString("v1");
+	p = g.Find(v2);
+	if (p)
+		p->label = NkString("v2");
+	p = g.Find(v3);
+	if (p)
+		p->label = NkString("v3");
+	// L'empilement vertical EST la regle d'ordre : c'est lui qu'on veut voir
+	// gagner contre l'ordre de creation des liens.
+	p = g.Find(m1);
+	if (p) {
+		p->x = 10.f;
+		p->y = 10.f;
+	}
+	p = g.Find(m2);
+	if (p) {
+		p->x = 10.f;
+		p->y = 50.f;
+	}
+	p = g.Find(m3);
+	if (p) {
+		p->x = 10.f;
+		p->y = 90.f;
+	}
+
+	if (!ordreInverse) {
+		g.Connect(v1, "value", m1, "a");
+		g.Connect(v2, "value", m2, "a");
+		g.Connect(v3, "value", m3, "a");
+		g.Connect(m1, "value", mix, "fac");
+		g.Connect(m2, "value", mix, "color1");
+		g.Connect(m3, "value", mix, "color2");
+	} else {
+		g.Connect(m3, "value", mix, "color2");
+		g.Connect(m2, "value", mix, "color1");
+		g.Connect(m1, "value", mix, "fac");
+		g.Connect(v3, "value", m3, "a");
+		g.Connect(v2, "value", m2, "a");
+		g.Connect(v1, "value", m1, "a");
+	}
+
+	outSel.PushBack(m1);
+	outSel.PushBack(m2);
+	outSel.PushBack(m3);
+}
+
+static void CasRegroupementOrdreDeterministe() {
+	// R9, piege 3 : « grouper deux fois la meme selection donne deux noeuds de
+	// formes differentes » si l'ordre des prises emerge du parcours.
+	//
+	// ⚠️ CE CAS A DEJA ETE FAUX UNE FOIS, et la mutation l'a dit. Sa premiere
+	// version comparait la SUITE DES NOMS des prises. Or les noms sont derives
+	// des prises internes -- `a`, `a_2`, `a_3` -- et ils sortent DANS CE MEME
+	// ORDRE quelle que soit la permutation : la suite des noms est identique
+	// meme quand le cablage est entierement permute. Le tri pouvait etre
+	// desactive, le cas restait vert.
+	//
+	// Il compare desormais la CORRESPONDANCE : pour chaque prise du groupe, QUI
+	// s'y branche. `a<-v1` et `a<-v3` sont deux interfaces differentes qui
+	// portent le meme nom. C'est la relation, pas l'etiquette.
+	//
+	// DISCRIMINE : la seconde passe construit le MEME graphe en creant ses liens
+	// dans l'ordre INVERSE, et donne la selection a l'envers. Un ordre qui
+	// suivrait la decouverte des croisements permuterait les trois entrees.
+	NkString formeA, formeB;
+	for (uint32 passe = 0; passe < 2; ++passe) {
+		NkGraphDocument doc;
+		const uint32 racine = doc.AddGraph("racine");
+		doc.SetRoot(racine);
+		NkVector<NkNodeId> sel;
+		{
+			NkNodeGraph &g = doc.GraphAt(racine);
+			const NkMatTypes t = NkMatRegisterTypes(g);
+			MonteGrapheOrdre(g, t, sel, passe == 1);
+		}
+		if (passe == 1) {
+			NkVector<NkNodeId> inv;
+			for (uint32 i = (uint32)sel.Size(); i > 0; --i)
+				inv.PushBack(sel[i - 1]);
+			sel = inv;
+		}
+		NkNodeId inst = NK_NODE_INVALID;
+		NkGrouper(doc, racine, sel.Data(), (uint32)sel.Size(), "mon groupe", &inst);
+
+		const NkNodeGraph &g = doc.GraphAt(racine);
+		const NkNode *n = g.Find(inst);
+		NkString f;
+		if (n)
+			for (uint32 i = 0; i < (uint32)n->sockets.Size(); ++i) {
+				if (n->sockets[i].dir == NkSocketDir::Input) {
+					// QUI alimente cette entree du groupe : on nomme la source
+					// par son LIBELLE, stable d'une passe a l'autre.
+					const NkLink *l = g.IncomingOf(inst, (int32)i);
+					const NkNode *src = l ? g.Find(l->fromNode) : nullptr;
+					f.Append(NkFormat("{0}<-{1};", n->sockets[i].name, src ? src->label : NkString("?")));
+				} else {
+					// et OU va cette sortie : la prise de destination suffit a
+					// identifier le noeud interne d'origine.
+					NkString dest("?");
+					for (uint32 k = 0; k < g.LinkCount(); ++k) {
+						const NkLink *l = g.LinkAt(k);
+						if (!l || !l->alive || l->fromNode != inst || l->fromSocket != (int32)i)
+							continue;
+						const NkNode *d = g.Find(l->toNode);
+						if (d && l->toSocket >= 0 && l->toSocket < (int32)d->sockets.Size())
+							dest = d->sockets[(uint32)l->toSocket].name;
+					}
+					f.Append(NkFormat("{0}->{1};", n->sockets[i].name, dest));
+				}
+			}
+		if (passe == 0)
+			formeA = f;
+		else
+			formeB = f;
+	}
+	NkString d;
+	d = NkFormat("passe 1 = '{0}' | passe 2 (liens crees a l envers, selection a l envers) = '{1}' | identiques={2}",
+				 formeA, formeB, formeA == formeB ? 1 : 0);
+	// Controle positif : une interface VIDE serait identique a elle-meme. On
+	// exige donc qu'elle porte les SIX prises attendues.
+	uint32 nbPrises = 0;
+	for (uint32 i = 0; i < (uint32)formeA.Size(); ++i)
+		if (formeA.CStr()[i] == ';')
+			++nbPrises;
+	Cas("regroupement/ordre-des-prises-deterministe", nbPrises == 6 && formeA == formeB, d);
+}
+
+static void CasRegroupementRefusNomme() {
+	// Les refus, et ils doivent SE NOMMER. Trois formes qu'on ne doit jamais
+	// laisser passer en silence :
+	//   - une selection VIDE (rien a empaqueter) ;
+	//   - un noeud de la selection qui n'existe pas dans ce graphe ;
+	//   - un nom de groupe DEJA PRIS -- sans ce refus, deux definitions
+	//     porteraient le meme nom et une instance en designerait une au hasard.
+	//
+	// DISCRIMINE : on exige aussi que le document soit INCHANGE apres chaque
+	// refus. Un refus qui aurait deja cree le sous-graphe avant de renoncer
+	// laisserait une definition orpheline derriere lui -- le meme piege que
+	// « prototype-inconnu », ou le code de retour seul ne suffisait pas.
+	NkGraphDocument doc;
+	const uint32 racine = doc.AddGraph("racine");
+	doc.SetRoot(racine);
+	NkVector<NkNodeId> sel;
+	{
+		NkNodeGraph &g = doc.GraphAt(racine);
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		MonteGrapheAGrouper(g, t, sel, nullptr, nullptr, nullptr);
+	}
+	const uint32 graphesAvant = doc.GraphCount();
+	const uint32 noeudsAvant = doc.GraphAt(racine).NodeCount();
+
+	const NkGroupError vide = NkGrouper(doc, racine, sel.Data(), 0, "g", nullptr);
+	const NkNodeId fantome = 9999;
+	const NkGroupError inconnu = NkGrouper(doc, racine, &fantome, 1, "g", nullptr);
+	const NkGroupError nomPris = NkGrouper(doc, racine, sel.Data(), (uint32)sel.Size(), "racine", nullptr);
+	// et Degrouper sur un noeud qui n'est pas une instance
+	const NkGroupError pasUneInstance = NkDegrouper(doc, racine, sel[0]);
+
+	const bool intact = doc.GraphCount() == graphesAvant && doc.GraphAt(racine).NodeCount() == noeudsAvant;
+
+	NkString d;
+	d = NkFormat("selection vide='{0}' noeud inconnu='{1}' nom deja pris='{2}' degrouper hors instance='{3}' | "
+				 "document intact={4}",
+				 NkString(NkGroupErrorName(vide)), NkString(NkGroupErrorName(inconnu)),
+				 NkString(NkGroupErrorName(nomPris)), NkString(NkGroupErrorName(pasUneInstance)), intact ? 1 : 0);
+	Cas("regroupement/refus-nommes",
+		vide == NkGroupError::EmptySelection && inconnu == NkGroupError::UnknownNode &&
+			nomPris == NkGroupError::NameTaken && pasUneInstance == NkGroupError::NotAnInstance && intact,
+		d);
+}
+
+static void CasRegroupementConversionSurvitALaFrontiere() {
+	// ⚠️ LE PIEGE QUE JE N'AVAIS PAS VU EN ECRIVANT LE CONTROLE, et qui merite
+	// son propre cas : chaque graphe tient SON PROPRE registre de types et SES
+	// PROPRES conversions dirigees. Un sous-graphe cree vide refuserait donc, a
+	// l'interieur, un lien reel -> couleur que le parent acceptait -- et le
+	// regroupement perdrait un fil SANS QUE RIEN NE LE DISE, puisque `Connect`
+	// rend une erreur que personne ne lit.
+	//
+	// DISCRIMINE : la sortie de `m1` (un reel) alimente `fac` (reel) ET
+	// `color1` (couleur). Si les conversions n'etaient pas transportees dans le
+	// sous-graphe, le lien vers la couleur tomberait -- et l'aller-retour le
+	// dirait. Ici on le mesure DIRECTEMENT, a l'endroit ou ca casse : dans le
+	// registre du sous-graphe.
+	NkGraphDocument doc;
+	const uint32 racine = doc.AddGraph("racine");
+	doc.SetRoot(racine);
+	NkVector<NkNodeId> sel;
+	{
+		NkNodeGraph &g = doc.GraphAt(racine);
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		MonteGrapheAGrouper(g, t, sel, nullptr, nullptr, nullptr);
+	}
+	NkGrouper(doc, racine, sel.Data(), (uint32)sel.Size(), "mon groupe", nullptr);
+	const int32 idx = doc.FindGraph("mon groupe");
+	bool memeNoms = false;
+	bool memeConversion = false;
+	bool pasDeConversionInverse = false;
+	if (idx >= 0) {
+		const NkNodeGraph &enfant = doc.GraphAt((uint32)idx);
+		const NkNodeGraph &parent = doc.GraphAt(racine);
+		const NkTypeId r = enfant.FindType(NK_MT_REAL);
+		const NkTypeId c = enfant.FindType(NK_MT_COLOR);
+		memeNoms = r != NK_TYPE_INVALID && c != NK_TYPE_INVALID;
+		// La conversion DIRIGEE doit avoir traverse, et seulement dans son sens.
+		memeConversion = enfant.Accepts(c, r) && parent.Accepts(parent.FindType(NK_MT_COLOR), parent.FindType(NK_MT_REAL));
+		pasDeConversionInverse = !enfant.Accepts(r, c);
+	}
+	NkString d;
+	d = NkFormat("sous-graphe trouve={0} | types reel+couleur presents={1} | reel->couleur autorise dedans={2} | "
+				 "couleur->reel toujours refuse={3}",
+				 idx >= 0 ? 1 : 0, memeNoms ? 1 : 0, memeConversion ? 1 : 0, pasDeConversionInverse ? 1 : 0);
+	Cas("regroupement/conversions-traversent-la-frontiere",
+		idx >= 0 && memeNoms && memeConversion && pasDeConversionInverse, d);
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -4034,6 +4585,14 @@ int main() {
 	CasGroupeCatalogueMateriauFerme();
 	CasGroupeOuVitLeRefusDuTypeInconnu();
 	CasGroupeRecursionRefuseeMaisOu();
+
+	// -- regroupement/ : le critere d acceptation de R9, ecrit AVANT
+	//    l operation, et l operation ecrite pour le satisfaire.
+	CasRegroupementAllerRetourIdentique();
+	CasRegroupementInterfaceDeduite();
+	CasRegroupementOrdreDeterministe();
+	CasRegroupementRefusNomme();
+	CasRegroupementConversionSurvitALaFrontiere();
 	CasTypesNonEnregistres();
 	CasPrincipledVersSortie();
 	CasCouleurDansShaderRefuse();
