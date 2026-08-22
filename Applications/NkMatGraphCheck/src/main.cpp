@@ -2313,32 +2313,55 @@ static void CasExposeLitLeBloc() {
 }
 
 static void CasDecalagesStd140() {
-	// ⚠️ LE CAS QUI PROTEGE LE RENFORCEMENT (a). En `std140` un `vec3` s'aligne
-	// sur 16 octets : reel, vec3, reel ne donnent PAS 0, 4, 16 mais **0, 16,
-	// 28**, pour un bloc de 32. Un moteur qui deduirait les positions de l'ordre
-	// de declaration ecrirait a cote des le premier vec3 — sans erreur, avec une
-	// valeur credible.
+	// ⚠️ CE CAS A ETE VERT PENDANT TROIS JOURS EN NE PROUVANT RIEN. Lis la
+	// suite avant de lui faire confiance.
 	//
-	// DISCRIMINE : ce sont les DECALAGES qu'on lit, pas l'ordre. Une disposition
-	// sequentielle naive donnerait les memes NOMS dans le meme ORDRE, et seuls
-	// les nombres la denoncent.
+	// Il verifie que reel, vec3, reel donnent 0/16/28 et non 0/4/16. C est
+	// juste, et c est ce que `std140` prescrit. Mais il compare la table de
+	// decalages du compilateur A ELLE-MEME : il ne traverse jamais HLSL, et
+	// HLSL ne range pas un cbuffer comme `std140`. Un `float3` n a pas le
+	// droit de CHEVAUCHER une frontiere de 16 octets, mais il a le droit d en
+	// PARTAGER une : apres un `float`, HLSL le place a 4 quand `std140` le
+	// place a 16. Pendant que ce cas etait vert, le moteur ecrivait a 16 et le
+	// shader lisait a 4, et le pixel etait noir sans un mot.
+	//
+	// 🔴 UN CONTROLE QUI VERIFIE UNE CONVENTION NE VERIFIE PAS UN ACCORD.
+	// Le seul controle qui pouvait attraper cela LIT LA VALEUR DEPUIS LA CARTE :
+	// c est `rendu/parametre-expose-pilote-le-pixel`, dans NkMatGraphDemo, et
+	// il compare deux variantes dont une seule aurait suffi a rassurer.
+	//
+	// Ce cas GARDE quand meme deux choses, et c est pour cela qu il reste :
+	//   1. les decalages publies, contre une disposition sequentielle naive ;
+	//   2. la PRESENCE du remplissage dans la source emise -- le mecanisme qui
+	//      force les deux conventions a coincider. Attention : verifier qu il
+	//      est present n est PAS verifier qu il fonctionne. C est le banc de
+	//      rendu qui le prouve ; celui-ci empeche seulement qu on le retire par
+	//      megarde en trouvant le bloc trop gros.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
 	const NkNodeId bsdf = MontePrincipledExposable(g, t);
-	Expose(g, t, bsdf, "metallic", "metal");	  // reel  : 4 o
-	Expose(g, t, bsdf, "base_color", "teinte");   // vec3  : aligne 16
-	Expose(g, t, bsdf, "roughness", "usure");	  // reel
+	Expose(g, t, bsdf, "metallic", "metal");    // reel  : 4 o
+	Expose(g, t, bsdf, "base_color", "teinte"); // vec3  : aligne 16
+	Expose(g, t, bsdf, "roughness", "usure");   // reel
 	NkMatCompileResult r = NkMatCompileToNkSL(g);
 	const NkMatParamExpose *a = r.ok ? r.TrouveParam("metal") : nullptr;
 	const NkMatParamExpose *b = r.ok ? r.TrouveParam("teinte") : nullptr;
 	const NkMatParamExpose *c = r.ok ? r.TrouveParam("usure") : nullptr;
 	const bool bons = a && b && c && a->decalage == 0u && b->decalage == 16u && c->decalage == 28u &&
-					  r.paramsTaille == 32u;
+			  r.paramsTaille == 32u;
+	// Trois reels de remplissage doivent separer `metal` de `teinte` : sans eux
+	// HLSL rangerait `teinte` a 4. On exige le COMPTE, pas la simple presence du
+	// mot -- un seul remplissage laisserait la moitie du desaccord en place.
+	const uint32 pads = b ? b->remplissageAvant : 0u;
+	const bool remplissageEmis = r.ok && Apres(r.source, "_nkPad0") > 0 && Apres(r.source, "_nkPad1") > 0 &&
+			   Apres(r.source, "_nkPad2") > 0 && pads == 3u;
 	NkString be, err;
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
-	Cas("variable/decalages-std140", r.ok && ok == 5 && bons,
-		NkFormat("metal@{0} teinte@{1} usure@{2} | bloc={3} o | attendus 0/16/28 et 32 (PAS 0/4/16) | {4}",
-				 a ? a->decalage : 999u, b ? b->decalage : 999u, c ? c->decalage : 999u, r.paramsTaille, be));
+	Cas("variable/decalages-et-remplissage-emis", r.ok && ok == 5 && bons && remplissageEmis,
+		NkFormat("metal@{0} teinte@{1} usure@{2} | bloc={3} o | attendus 0/16/28 et 32 (PAS 0/4/16) | "
+			 "remplissage avant teinte={4} (3 attendu) et emis dans la source={5} | {6}",
+			 a ? a->decalage : 999u, b ? b->decalage : 999u, c ? c->decalage : 999u, r.paramsTaille, pads,
+			 remplissageEmis ? 1 : 0, be));
 }
 
 static void CasPriseConnecteeEtExposeeRefusee() {

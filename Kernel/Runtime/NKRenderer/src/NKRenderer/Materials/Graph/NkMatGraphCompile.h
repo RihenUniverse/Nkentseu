@@ -66,6 +66,14 @@ namespace nkentseu {
 					NkString nom;	 ///< le nom PUBLIC, celui qu'emploie le code du jeu
 					NkTypeId type = NK_TYPE_INVALID;
 					uint32 decalage = 0; ///< en octets, depuis le debut du bloc
+					// ⚠️ REMPLISSAGE A EMETTRE AVANT CE MEMBRE, en nombre de reels.
+					//
+					// Il est RANGE ici et non recalcule a l emission. Deux calculs d une
+					// meme disposition finissent toujours par diverger, et celle-ci est
+					// precisement celle dont le desaccord ne se voit pas : le shader lirait
+					// a un endroit, le moteur ecrirait a un autre, et le pixel resterait
+					// parfaitement plausible.
+					uint32 remplissageAvant = 0;
 					uint32 taille = 0;	 ///< en octets
 					// ⚠️ LE DEFAUT EST CELUI DE LA PRISE, recopie ici pour que le
 					// moteur n'ait pas a retraverser le graphe. Il n'existe PAS de
@@ -913,13 +921,66 @@ namespace nkentseu {
 					}
 				}
 
-				// Les decalages `std140`, calcules dans l'ordre de declaration.
+				// ═══════════════════════════════════════════════════════════════════
+				//  LA DISPOSITION, ET POURQUOI ELLE PORTE DU REMPLISSAGE
+				// ═══════════════════════════════════════════════════════════════════
+				//
+				// 🔴 `std140` ET HLSL NE RANGENT PAS UN BLOC DE LA MEME FACON, ET LEUR
+				// DESACCORD EST MUET.
+				//
+				// Mesure du 22/08/2026, dans les deux sens, en lisant le PIXEL :
+				//
+				//     uniform NkGraphParams { float usure; vec3 teinte; };
+				//
+				//   - `std140` ALIGNE tout `vec3` sur 16 : teinte est a 16.
+				//   - HLSL interdit seulement a un membre de CHEVAUCHER une frontiere
+				//     de 16 octets ; un `float3` a besoin de 12 octets et tient donc
+				//     ENTIER dans 4..16 : teinte est a **4**.
+				//
+				// Le moteur ecrivait a 16, le shader lisait a 4. Pixel mesure `(0,0,0)`,
+				// aucune erreur, aucun journal. En forcant l ecriture a 4 : `(128,0,0)`
+				// exact. Ces deux mesures ont clos trois jours de recherche dans la
+				// couche RHI, qui n avait aucun defaut.
+				//
+				// ⚠️ AVEC UN SEUL `vec3` LES DEUX CONVENTIONS DONNENT ZERO. C est pour
+				// cela que la panne n apparait qu au SECOND parametre, qu une matrice de
+				// sept montages differents etait verte, et qu un banc verifiant
+				// « 0/16/28 » restait vert en ne prouvant rien : il verifiait une
+				// CONVENTION contre elle-meme, jamais un ACCORD avec ce que la carte lit.
+				//
+				// ── LE CHOIX : SUPPRIMER LE DESACCORD, PAS LE GERER ─────────────────
+				// Deux autres voies existaient -- publier un decalage par famille de
+				// backend, ou ecrire par nom a travers une couche qui connait le
+				// backend. Toutes deux CONSERVENT deux dispositions et les reconcilient
+				// a chaque ecriture. Celle-ci fait qu il n y en a plus qu une : on
+				// REMPLIT jusqu a la prochaine frontiere de 16 avant chaque vecteur, et
+				// les deux conventions tombent alors forcement au meme endroit.
+				//
+				//   float usure;
+				//   float _nkPad0, _nkPad1, _nkPad2;   <- emis, vus des DEUX cotes
+				//   vec3  teinte;                      <- 16 en std140 ET en HLSL
+				//
+				// C est aussi, deja, la convention manuelle des archetypes du depot :
+				// `NkPBRParams` n a AUCUN membre `NkVec3f`, ses vecteurs sont tous des
+				// `NkVec4f` et ses reels vont par groupes de quatre. On systematise une
+				// regle de la maison, on n en invente pas une.
+				//
+				// Cout : quelques dizaines d octets par materiau. Le desaccord, lui,
+				// coutait trois jours.
 				{
 					uint32 curseur = 0;
 					for (uint32 i = 0; i < (uint32)r.params.Size(); ++i) {
 						NkMatParamExpose &p = r.params[i];
-						const uint32 a = NkMatStd140Align(p.type, t);
-						p.decalage = NkMatAlignUp(curseur, a);
+						p.remplissageAvant = 0;
+						if (p.type != t.real) {
+							// Le curseur est toujours un multiple de 4 (un reel fait 4,
+							// un vec3 en fait 12), donc le remplissage tombe juste en
+							// nombre entier de reels.
+							const uint32 manque = (16u - (curseur % 16u)) % 16u;
+							p.remplissageAvant = manque / 4u;
+							curseur += manque;
+						}
+						p.decalage = curseur;
 						p.taille = NkMatStd140Size(p.type, t);
 						curseur = p.decalage + p.taille;
 					}
@@ -1004,7 +1065,17 @@ namespace nkentseu {
 					s.Append(")\nuniform ");
 					s.Append(NK_MATBIND_GRAPH_PARAMS_BLOCK);
 					s.Append(" {\n");
+					uint32 nPad = 0;
 					for (uint32 i = 0; i < (uint32)r.params.Size(); ++i) {
+						// Le remplissage vient de la passe de disposition, jamais d un calcul
+						// refait ici : c est la meme donnee, lue une fois. Il est NOMME et
+						// VISIBLE dans la source engendree -- un remplissage invisible se
+						// ferait supprimer par le premier qui trouverait le bloc trop gros.
+						for (uint32 k = 0; k < r.params[i].remplissageAvant; ++k) {
+							s.Append("    float _nkPad");
+							detail::PutU(s, nPad++);
+							s.Append("; // accord std140 / HLSL -- ne pas retirer\n");
+						}
 						s.Append("    ");
 						s.Append(r.params[i].type == t.real ? "float " : "vec3  ");
 						s.Append(r.params[i].nom);
