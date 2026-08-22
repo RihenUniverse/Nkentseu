@@ -538,6 +538,290 @@ static bool GrapheDamier(float32 decalage, NkString &out) {
 	return r.ok;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  MATRICE D'ESSAIS : DEUX BLOCS UNIFORMES SUR DX11 (22/08/2026)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Chaque ligne isole UNE variable et rapporte l'etat des DEUX blocs, pas
+// seulement du second. C'est la seule facon de distinguer « le second n'arrive
+// pas » de « le second casse le premier » — deux pannes qui se ressemblent
+// quand on ne regarde que le second.
+//
+// LECTURE : le fragment ecrit le premier bloc dans le ROUGE, le second dans le
+// VERT, et une constante connue dans le BLEU. Un bloc absent lit zero. Le bleu
+// distingue « le bloc n'est pas arrive » de « le shader n'a jamais tourne » —
+// sans lui, une passe qui echoue rendrait la meme chose qu'un bloc manquant.
+// Le fond MAGENTA (255,0,255) reste la troisieme reponse possible : rien n'a
+// ete trace du tout.
+struct BlocEssai {
+		float32 v[4] = {0.f, 0.f, 0.f, 0.f};
+};
+
+static const uint8 kAttenduA = 128; // premier bloc  : 128/255
+static const uint8 kAttenduB = 192; // second bloc   : 192/255
+static const uint8 kAttenduM = 64;  // marqueur bleu : 64/255
+
+struct LigneMatrice {
+		const char *nom;
+		uint32 nbBlocs;			 ///< 1 ou 2 blocs declares dans le shader
+		uint32 setA, bindA;		 ///< set/binding du premier, tels que le SHADER les declare
+		uint32 setB, bindB;		 ///< idem second
+		uint32 nbSetsCpp;		 ///< 1 = les deux descripteurs dans le MEME set
+		bool entreeVideAuMilieu; ///< une entree de layout VIDE inseree a l'index 1
+		const char *isole;
+};
+
+// Construit le fragment. Les varyings sont declarees a l'identique de ce
+// qu'emet le compilateur du graphe : le vertex du banc en sort quatre, et un
+// fragment qui n'en declarerait pas autant changerait la signature du couple —
+// on mesurerait alors autre chose que ce qu'on croit.
+static void PutEntier(NkString &s, uint32 v) {
+	char b[16];
+	uint32 n = 0;
+	if (v == 0)
+		b[n++] = (char)48;
+	while (v > 0) {
+		b[n++] = (char)(48 + (v % 10u));
+		v /= 10u;
+	}
+	char o[17];
+	for (uint32 i = 0; i < n; ++i)
+		o[i] = b[n - 1u - i];
+	o[n] = 0;
+	s.Append(o);
+}
+
+static NkString FragmentMatrice(const LigneMatrice &l) {
+	NkString s;
+	s.Append("@location(0) in vec3 vWorldPos;\n");
+	s.Append("@location(1) in vec3 vNormal;\n");
+	s.Append("@location(2) in vec2 vUV;\n");
+	s.Append("@location(3) in vec4 vColor;\n\n");
+	s.Append("@location(0) out vec4 fragColor;\n\n");
+	// ⚠️ SURTOUT PAS `NkFormat` ICI, ET CE N EST PAS UN GOUT.
+	//
+	// Mesure du 22/08 : `NkFormat("uniform BlocA {\n vec4 va;\n} uA;")` rend
+	// `uniform BlocA 0 uA;`. Les ACCOLADES LITTERALES du bloc uniforme sont
+	// prises pour des marqueurs de substitution, et le CORPS DU BLOC DISPARAIT.
+	//
+	// Ce qui rend la panne mechante : le shader ampute COMPILE quand meme (NkSL
+	// est permissif, cf. Q29), le pipeline se cree, la passe tourne, et le seul
+	// symptome est un fond magenta. On accuse alors la couche RHI d une panne
+	// qu on vient de fabriquer soi-meme dans son propre generateur de source.
+	//
+	// TROISIEME fois que cet outil de formatage abime la donnee qu il transporte.
+	// Regle : aucun texte contenant une accolade litterale ne passe par NkFormat.
+	if (l.nbBlocs >= 1) {
+		s.Append("@binding(set=");
+		PutEntier(s, l.setA);
+		s.Append(", binding=");
+		PutEntier(s, l.bindA);
+		s.Append(")\nuniform BlocA {\n    vec4 va;\n} uA;\n\n");
+	}
+	if (l.nbBlocs == 2) {
+		s.Append("@binding(set=");
+		PutEntier(s, l.setB);
+		s.Append(", binding=");
+		PutEntier(s, l.bindB);
+		s.Append(")\nuniform BlocB {\n    vec4 vb;\n} uB;\n\n");
+	}
+	s.Append("@stage(fragment)\n@entry\nvoid main() {\n");
+	if (l.nbBlocs == 2)
+		s.Append("    fragColor = vec4(uA.va.x, uB.vb.x, 0.250980392, 1.0);\n");
+	else if (l.nbBlocs == 1)
+		s.Append("    fragColor = vec4(uA.va.x, 0.0, 0.250980392, 1.0);\n");
+	else
+		s.Append("    fragColor = vec4(0.0, 0.0, 0.250980392, 1.0);\n");
+	s.Append("}\n");
+	return s;
+}
+
+// Monte et rend UNE ligne. Rend false seulement si la ligne NE PEUT PAS se
+// monter — auquel cas la case reste vide dans le tableau plutot que d'etre
+// approximee, ce qui serait pire qu'une absence de mesure.
+static bool JoueLigne(DemoContexte &ctx, const LigneMatrice &l, uint8 rgba[4], NkString &pourquoiPas) {
+	BlocEssai a, b;
+	a.v[0] = (float32)kAttenduA / 255.f;
+	b.v[0] = (float32)kAttenduB / 255.f;
+
+	NkBufferHandle bufA = ctx.device->CreateBuffer(NkBufferDesc::Uniform(sizeof(BlocEssai)));
+	NkBufferHandle bufB = ctx.device->CreateBuffer(NkBufferDesc::Uniform(sizeof(BlocEssai)));
+	if (!bufA.IsValid() || (l.nbBlocs == 2 && !bufB.IsValid())) {
+		pourquoiPas = NkString("creation de tampon refusee");
+		return false;
+	}
+	ctx.device->WriteBuffer(bufA, &a, sizeof(a));
+	if (l.nbBlocs == 2)
+		ctx.device->WriteBuffer(bufB, &b, sizeof(b));
+
+	// ── Les layouts, dans l'ordre exact ou le pipeline les recevra ──────────
+	NkVector<NkDescSetHandle> layouts;
+	NkDescSetHandle lA, lB, lVide;
+	{
+		NkDescriptorSetLayoutDesc d;
+		d.Add(l.bindA, NkDescriptorType::NK_UNIFORM_BUFFER, RHIStage::NK_ALL_GRAPHICS);
+		if (l.nbBlocs == 2 && l.nbSetsCpp == 1)
+			d.Add(l.bindB, NkDescriptorType::NK_UNIFORM_BUFFER, RHIStage::NK_ALL_GRAPHICS);
+		lA = ctx.device->CreateDescriptorSetLayout(d);
+	}
+	if (!lA.IsValid()) {
+		pourquoiPas = NkString("layout du premier set refuse");
+		return false;
+	}
+	layouts.PushBack(lA);
+
+	if (l.entreeVideAuMilieu) {
+		NkDescriptorSetLayoutDesc d; // AUCUNE entree : c'est tout l'objet de la ligne
+		lVide = ctx.device->CreateDescriptorSetLayout(d);
+		if (!lVide.IsValid()) {
+			pourquoiPas = NkString("layout VIDE refuse par la couche -- la ligne ne peut pas se monter");
+			return false;
+		}
+		layouts.PushBack(lVide);
+	}
+	if (l.nbBlocs == 2 && l.nbSetsCpp == 2) {
+		NkDescriptorSetLayoutDesc d;
+		d.Add(l.bindB, NkDescriptorType::NK_UNIFORM_BUFFER, RHIStage::NK_ALL_GRAPHICS);
+		lB = ctx.device->CreateDescriptorSetLayout(d);
+		if (!lB.IsValid()) {
+			pourquoiPas = NkString("layout du second set refuse");
+			return false;
+		}
+		layouts.PushBack(lB);
+	}
+
+	// ── Les sets, et les ecritures ──────────────────────────────────────────
+	NkDescSetHandle sA = ctx.device->AllocateDescriptorSet(lA);
+	NkDescSetHandle sB;
+	if (!sA.IsValid()) {
+		pourquoiPas = NkString("allocation du premier set refusee");
+		return false;
+	}
+	NkDescriptorWrite w[2] = {};
+	uint32 nw = 0;
+	w[nw].set = sA;
+	w[nw].binding = l.bindA;
+	w[nw].type = NkDescriptorType::NK_UNIFORM_BUFFER;
+	w[nw].buffer = bufA;
+	w[nw].bufferRange = sizeof(BlocEssai);
+	++nw;
+	if (l.nbBlocs == 2) {
+		if (l.nbSetsCpp == 1) {
+			w[nw].set = sA;
+		} else {
+			sB = ctx.device->AllocateDescriptorSet(lB);
+			if (!sB.IsValid()) {
+				pourquoiPas = NkString("allocation du second set refusee");
+				return false;
+			}
+			w[nw].set = sB;
+		}
+		w[nw].binding = l.bindB;
+		w[nw].type = NkDescriptorType::NK_UNIFORM_BUFFER;
+		w[nw].buffer = bufB;
+		w[nw].bufferRange = sizeof(BlocEssai);
+		++nw;
+	}
+	ctx.device->UpdateDescriptorSets(w, nw);
+
+	// ── Le rendu ────────────────────────────────────────────────────────────
+	const NkString frag = FragmentMatrice(l);
+	::nkentseu::NkShaderHandle prog = ctx.shaders.CompileVF(NkString(kVertexNkSL), frag, NkString(l.nom));
+	::nkentseu::NkShaderHandle rhi = ctx.shaders.GetRHIHandle(prog);
+	if (!rhi.IsValid()) {
+		pourquoiPas = NkString("le shader de la ligne ne compile pas");
+		return false;
+	}
+	NkGraphicsPipelineDesc pd;
+	pd.shader = rhi;
+	pd.vertexLayout.AddBinding(0, (uint32)sizeof(DemoVertex))
+		.AddAttribute(0, 0, NkGPUFormat::NK_RGB32_FLOAT, 0, "POSITION", 0);
+	pd.rasterizer.cullMode = NkCullMode::NK_NONE;
+	pd.depthStencil = NkDepthStencilDesc::NoDepth();
+	pd.renderPass = ctx.cible.GetRP();
+	for (uint32 i = 0; i < (uint32)layouts.Size(); ++i)
+		pd.descriptorSetLayouts.PushBack(layouts[i]);
+	pd.debugName = l.nom;
+	if (getenv("NK_MATRICE_DIAG")) {
+		logger.Info("--- source de {0} ---", NkString(l.nom));
+		logger.Info("{0}", frag);
+		logger.Info("--- handles : bufA={1} bufB={2} lA={3} sA={4} sB={5} layouts={6} ---", NkString(""),
+					(uint32)bufA.IsValid(), (uint32)bufB.IsValid(), (uint32)lA.IsValid(), (uint32)sA.IsValid(),
+					(uint32)sB.IsValid(), (uint32)layouts.Size());
+	}
+	NkPipelineHandle pipe = ctx.device->CreateGraphicsPipeline(pd);
+	if (!pipe.IsValid()) {
+		pourquoiPas = NkString("le pipeline de la ligne est refuse");
+		return false;
+	}
+
+	NkICommandBuffer *cmd = ctx.device->CreateCommandBuffer();
+	if (!cmd || !cmd->Begin()) {
+		pourquoiPas = NkString("command buffer refuse");
+		return false;
+	}
+	ctx.cible.BeginCapture(cmd, true, NkVec4f{1.f, 0.f, 1.f, 1.f}, false);
+	cmd->BindGraphicsPipeline(pipe);
+	// ⚠️ CHAQUE SET EST LIE EXPLICITEMENT, a son index dans la liste des
+	// layouts. Lier le set 0 ne lie pas le set 2 : ils ne se confondent que
+	// dans l'espace de registres de DX11, pas dans l'appel.
+	cmd->BindDescriptorSet(sA, 0);
+	if (l.nbBlocs == 2 && l.nbSetsCpp == 2)
+		cmd->BindDescriptorSet(sB, l.entreeVideAuMilieu ? 2u : 1u);
+	cmd->BindVertexBuffer(0, ctx.vbo);
+	cmd->Draw(3);
+	ctx.cible.EndCapture(cmd);
+	cmd->End();
+	ctx.device->Submit(&cmd, 1);
+	ctx.device->WaitIdle();
+
+	const uint32 n = ctx.largeur * ctx.hauteur * 4u;
+	NkVector<uint8> px;
+	px.Resize(n);
+	if (!ctx.cible.ReadbackPixels(px.Data(), ctx.largeur * 4u)) {
+		pourquoiPas = NkString("relecture de pixels refusee");
+		return false;
+	}
+	const uint32 c = ((ctx.hauteur / 2u) * ctx.largeur + (ctx.largeur / 2u)) * 4u;
+	for (uint32 i = 0; i < 4; ++i)
+		rgba[i] = px[c + i];
+	ctx.device->DestroyPipeline(pipe);
+	return true;
+}
+
+static void MatriceDeuxBlocs(DemoContexte &ctx) {
+	const LigneMatrice lignes[6] = {
+		{"0-AUCUN-bloc-temoin-d-appareil", 0, 0, 0, 0, 0, 1, false, "mon appareil trace-t-il quoi que ce soit"},
+		{"1-un-seul-bloc-b0", 1, 0, 0, 0, 0, 1, false, "temoin : le mecanisme marche-t-il du tout"},
+		{"2-deux-blocs-b0-b8-MEME-set", 2, 0, 0, 0, 8, 1, false, "le NOMBRE de blocs, sans histoire de sets"},
+		{"3-deux-blocs-b0-b1-MEME-set", 2, 0, 0, 0, 1, 1, false, "le NUMERO du second (bas contre haut)"},
+		{"4-deux-blocs-DEUX-sets-sans-vide", 2, 0, 0, 1, 8, 2, false, "le nombre de SETS"},
+		{"5-deux-sets-AVEC-entree-vide", 2, 0, 0, 2, 8, 2, true, "l'entree de layout vide au milieu"},
+	};
+	logger.Info("");
+	logger.Info("== MATRICE : deux blocs uniformes sur DX11 ==");
+	logger.Info("   lecture : R=premier bloc (attendu {0}), V=second (attendu {1}), B=marqueur (attendu {2})",
+				(uint32)kAttenduA, (uint32)kAttenduB, (uint32)kAttenduM);
+	logger.Info("   un bloc absent lit ZERO. Fond magenta (255,0,255) = rien n'a ete trace.");
+	logger.Info("");
+	for (uint32 i = 0; i < 6; ++i) {
+		uint8 c[4] = {0, 0, 0, 0};
+		NkString pourquoi;
+		if (!JoueLigne(ctx, lignes[i], c, pourquoi)) {
+			logger.Info("@@LIGNE {0} | CASE VIDE -- {1}", NkString(lignes[i].nom), pourquoi);
+			continue;
+		}
+		const bool tourne = (c[2] >= kAttenduM - 1 && c[2] <= kAttenduM + 1);
+		const bool arriveA = (c[0] >= kAttenduA - 1 && c[0] <= kAttenduA + 1);
+		const bool arriveB = (lignes[i].nbBlocs == 2) && (c[1] >= kAttenduB - 1 && c[1] <= kAttenduB + 1);
+		logger.Info("@@LIGNE {0} | pixel=({1},{2},{3}) | shader a tourne={4} | PREMIER bloc arrive={5} | "
+					"SECOND bloc arrive={6} | isole : {7}",
+					NkString(lignes[i].nom), (uint32)c[0], (uint32)c[1], (uint32)c[2], tourne ? 1 : 0,
+					arriveA ? 1 : 0, lignes[i].nbBlocs == 2 ? (arriveB ? 1 : 0) : 9, NkString(lignes[i].isole));
+	}
+	logger.Info("");
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -555,6 +839,15 @@ int main() {
 	if (!ctx.Monter()) {
 		logger.Info("\n-- montage impossible : AUCUN cas n'a tourne. C'est un ECHEC, pas un saut. --");
 		return 1;
+	}
+
+	// Matrice d'essais des deux blocs uniformes, sur demande du coordinateur.
+	// Gate par variable d'environnement : elle ne fait pas partie des cas, elle
+	// MESURE une panne qui n'est pas la mienne.
+	if (getenv("NK_MATRICE")) {
+		MatriceDeuxBlocs(ctx);
+		ctx.Demonter();
+		return 0;
 	}
 
 	uint8 rouge[4] = {}, vert[4] = {}, mix0[4] = {}, mix1[4] = {}, mixMoitie[4] = {};
