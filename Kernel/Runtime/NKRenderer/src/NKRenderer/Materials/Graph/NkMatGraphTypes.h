@@ -150,6 +150,16 @@ namespace nkentseu {
 				};
 				static const uint32 kOpsMathCount = 7;
 
+				// Conventions de carte de normales. Des MOTS, une seule table, et
+				// une convention inconnue est REFUSEE : un repli sur OpenGL
+				// donnerait un relief inverse sur la moitie des fichiers, et
+				// l'image resterait plausible.
+				static const NkMatOperation kConvNormale[] = {
+					{"opengl", "OpenGL (+Y vers le haut)"},
+					{"directx", "DirectX (-Y vers le haut)"},
+				};
+				static const uint32 kConvNormaleCount = 2;
+
 				// Interpolations de rampe. Meme discipline que les operations :
 				// des MOTS, une seule table, et un mode inconnu est REFUSE.
 				static const NkMatOperation kInterps[] = {
@@ -164,6 +174,30 @@ namespace nkentseu {
 				};
 				static const uint32 kOpsMixCount = 6;
 			} // namespace detail
+
+			inline uint32 NkMatConvNormaleCount() {
+				return detail::kConvNormaleCount;
+			}
+
+			inline const NkMatOperation *NkMatConvNormaleAt(uint32 i) {
+				return i < detail::kConvNormaleCount ? &detail::kConvNormale[i] : nullptr;
+			}
+
+			inline int32 NkMatTrouveConvNormale(const char *cle) {
+				if (!cle)
+					return -1;
+				for (uint32 i = 0; i < detail::kConvNormaleCount; ++i) {
+					const char *a = detail::kConvNormale[i].cle;
+					const char *b = cle;
+					while (*a && *a == *b) {
+						++a;
+						++b;
+					}
+					if (!*a && !*b)
+						return (int32)i;
+				}
+				return -1;
+			}
 
 			inline uint32 NkMatInterpCount() {
 				return detail::kInterpsCount;
@@ -380,6 +414,36 @@ namespace nkentseu {
 			// apres les arrets de rampe, et il valide l'autre moitie de
 			// `NkGraphValue` — le texte, la ou la rampe validait les reels.
 			static const char *const NK_MPROP_IMAGE = "image";
+
+			// ⚠️ LA CONVENTION D'UNE CARTE DE NORMALES EST UNE DONNEE DE
+			// PROVENANCE DU FICHIER, PAS UN CALCUL DE SHADER.
+			//
+			// Convention interne : **OpenGL, +Y vers le haut** (« vert vers le
+			// haut »). Une carte DirectX (-Y) se convertit A L'IMPORT, jamais
+			// dans le shader. Trois raisons, tranchees le 2026-08-22 :
+			//   - Blender emploie cette convention, et Rodolf construit sur les
+			//     siennes : diverger produirait des reliefs INVERSES en important
+			//     son propre travail, avec un symptome notoirement difficile a
+			//     diagnostiquer (l'image reste plausible, elle est juste creuse
+			//     la ou elle devrait etre bombee) ;
+			//   - Vulkan et OpenGL sont les deux backends valides ;
+			//   - convertir a l'import evite de payer par pixel ET rend l'etat de
+			//     la texture visible dans la donnee.
+			//
+			// Le drapeau existe DES MAINTENANT, meme si rien ne le consomme
+			// encore : l'ajouter apres coup obligerait a DEVINER la convention
+			// des textures deja importees — et les deux hypotheses donnent une
+			// image plausible, donc le doute serait indecidable.
+			static const char *const NK_MPROP_NORMAL_CONV = "convention_normale";
+
+			// Les noeuds de relief. `Normal Map` decode une carte tangente ;
+			// `Bump` derive une normale d'un champ de hauteur. Et `Separate XYZ`
+			// vient avec eux parce que sans lui aucun scalaire VARIABLE n'est
+			// disponible pour alimenter une hauteur — un banc ne pourrait alors
+			// mesurer que l'absence d'effet.
+			static const char *const NK_MN_NORMAL_MAP = "mat.carte_normales";
+			static const char *const NK_MN_BUMP = "mat.relief";
+			static const char *const NK_MN_SEPARATE_XYZ = "mat.separer_xyz";
 			static const char *const NK_MPROP_STOPS = "arrets";
 			static const char *const NK_MPROP_INTERP = "interpolation";
 			namespace detail {
@@ -470,6 +534,33 @@ namespace nkentseu {
 					{"vector_out", NK_MT_VECTOR, NkSocketDir::Output, false},
 				};
 
+				// Normal Map : decode une carte tangente. `strength` melange entre
+				// la normale geometrique et la normale decodee, comme Blender.
+				static const NkMatSocketDecl kNormalMap[] = {
+					{"color", NK_MT_COLOR, NkSocketDir::Input, false},
+					{"strength", NK_MT_REAL, NkSocketDir::Input, false},
+					{"normal", NK_MT_VECTOR, NkSocketDir::Output, false},
+				};
+
+				// Bump : derive une normale d'un CHAMP DE HAUTEUR par derivees
+				// d'ecran. `distance` est l'amplitude du relief en unites monde.
+				static const NkMatSocketDecl kBump[] = {
+					{"height", NK_MT_REAL, NkSocketDir::Input, false},
+					{"strength", NK_MT_REAL, NkSocketDir::Input, false},
+					{"distance", NK_MT_REAL, NkSocketDir::Input, false},
+					{"normal", NK_MT_VECTOR, NkSocketDir::Output, false},
+				};
+
+				// Separate XYZ : trois sorties reelles. Sans lui, aucun scalaire
+				// VARIABLE n'existe dans un graphe, et `Bump` ne pourrait etre
+				// mesure que sur son absence d'effet.
+				static const NkMatSocketDecl kSeparateXYZ[] = {
+					{"vector", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"x", NK_MT_REAL, NkSocketDir::Output, false},
+					{"y", NK_MT_REAL, NkSocketDir::Output, false},
+					{"z", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+
 				static const NkMatSocketDecl kColorRamp[] = {
 					{"fac", NK_MT_REAL, NkSocketDir::Input, false},
 					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
@@ -505,8 +596,11 @@ namespace nkentseu {
 					{NK_MN_IMAGE_TEXTURE, "Image Texture", kImageTexture, 3},
 					{NK_MN_TEX_COORD, "Texture Coordinate", kTexCoord, 1},
 					{NK_MN_MAPPING, "Mapping", kMapping, 4},
+					{NK_MN_NORMAL_MAP, "Normal Map", kNormalMap, 3},
+					{NK_MN_BUMP, "Bump", kBump, 4},
+					{NK_MN_SEPARATE_XYZ, "Separate XYZ", kSeparateXYZ, 4},
 				};
-				static const uint32 kProtoCount = 13;
+				static const uint32 kProtoCount = 16;
 
 			} // namespace detail
 

@@ -1169,8 +1169,8 @@ static void CasCompileMixShader() {
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 	// Le puits emet lui aussi un `mix` (specColor) : on en attend donc 4 + 1.
 	NkString d;
-	d = NkFormat("emis={0} ({1} o) | {2}| {3} cite {4} fois (1 declaration + 4 composantes = 5) {5}", r.ok ? 1 : 0, (uint32)r.source.Size(), be, nomFac, nbFac, r.ok ? "" : r.error.CStr());
-	Cas("compile/melange-deux-bsdf-4-backends", r.ok && ok == 4 && nbFac == 5, d);
+	d = NkFormat("emis={0} ({1} o) | {2}| {3} cite {4} fois (1 declaration + {6} composantes) {5}", r.ok ? 1 : 0, (uint32)r.source.Size(), be, nomFac, nbFac, r.ok ? NkString("") : r.error, NkMatComposanteCount());
+	Cas("compile/melange-deux-bsdf-4-backends", r.ok && ok == 4 && nbFac == NkMatComposanteCount() + 1u, d);
 	// NK_DUMP=1 imprime le NkSL engendre. Ce n est pas un echafaudage oublie :
 	// quand un cas de compilation tombe, la question est toujours « qu a-t-il
 	// donc ecrit ? », et un banc qui ne sait pas le montrer oblige a rajouter
@@ -1379,7 +1379,8 @@ static void CasMenuPriseCouleurEtReelle() {
 	const bool couleurOk = DansLeMenu(mc, nc, NK_MN_RGB) && DansLeMenu(mc, nc, NK_MN_VALUE) &&
 						   DansLeMenu(mc, nc, NK_MN_MIX_COLOR) && DansLeMenu(mc, nc, NK_MN_MATH) &&
 						   DansLeMenu(mc, nc, NK_MN_COLOR_RAMP) &&
-						   DansLeMenu(mc, nc, NK_MN_IMAGE_TEXTURE);
+						   DansLeMenu(mc, nc, NK_MN_IMAGE_TEXTURE) &&
+						   DansLeMenu(mc, nc, NK_MN_NORMAL_MAP) && DansLeMenu(mc, nc, NK_MN_BUMP);
 	// Ce qui produit un REEL : Value et Math. Ni RGB ni Mix Color, parce que
 	// `couleur -> reel` n'est PAS declaree — et c'est la tout le cas.
 	const bool reelOk = DansLeMenu(mr, nr, NK_MN_VALUE) && DansLeMenu(mr, nr, NK_MN_MATH) &&
@@ -1387,8 +1388,12 @@ static void CasMenuPriseCouleurEtReelle() {
 						!DansLeMenu(mr, nr, NK_MN_COLOR_RAMP) &&
 						// `Image Texture` a une sortie `alpha` REELLE : il est donc
 						// legitimement dans les DEUX menus, par deux prises differentes.
-						DansLeMenu(mr, nr, NK_MN_IMAGE_TEXTURE);
-	Cas("biblio/menu-asymetrique-couleur-reel", nc == 8 && nr == 3 && couleurOk && reelOk,
+						DansLeMenu(mr, nr, NK_MN_IMAGE_TEXTURE) &&
+						// Separate XYZ sort TROIS reels : il est dans le menu reel,
+						// et pas dans le menu couleur (reel->couleur est declaree,
+						// donc il y est aussi -- ce qui est correct).
+						DansLeMenu(mr, nr, NK_MN_SEPARATE_XYZ);
+	Cas("biblio/menu-asymetrique-couleur-reel", nc == 11 && nr == 4 && couleurOk && reelOk,
 		NkFormat("base_color : {0} propositions (RGB+MixColor+ColorRamp+ImageTex+Value+Math+coord+mappage, ok={1}) | roughness : {2} (Value+Math "
 				 "SEULS, RGB et MixColor doivent etre absents, ok={3})",
 				 nc, couleurOk ? 1 : 0, nr, reelOk ? 1 : 0));
@@ -2002,6 +2007,194 @@ static void CasTextureCoordonneeEtMappage() {
 				 litUV ? 1 : 0, nomMap, litMap ? 1 : 0, nePlusLireUV ? 1 : 0, echelle ? 1 : 0, be));
 }
 
+
+// ── Normal Map, Bump, Separate XYZ : le relief ───────────────────────────────
+
+// Monte `Image Texture -> Normal Map -> Principled.normal`, avec la convention
+// demandee posee sur la texture.
+static NkMatCompileResult CompileCarteNormales(const char *convention) {
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId nm = NkMatAddNode(g, NK_MN_NORMAL_MAP);
+	const NkNodeId tex = NkMatAddNode(g, NK_MN_IMAGE_TEXTURE);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	g.Connect(nm, "normal", bsdf, "normal");
+	g.Connect(tex, "color", nm, "color");
+	g.SetProp(tex, NK_MPROP_IMAGE, NkValueText(t.ramp, "relief.png"));
+	if (convention)
+		g.SetProp(tex, NK_MPROP_NORMAL_CONV, NkValueText(t.ramp, convention));
+	return NkMatCompileToNkSL(g);
+}
+
+static void CasConventionNeChangePasLeShader() {
+	// ⚠️ LE CAS QUI DECIDE, et il teste une ABSENCE d'effet.
+	//
+	// La convention d'une carte de normales est une donnee de PROVENANCE DU
+	// FICHIER : une carte DirectX se convertit A L'IMPORT, jamais dans le
+	// shader. La tentation naturelle est de retourner Y par pixel — ca marche,
+	// et ca coute a chaque fragment tout en rendant l'etat de la texture
+	// invisible dans la donnee.
+	//
+	// DISCRIMINE : les deux shaders doivent etre identiques AU CARACTERE PRES.
+	// Un retournement dans le shader ajouterait un signe quelque part, et aucune
+	// comparaison de comportement ne le verrait — seule l'egalite des textes le
+	// denonce.
+	NkMatCompileResult gl = CompileCarteNormales("opengl");
+	NkMatCompileResult dx = CompileCarteNormales("directx");
+	NkMatCompileResult sans = CompileCarteNormales(nullptr);
+	const bool identiques = gl.ok && dx.ok && sans.ok && (gl.source == dx.source) && (gl.source == sans.source);
+	Cas("normalmap/convention-ne-change-pas-le-shader", identiques,
+		NkFormat("opengl {0} o | directx {1} o | sans convention {2} o | les trois identiques au caractere pres={3}",
+				 (uint32)gl.source.Size(), (uint32)dx.source.Size(), (uint32)sans.source.Size(),
+				 identiques ? 1 : 0));
+}
+
+static void CasConventionInconnueRefusee() {
+	// Meme discipline que les operations : un mot inconnu est REFUSE en le
+	// nommant. Un repli sur OpenGL inverserait le relief de la moitie des
+	// fichiers, et l'image resterait plausible — le pire des cas.
+	NkMatCompileResult r = CompileCarteNormales("mikktspace_inverse");
+	const bool nomme = !r.ok && Apres(r.error, "mikktspace_inverse") > 0;
+	Cas("normalmap/convention-inconnue-refusee", !r.ok && nomme && r.source.Size() == 0,
+		NkFormat("refuse={0} en la nommant={1} rien emis={2} | message : {3}", r.ok ? 0 : 1, nomme ? 1 : 0,
+				 r.source.Size() == 0 ? 1 : 0, r.error));
+}
+
+static void CasBaseTangenteSeulementSiUtile() {
+	// Une base tangente coute DEUX paires de derivees par pixel. Un shader qui
+	// la calculerait sans s'en servir paierait pour rien.
+	//
+	// DISCRIMINE dans les deux sens : absente quand aucun noeud ne la reclame,
+	// PRESENTE des qu'un `Normal Map` apparait. Un controle a sens unique
+	// laisserait passer « on ne l'emet jamais », ce qui casserait le relief.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	(void)t;
+	NkMatCompileResult sans = NkMatCompileToNkSL(g);
+	NkMatCompileResult avec = CompileCarteNormales("opengl");
+	const bool absente = sans.ok && Apres(sans.source, "nkT") < 0;
+	const bool presente = avec.ok && Apres(avec.source, "nkT") > 0 && ContientSansCasse(avec.source, "dFdx(vUV)");
+	NkString be, err;
+	const uint32 ok = avec.ok ? CompileSurLesBackends(avec.source, be, &err) : 0u;
+	Cas("normalmap/base-tangente-seulement-si-utile", absente && presente && ok == 4,
+		NkFormat("sans Normal Map : base tangente absente={0} | avec : presente={1} | {2}", absente ? 1 : 0,
+				 presente ? 1 : 0, be));
+}
+
+static void CasNormaleVoyageJusquAuPuits() {
+	// ⚠️ LE DEFAUT QUE CE CAS EXISTE POUR ATTRAPER, et il a vraiment existe :
+	// avant le 22/08 le puits recalculait `normalize(vNormal)` et jetait EN
+	// SILENCE tout travail de relief en amont. Le shader compilait, l'image etait
+	// plausible, et le noeud `Normal Map` ne servait a rien.
+	//
+	// DISCRIMINE : le puits doit lire la locale de la CHAINE, pas la normale
+	// geometrique. On verifie que `surfNormal` cite la locale du Normal Map.
+	// On monte le graphe ici pour disposer des IDENTIFIANTS : la chaine a
+	// verifier compte DEUX maillons, et mon premier attendu n'en voyait qu'un.
+	// La normale ne saute pas du Normal Map au puits — elle passe PAR le
+	// Principled, qui la porte comme composante de son shader.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId nm = NkMatAddNode(g, NK_MN_NORMAL_MAP);
+	const NkNodeId tex = NkMatAddNode(g, NK_MN_IMAGE_TEXTURE);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	g.Connect(nm, "normal", bsdf, "normal");
+	g.Connect(tex, "color", nm, "color");
+	g.SetProp(tex, NK_MPROP_IMAGE, NkValueText(t.ramp, "relief.png"));
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+
+	// Maillon 1 : le Principled prend la normale du Normal Map.
+	const NkString m1 = NkFormat("n{0}_normal = n{1}_normal", (uint32)bsdf, (uint32)nm);
+	// Maillon 2 : le puits prend celle du Principled.
+	const NkString m2 = NkFormat("surfNormal = n{0}_normal", (uint32)bsdf);
+	const bool maillon1 = r.ok && Apres(r.source, m1.CStr()) > 0;
+	const bool maillon2 = r.ok && Apres(r.source, m2.CStr()) > 0;
+	// Et l'eclairage s'en sert VRAIMENT : c'est ce qui manquait avant le 22/08.
+	const bool puitsUtilise = r.ok && Apres(r.source, "normalize(surfNormal)") > 0;
+	// ⚠️ Assertion d'ABSENCE, en plus : le puits ne doit PLUS recalculer la
+	// normale geometrique pour eclairer. Sans elle, un puits qui ferait les deux
+	// passerait les trois presences ci-dessus.
+	const bool neRecalculePlus = r.ok && Apres(r.source, "N3 = normalize(vNormal)") < 0;
+	Cas("normal/voyage-jusqu-au-puits", r.ok && maillon1 && maillon2 && puitsUtilise && neRecalculePlus,
+		NkFormat("maillon '{0}'={1} | maillon '{2}'={3} | eclaire avec={4} | ne recalcule plus la geometrique={5}",
+				 m1, maillon1 ? 1 : 0, m2, maillon2 ? 1 : 0, puitsUtilise ? 1 : 0, neRecalculePlus ? 1 : 0));
+}
+
+static void CasBumpDeriveesEtGarde() {
+	// `Bump` derive une normale d'un champ de hauteur par derivees d'ecran. Le
+	// scalaire variable vient d'un `Separate XYZ` sur la coordonnee de texture —
+	// sans lui, aucun scalaire VARIABLE n'existe dans un graphe et le relief ne
+	// pourrait etre mesure que sur son absence d'effet.
+	//
+	// DISCRIMINE : le determinant DOIT etre garde. Une division nue produirait un
+	// NaN sur un triangle degenere ou vu par la tranche — et un NaN contamine
+	// l'aval en changeant d'aspect d'un backend a l'autre, donc il fait accuser
+	// la machine.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId bump = NkMatAddNode(g, NK_MN_BUMP);
+	const NkNodeId sep = NkMatAddNode(g, NK_MN_SEPARATE_XYZ);
+	const NkNodeId coord = NkMatAddNode(g, NK_MN_TEX_COORD);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	g.Connect(bump, "normal", bsdf, "normal");
+	g.Connect(sep, "x", bump, "height");
+	g.Connect(coord, "uv", sep, "vector");
+	g.SetSocketDefault(bump, "strength", NkSocketDir::Input, NkValueReal(t.real, 1.f));
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const bool derive = r.ok && ContientSansCasse(r.source, "dFdx(n3_h)");
+	const bool garde = r.ok && ContientSansCasse(r.source, "< 1e-12 ? 1e-12");
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	Cas("bump/derivees-et-garde-du-determinant", r.ok && ok == 4 && derive && garde,
+		NkFormat("{0}| derivee de la hauteur presente={1} | determinant garde={2}", be, derive ? 1 : 0,
+				 garde ? 1 : 0));
+}
+
+static void CasSepareTroisSorties() {
+	// `Separate XYZ` est le second noeud a sorties multiples, et le premier a en
+	// avoir TROIS. DISCRIMINE : les trois locales doivent exister ET etre
+	// distinctes. Un emetteur qui reutiliserait un nom unique ferait lire la
+	// meme composante aux trois entrees — un shader qui compile et un materiau
+	// faux.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(g, NK_MN_PRINCIPLED);
+	const NkNodeId sep = NkMatAddNode(g, NK_MN_SEPARATE_XYZ);
+	const NkNodeId coord = NkMatAddNode(g, NK_MN_TEX_COORD);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	g.Connect(coord, "uv", sep, "vector");
+	g.Connect(sep, "x", bsdf, "metallic");
+	g.Connect(sep, "y", bsdf, "roughness");
+	NkMatCompileResult r = NkMatCompileToNkSL(g);
+	const NkString nx = NkFormat("n{0}_x", (uint32)sep);
+	const NkString ny = NkFormat("n{0}_y", (uint32)sep);
+	const NkString nz = NkFormat("n{0}_z", (uint32)sep);
+	const bool trois = r.ok && Apres(r.source, nx.CStr()) > 0 && Apres(r.source, ny.CStr()) > 0 &&
+					   Apres(r.source, nz.CStr()) > 0;
+	// Et le BSDF doit lire DEUX composantes DIFFERENTES.
+	const NkString lecture = NkFormat("float surfMetallic");
+	const bool distinctes = r.ok && Apres(r.source, NkFormat("n{0}_metallic = n{1}_x", (uint32)bsdf,
+															 (uint32)sep).CStr()) > 0 &&
+							Apres(r.source, NkFormat("n{0}_roughness = n{1}_y", (uint32)bsdf, (uint32)sep).CStr()) > 0;
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	(void)t;
+	(void)lecture;
+	Cas("separate/trois-sorties-distinctes", r.ok && ok == 4 && trois && distinctes,
+		NkFormat("{0}| trois locales presentes={1} | le BSDF lit x et y separement={2}", be, trois ? 1 : 0,
+				 distinctes ? 1 : 0));
+}
+
 int main() {
 	// ⚠️ `Pattern()` est GLOBAL ET PERSISTANT : il modifie l'instance de journal
 	// du PROCESSUS, pas l'appel. On le pose donc UNE FOIS ici, et pas a chaque
@@ -2085,6 +2278,14 @@ int main() {
 	CasTextureAucunBindingNeuf();
 	CasTextureDeuxSorties();
 	CasTextureCoordonneeEtMappage();
+
+	// -- le relief : Normal Map, Bump, Separate XYZ ----------------------
+	CasConventionNeChangePasLeShader();
+	CasConventionInconnueRefusee();
+	CasBaseTangenteSeulementSiUtile();
+	CasNormaleVoyageJusquAuPuits();
+	CasBumpDeriveesEtGarde();
+	CasSepareTroisSorties();
 
 	logger.Info("\n-- {0} cas, {1} echec(s) --", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;

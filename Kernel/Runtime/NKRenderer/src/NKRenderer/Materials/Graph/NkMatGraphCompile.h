@@ -118,9 +118,15 @@ namespace nkentseu {
 				// Les quatre composantes d'un « shader » approxime a la EEVEE.
 				// L'ordre est fixe et cite partout : le changer ici et pas la-bas
 				// donnerait un shader qui compile et rend faux.
-				static const char *const kComp[4] = {"albedo", "metallic", "roughness", "emission"};
-				// Les types NkSL correspondants, dans le meme ordre.
-				static const char *const kCompType[4] = {"vec3", "float", "float", "vec3"};
+				// ⚠️ CINQ composantes depuis le 2026-08-22 : la NORMALE a rejoint le
+				// lot. Sans elle, `Normal Map` et `Bump` n'avaient nulle part ou
+				// aller — le puits recalculait `normalize(vNormal)` et jetait tout
+				// travail de relief. Un noeud dont la sortie n'est lue par
+				// personne est pire qu'un noeud absent : il donne l'illusion que
+				// la capacite existe.
+				static const uint32 kCompCount = 5;
+				static const char *const kComp[5] = {"albedo", "metallic", "roughness", "emission", "normal"};
+				static const char *const kCompType[5] = {"vec3", "float", "float", "vec3", "vec3"};
 
 				// Litteral d'une valeur, adapte au TYPE ATTENDU par la prise. Une
 				// couleur a 4 reels alimentant un vec3 perd son alpha — c'est
@@ -146,6 +152,15 @@ namespace nkentseu {
 				}
 
 			} // namespace detail
+
+			// Combien de composantes porte un « shader » approxime. Public,
+			// parce que le banc doit lire LA MEME verite que le compilateur :
+			// un nombre recopie dans le banc cesserait de suivre le jour ou une
+			// composante s ajoute, et le cas passerait au vert sans rien prouver.
+			inline uint32 NkMatComposanteCount() {
+				return detail::kCompCount;
+			}
+
 
 			// ── LE COMPILATEUR ───────────────────────────────────────────────
 			// Parcours topologique, une locale par sortie, les entrees resolues
@@ -188,6 +203,16 @@ namespace nkentseu {
 				// l'ordre topologique : deterministe, donc reproductible d'une
 				// compilation a l'autre — un ordre qui varierait ferait changer le
 				// shader emis sans qu'aucune donnee n'ait bouge.
+				// Une base tangente coute deux paires de derivees : on ne l'emet que
+				// si un noeud la reclame. Un shader qui la calculerait sans
+				// l'utiliser paierait a chaque pixel pour rien.
+				bool besoinTBN = false;
+				for (uint32 i = 0; i < (uint32)ordre.Size(); ++i) {
+					const NkNode *n = g.Find(ordre[i]);
+					if (n && n->type == NkString(NK_MN_NORMAL_MAP))
+						besoinTBN = true;
+				}
+
 				NkVector<NkNodeId> texNodes;
 				for (uint32 i = 0; i < (uint32)ordre.Size(); ++i) {
 					const NkNode *n = g.Find(ordre[i]);
@@ -244,6 +269,33 @@ namespace nkentseu {
 					s.Append("\n");
 
 				s.Append("@stage(fragment)\n@entry\nvoid main() {\n");
+				// La normale geometrique sert de defaut a toute prise `normal` non
+				// cablee, et de base au relief. On la nomme une fois.
+				s.Append("    vec3 nkGeomN = normalize(vNormal);\n");
+				if (besoinTBN) {
+					// ⚠️ BASE TANGENTE PAR DERIVEES D'ECRAN (cadre cotangent de
+					// Schuler). Ce n'est pas un pis-aller : c'est deja ce que fait
+					// `pbr.frag.nksl`, et pour une raison ecrite la-bas — les
+					// tangentes de sommet peuvent etre nulles ou desalignees des
+					// UV, et le relief part alors dans une direction ARBITRAIRE
+					// par face. Ici T et B suivent exactement le sens des UV du
+					// pixel, miroirs et rotations compris.
+					//
+					// Le vertex engendre ne fournit d'ailleurs AUCUNE tangente :
+					// s'en passer n'est pas un choix, c'est la seule voie honnete.
+					s.Append("    vec3 nkDpx = dFdx(vWorldPos);\n");
+					s.Append("    vec3 nkDpy = dFdy(vWorldPos);\n");
+					s.Append("    vec2 nkDux = dFdx(vUV);\n");
+					s.Append("    vec2 nkDuy = dFdy(vUV);\n");
+					s.Append("    vec3 nkPerpY = cross(nkDpy, nkGeomN);\n");
+					s.Append("    vec3 nkPerpX = cross(nkGeomN, nkDpx);\n");
+					s.Append("    vec3 nkT = nkPerpY * nkDux.x + nkPerpX * nkDuy.x;\n");
+					s.Append("    vec3 nkB = nkPerpY * nkDux.y + nkPerpX * nkDuy.y;\n");
+					// Normalisation commune : garde le rapport T/B, donc l'anisotropie
+					// reelle des UV, la ou deux normalisations separees l'effacent.
+					s.Append("    float nkInvMax = 1.0 / sqrt(max(max(dot(nkT, nkT), dot(nkB, nkB)), 1e-20));\n");
+					s.Append("    nkT *= nkInvMax;\n    nkB *= nkInvMax;\n");
+				}
 
 				// Resout une entree : soit la locale du producteur, soit le defaut
 				// de la prise, soit le neutre documente.
@@ -278,6 +330,24 @@ namespace nkentseu {
 						const NkGraphValue &d = n.sockets[(uint32)idx].defaultValue;
 						if (d.IsSet()) {
 							detail::PutValeur(s, d, typeAttendu);
+							return;
+						}
+					}
+					// ⚠️ CAS PARTICULIER DE LA PRISE `normal` : son neutre n'est pas
+					// le noir mais la NORMALE GEOMETRIQUE. Un vecteur nul serait
+					// une normale nulle, donc un eclairage indefini — et le noir
+					// n'a aucun sens pour une direction. Ce n'est pas un repli
+					// plausible : c'est le comportement DEFINI de la prise, celui
+					// de Blender.
+					{
+						const char *a = prise;
+						const char *b = "normal";
+						while (*a && *a == *b) {
+							++a;
+							++b;
+						}
+						if (*a == 0 && *b == 0) {
+							s.Append("nkGeomN");
 							return;
 						}
 					}
@@ -339,6 +409,9 @@ namespace nkentseu {
 						declareDebut(3);
 						ecrisEntree(*n, "emission", "vec3", nullptr);
 						s.Append(";\n");
+						declareDebut(4);
+						ecrisEntree(*n, "normal", "vec3", nullptr);
+						s.Append(";\n");
 					} else if (t == NkString(NK_MN_DIFFUSE)) {
 						declareDebut(0);
 						ecrisEntree(*n, "color", "vec3", nullptr);
@@ -350,6 +423,9 @@ namespace nkentseu {
 						ecrisEntree(*n, "roughness", "float", nullptr);
 						s.Append(";\n");
 						declare(3, "vec3(0.0)");
+						declareDebut(4);
+						ecrisEntree(*n, "normal", "vec3", nullptr);
+						s.Append(";\n");
 					} else if (t == NkString(NK_MN_EMISSION)) {
 						// Une emission n'a pas d'albedo diffus : toute son energie
 						// part dans le canal emissif, multiplie par sa force.
@@ -361,6 +437,9 @@ namespace nkentseu {
 						s.Append(" * ");
 						ecrisEntree(*n, "strength", "float", nullptr);
 						s.Append(";\n");
+						// Une emission n'a pas de relief : elle prend la normale
+						// geometrique, et le dire vaut mieux que de l'omettre.
+						declare(4, "nkGeomN");
 					} else if (t == NkString(NK_MN_MIX_SHADER)) {
 						// LE NOEUD QUE RODOLF A DEMANDE. Melange COMPOSANTE PAR
 						// COMPOSANTE, borne a [0,1] : un facteur hors bornes
@@ -370,7 +449,7 @@ namespace nkentseu {
 						s.Append(" = clamp(");
 						ecrisEntree(*n, "fac", "float", nullptr);
 						s.Append(", 0.0, 1.0);\n");
-						for (uint32 c = 0; c < 4; ++c) {
+						for (uint32 c = 0; c < detail::kCompCount; ++c) {
 							declareDebut(c);
 							s.Append("mix(");
 							ecrisEntree(*n, "shader1", detail::kCompType[c], detail::kComp[c]);
@@ -380,6 +459,16 @@ namespace nkentseu {
 							detail::PutNom(s, n->id, "fac");
 							s.Append(");\n");
 						}
+						// ⚠️ Melanger deux directions ne rend pas une direction :
+						// la somme ponderee de deux vecteurs unitaires ne l'est
+						// plus. On renormalise, sinon l'eclairage s'assombrit la
+						// ou les deux normales divergent — un defaut graduel, donc
+						// qu'on attribue a autre chose.
+						s.Append("    ");
+						detail::PutNom(s, n->id, "normal");
+						s.Append(" = normalize(");
+						detail::PutNom(s, n->id, "normal");
+						s.Append(");\n");
 					} else if (t == NkString(NK_MN_VALUE) || t == NkString(NK_MN_RGB)) {
 						// LES DEUX NOEUDS SOURCES, et les PREMIERS a lire une
 						// PROPRIETE DE NOEUD jusque dans le shader. Leur valeur
@@ -712,6 +801,22 @@ namespace nkentseu {
 						ecrisEntree(*n, "location", "vec3", nullptr);
 						s.Append(");\n");
 					} else if (t == NkString(NK_MN_IMAGE_TEXTURE)) {
+						// La convention de normale, si elle est declaree, est
+						// VALIDEE ici et n'influence RIEN dans le code emis : la
+						// conversion se fait a l'import. Un mot inconnu est refuse
+						// — un repli sur OpenGL inverserait le relief de la moitie
+						// des fichiers, et l'image resterait plausible.
+						{
+							const NkGraphValue *pc = g.FindProp(n->id, NK_MPROP_NORMAL_CONV);
+							if (pc && pc->IsSet() && NkMatTrouveConvNormale(pc->text.CStr()) < 0) {
+								r.error = NkString("convention de normale inconnue sur ");
+								r.error.Append(n->type);
+								r.error.Append(" : ");
+								r.error.Append(pc->text);
+								r.source = NkString("");
+								return r;
+							}
+						}
 						// ── LE PREMIER NOEUD QUI CONSOMME UNE RESSOURCE ───────
 						uint32 slot = 0;
 						for (uint32 i = 0; i < (uint32)texNodes.Size(); ++i)
@@ -747,6 +852,119 @@ namespace nkentseu {
 						s.Append(" = ");
 						detail::PutNom(s, n->id, "texel");
 						s.Append(".a;\n");
+					} else if (t == NkString(NK_MN_SEPARATE_XYZ)) {
+						// Trois sorties reelles. Le seul moyen, aujourd'hui, de
+						// tirer un scalaire VARIABLE d'un graphe.
+						static const char *const kAxes[3] = {"x", "y", "z"};
+						for (uint32 a = 0; a < 3; ++a) {
+							s.Append("    float ");
+							detail::PutNom(s, n->id, kAxes[a]);
+							s.Append(" = (");
+							ecrisEntree(*n, "vector", "vec3", nullptr);
+							s.Append(").");
+							s.Append(kAxes[a]);
+							s.Append(";\n");
+						}
+					} else if (t == NkString(NK_MN_NORMAL_MAP)) {
+						// ⚠️ AUCUNE CONVERSION DE CONVENTION ICI, ET C'EST LE
+						// POINT. Une carte DirectX se convertit A L'IMPORT. Le
+						// shader ne sait pas d'ou vient la texture et n'a pas a le
+						// savoir : le faire par pixel couterait a chaque fragment
+						// et rendrait l'etat de la donnee invisible. La convention
+						// est validee (plus haut) et RECOPIEE nulle part.
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "nts");
+						s.Append(" = (");
+						ecrisEntree(*n, "color", "vec3", nullptr);
+						s.Append(") * 2.0 - 1.0;\n");
+						// `strength` melange entre la normale geometrique et la
+						// normale decodee, comme Blender — pas une multiplication
+						// de la normale, qui la denormaliserait.
+						s.Append("    ");
+						detail::PutNom(s, n->id, "nts");
+						s.Append(" = normalize(mix(vec3(0.0, 0.0, 1.0), ");
+						detail::PutNom(s, n->id, "nts");
+						s.Append(", ");
+						{
+							const int32 iv = n->FindSocket("strength", NkSocketDir::Input);
+							const bool cable = iv >= 0 && g.IncomingOf(n->id, iv);
+							const NkGraphValue *d = iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+							if (cable || (d && d->IsSet()))
+								ecrisEntree(*n, "strength", "float", nullptr);
+							else
+								s.Append("1.0"); // neutre : la carte s'applique en entier
+						}
+						s.Append("));\n");
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "normal");
+						s.Append(" = normalize(nkT * ");
+						detail::PutNom(s, n->id, "nts");
+						s.Append(".x + nkB * ");
+						detail::PutNom(s, n->id, "nts");
+						s.Append(".y + nkGeomN * ");
+						detail::PutNom(s, n->id, "nts");
+						s.Append(".z);\n");
+					} else if (t == NkString(NK_MN_BUMP)) {
+						// Relief par derivees d'ecran du champ de hauteur. La
+						// hauteur est un SCALAIRE quelconque du graphe ; sa pente
+						// a l'ecran donne l'inclinaison de la surface.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "h");
+						s.Append(" = ");
+						ecrisEntree(*n, "height", "float", nullptr);
+						s.Append(";\n");
+						s.Append("    vec3 nkBdpx = dFdx(vWorldPos);\n");
+						s.Append("    vec3 nkBdpy = dFdy(vWorldPos);\n");
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "dhx");
+						s.Append(" = dFdx(");
+						detail::PutNom(s, n->id, "h");
+						s.Append(");\n    float ");
+						detail::PutNom(s, n->id, "dhy");
+						s.Append(" = dFdy(");
+						detail::PutNom(s, n->id, "h");
+						s.Append(");\n");
+						s.Append("    vec3 nkBr1 = cross(nkBdpy, nkGeomN);\n");
+						s.Append("    vec3 nkBr2 = cross(nkGeomN, nkBdpx);\n");
+						// ⚠️ Le determinant peut etre nul sur un triangle degenere
+						// ou vu par la tranche. Une division nue produirait un NaN
+						// qui contamine l'aval et change d'aspect d'un backend a
+						// l'autre — meme raison que la division du noeud Math.
+						s.Append("    float nkBdet = dot(nkBdpx, nkBr1);\n");
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "grad");
+						s.Append(" = (nkBr1 * ");
+						detail::PutNom(s, n->id, "dhx");
+						s.Append(" + nkBr2 * ");
+						detail::PutNom(s, n->id, "dhy");
+						s.Append(") / (abs(nkBdet) < 1e-12 ? 1e-12 : abs(nkBdet));\n");
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "normal");
+						s.Append(" = normalize(");
+						ecrisEntree(*n, "normal", "vec3", nullptr);
+						s.Append(" - (");
+						{
+							const int32 iv = n->FindSocket("strength", NkSocketDir::Input);
+							const bool cable = iv >= 0 && g.IncomingOf(n->id, iv);
+							const NkGraphValue *d = iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+							if (cable || (d && d->IsSet()))
+								ecrisEntree(*n, "strength", "float", nullptr);
+							else
+								s.Append("1.0");
+						}
+						s.Append(") * (");
+						{
+							const int32 iv = n->FindSocket("distance", NkSocketDir::Input);
+							const bool cable = iv >= 0 && g.IncomingOf(n->id, iv);
+							const NkGraphValue *d = iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+							if (cable || (d && d->IsSet()))
+								ecrisEntree(*n, "distance", "float", nullptr);
+							else
+								s.Append("1.0");
+						}
+						s.Append(") * ");
+						detail::PutNom(s, n->id, "grad");
+						s.Append(");\n");
 					} else if (t == NkString(NK_MN_OUTPUT)) {
 						// ── LE PUITS : ombrage puis ecriture ────────────────
 						// Le modele d'eclairage est celui de LayeredV1, a
@@ -761,8 +979,13 @@ namespace nkentseu {
 						ecrisEntree(*n, "surface", "float", "roughness");
 						s.Append(";\n    vec3 surfEmission = ");
 						ecrisEntree(*n, "surface", "vec3", "emission");
+						s.Append(";\n    vec3 surfNormal = ");
+						ecrisEntree(*n, "surface", "vec3", "normal");
 						s.Append(";\n\n");
-						s.Append("    vec3 N3 = normalize(vNormal);\n");
+						// La normale vient du GRAPHE. Avant le 22/08 le puits
+						// recalculait `normalize(vNormal)` ici, ce qui jetait en
+						// silence tout travail de relief en amont.
+						s.Append("    vec3 N3 = normalize(surfNormal);\n");
 						s.Append("    vec3 L  = normalize(vec3(-0.3, 1.0, 0.4));\n");
 						s.Append("    vec3 V  = normalize(uCam.camPos.xyz - vWorldPos);\n");
 						s.Append("    vec3 H  = normalize(L + V);\n");
