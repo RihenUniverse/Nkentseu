@@ -113,6 +113,42 @@
 // pas.
 //   -> Demande-toi, en ajoutant un second cas a ce qui n'en avait qu'un : quelles
 //      conditions etaient vraies parce qu'il n'y en avait qu'un ?
+//
+// REGLE 5 — LA CONNAISSANCE EXISTE, MAIS PAS LA OU QUELQU'UN LA CHERCHERAIT
+//
+// Trois formes, sorties la meme nuit sur trois chantiers, et elles ont la meme
+// racine :
+//
+//   une limite SUE et non ecrite       -> se transmet en s'effacant ;
+//   une limite ECRITE AU MAUVAIS ENDROIT -> ne se transmet pas du tout ;
+//   deux documents qui DIVERGENT       -> fabriquent du faux travail
+//                                         (deux seances de decision preparees
+//                                          sur des points deja tranches
+//                                          ailleurs).
+//
+// ⚠️ ET LA DEUXIEME EST LA PLUS COUTEUSE DES TROIS, mesuree ici meme.
+// `NkGraph/NkNodeGraph.h` porte, DEPUIS LE DEBUT, exactement la regle 3 :
+// « JAMAIS RENSEIGNE et RENSEIGNE A VIDE sont deux etats differents », avec
+// « jamais renseigne » ramene a UNE SEULE representation
+// (`type == NK_TYPE_INVALID`). Sa note cite meme le piege PAYE par l'agent
+// NkUIDesign dans la nuit du 21 au 22/08.
+//
+// Quelqu'un l'avait deja paye. Il l'avait ECRIT. Et je l'ai repaye quand meme,
+// deux etages plus haut, en laissant `valeur[3]` a zero sur une sortie qui n'a
+// pas de valeur. Pas par negligence : PARCE QUE RIEN NE POUSSE A LIRE L'EN-TETE
+// DU MODULE D'EN DESSOUS QUAND ON ECRIT UNE STRUCTURE AU-DESSUS. La regle etait
+// disponible, gratuite, et invisible.
+//
+//   -> Demande-toi : cette regle existe-t-elle deja quelque part SOUS MOI ?
+//
+// ⚠️ Cette question N'A PAS DE REPONSE MECANIQUE, et il ne faut pas faire
+// semblant du contraire. On ne peut pas relire tout le noyau avant chaque
+// structure, et aucun outil ne dira « la regle que tu t'appretes a violer est
+// ecrite trois modules plus bas ». La poser vaut quand meme mieux que de ne pas
+// la poser : elle coute trente secondes sur les questions ou l'on SAIT qu'un
+// module d'en dessous a deja tranche -- la representation d'une valeur absente,
+// la stabilite d'un identifiant, l'ordre d'evaluation -- et ce sont justement
+// celles ou la reponse existe.
 // ═════════════════════════════════════════════════════════════════════════════
 // =============================================================================
 #include "NKRenderer/Materials/Graph/NkMatGraphTypes.h"

@@ -2571,3 +2571,36 @@ effacement à `(0,0,0,0)`, et une lecture réelle depuis la carte. **Le domaine
 déclaré par sortie** (borné / non borné) et la **promotion 32 bits nommée** ne
 sont pas non plus construits — ils le seront quand une sortie réelle en aura
 besoin, et pas avant.
+
+## 📌 La connaissance existe, mais pas là où quelqu'un la chercherait (2026-08-23)
+
+Trois formes, sorties la même nuit sur trois chantiers, même racine :
+
+| forme | ce qu'elle coûte |
+|---|---|
+| une limite **sue** et non écrite | se transmet **en s'effaçant** |
+| une limite **écrite au mauvais endroit** | **ne se transmet pas du tout** |
+| deux documents qui **divergent** | **fabriquent du faux travail** — deux séances de décision préparées sur des points déjà tranchés ailleurs |
+
+⚠️ **La deuxième est la plus coûteuse, et elle a été payée ici même.**
+`Kernel/Runtime/NKGraph/src/NKGraph/NkNodeGraph.h` porte **depuis le début**
+exactement la règle qui manquait à `NkMatSortieMateriau` : *« JAMAIS RENSEIGNÉ et
+RENSEIGNÉ À VIDE sont deux états différents »*, avec « jamais renseigné » ramené à
+**une seule** représentation. Sa note cite même le piège **payé** par l'agent
+NkUIDesign dans la nuit du 21 au 22/08.
+
+> **Quelqu'un l'avait déjà payé. Il l'avait écrit. Et il a été repayé quand même,
+> deux étages plus haut** — non par négligence, mais parce que **rien ne pousse à
+> lire l'en-tête du module d'en dessous quand on écrit une structure au-dessus**.
+> La règle était disponible, gratuite, et invisible.
+
+**La question, ajoutée au préambule de `NkMatGraphCheck` comme cinquième règle :**
+*cette règle existe-t-elle déjà quelque part sous moi ?*
+
+⚠️ Et elle **n'a pas de réponse mécanique** — il ne faut pas prétendre le
+contraire. On ne relit pas le noyau avant chaque structure, et aucun outil ne dira
+« la règle que tu t'apprêtes à violer est écrite trois modules plus bas ». La
+poser vaut quand même mieux : elle coûte trente secondes sur les questions où l'on
+**sait** qu'un module d'en dessous a déjà tranché — la représentation d'une valeur
+absente, la stabilité d'un identifiant, l'ordre d'évaluation — et ce sont
+justement celles où la réponse existe.
