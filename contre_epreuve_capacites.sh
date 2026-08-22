@@ -24,6 +24,8 @@
 #   F  elle est classee « vision-assumee »       -> ECHEC, code 4, classement
 #                                                   REFUSE (regle R3-a)
 #   G  elle est classee « dette-datee » + date   -> VERT, code 0
+#   I  une dette « A-DATER » de plus             -> ECHEC, code 4, CLIQUET ROMPU
+#      et le fichier sans directive de plafond   -> code 2, jamais un vert
 #   H  tout est retire                           -> VERT, code 0, arbre IDENTIQUE
 #
 #   E prouve que l'outil detecte. F prouve qu'il refuse le classement interdit —
@@ -214,6 +216,38 @@ sortie=$(./verif_capacites.sh 2>&1)
 rcG2=$?
 [ "$rcG2" -eq 4 ] && vu "« dette-datee » a date VIDE reste rouge (un oubli n'est pas une dette datee)" \
                   || rate "code $rcG2 sur une dette sans date, attendu 4"
+
+# =============================================================================
+# EPREUVE I — le CLIQUET de A-DATER : il descend, il ne monte pas
+# =============================================================================
+# G a montre qu'une dette DATEE rend le vert. Reste a montrer qu'une dette
+# NON DATEE de plus fait monter le compte et casse le cliquet — sinon
+# « A-DATER » redeviendrait une porte ouverte, et le stock se renouvellerait
+# exactement pendant qu'on le vide.
+dire ""
+dire "-- I : une dette « A-DATER » de plus -> CLIQUET ROMPU -----------------"
+cp "$LISTE.sauvegarde" "$LISTE"
+{
+  printf '%s | %s | %s | %s | %s
+' "$SYM_D1" "D1" "dette-datee" "A-DATER" "contre-epreuve I"
+  printf '%s | %s | %s | %s | %s
+' "$SYM_D2" "D2" "dette-datee" "A-DATER" "contre-epreuve I"
+} >> "$LISTE"
+
+sortie=$(./verif_capacites.sh 2>&1)
+rcI=$?
+[ "$rcI" -eq 4 ] && vu "code 4 : le cliquet refuse que le stock d'echeances non fixees MONTE"                  || rate "code $rcI sur un cliquet depasse, attendu 4"
+printf '%s' "$sortie" | grep -q 'CLIQUET ROMPU'   && vu "l'outil dit CLIQUET ROMPU, et nomme le plafond"   || rate "l'outil ne distingue pas un cliquet rompu d'une dette ordinaire"
+printf '%s' "$sortie" | grep -q 'se date a la naissance'   && vu "la regle est rappelee : toute capacite nouvelle se date a la naissance"   || rate "la regle du cliquet n'est pas rappelee"
+
+# -- et le cas symetrique : sans directive de plafond, PAS de silence vert ----
+cp "$LISTE.sauvegarde" "$LISTE"
+grep -v 'PLAFOND-A-DATER' "$LISTE" > "$LISTE.sansplafond" && mv -f "$LISTE.sansplafond" "$LISTE"
+sortie=$(./verif_capacites.sh 2>&1)
+rcI2=$?
+[ "$rcI2" -eq 2 ] && vu "sans directive de plafond : ECHEC D'INSTRUMENT (code 2), pas un vert"                   || rate "code $rcI2 sans directive de plafond, attendu 2"
+printf '%s' "$sortie" | grep -q 'meme sortie verte'   && vu "la raison est dite : un cliquet absent et un cliquet satisfait se ressemblent"   || rate "la raison de l'echec d'instrument n'est pas dite"
+cp "$LISTE.sauvegarde" "$LISTE"
 
 # =============================================================================
 # EPREUVE H — tout est retire, l'arbre doit etre IDENTIQUE

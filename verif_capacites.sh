@@ -526,6 +526,39 @@ declare -a CL_ORDRE=()
 ROGNE=""
 rogner() { local s="${1:-}"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; ROGNE="$s"; }
 
+# -- LE CLIQUET DE `A-DATER` (arbitrage de Rodolf, R4-1) ---------------------
+# `A-DATER` a le droit d'exister, mais SON COMPTE NE PEUT QUE DESCENDRE.
+#
+# Le raisonnement, et il n'est pas de moi : dater a la place de Rodolf est
+# impossible, et passer 24 drapeaux a `false` sans lui serait une decision
+# PRODUIT deguisee en hygiene. Le cliquet resout les deux : le stock est un
+# HERITAGE qui ne se renouvelle pas, et toute capacite NOUVELLE est datee a la
+# naissance, sans exception. La dette ne grossit pas pendant qu'on la date.
+#
+# Le plafond est une DONNEE, declaree dans le fichier de classement :
+#     # PLAFOND-A-DATER = 24
+# Le modifier est un geste delibere qui apparait dans un diff. C'est le point.
+#
+# ⚠️ SON ABSENCE EST UN ECHEC D'INSTRUMENT, pas un defaut : un cliquet absent et
+# un cliquet satisfait produisent la meme sortie verte. C'est la meme phrase que
+# pour les temoins, et elle vaut ici aussi.
+PLAFOND_A_DATER=""
+while IFS= read -r ligne; do
+  case "$ligne" in
+    \#*PLAFOND-A-DATER*)
+      PLAFOND_A_DATER="${ligne##*=}"
+      PLAFOND_A_DATER="${PLAFOND_A_DATER//[![:digit:]]/}"
+      ;;
+  esac
+done < "$LISTE"
+if [ -z "$PLAFOND_A_DATER" ]; then
+  dire2 "[cap] ECHEC D'INSTRUMENT : aucune directive « # PLAFOND-A-DATER = N » dans $LISTE."
+  dire2 "[cap]   Le cliquet de A-DATER n'existe donc pas, et un cliquet absent produit"
+  dire2 "[cap]   exactement la meme sortie verte qu'un cliquet satisfait."
+  dire2 "[cap]   Ajoute la ligne avec le compte actuel, puis fais-la DESCENDRE."
+  exit 2
+fi
+
 num=0
 while IFS= read -r ligne; do
   num=$((num + 1))
@@ -592,6 +625,15 @@ done < "$TMP/detectes.txt"
 for cle in "${CL_ORDRE[@]}"; do
   [ -z "${VU[$cle]:-}" ] && ORPHELINES+=("$cle")
 done
+
+# -- LE CLIQUET SE SERRE, IL NE SE DESSERRE PAS ------------------------------
+CLIQUET_ROMPU=0
+CLIQUET_LACHE=0
+if [ "${#A_DATER[@]}" -gt "$PLAFOND_A_DATER" ]; then
+  CLIQUET_ROMPU=1
+elif [ "${#A_DATER[@]}" -lt "$PLAFOND_A_DATER" ]; then
+  CLIQUET_LACHE=1
+fi
 
 # =============================================================================
 # 8. RAPPORT
@@ -673,13 +715,38 @@ if [ "${#SANS_DATE[@]}" -gt 0 ]; then
   RC=4
 fi
 
-if [ "${#A_DATER[@]}" -gt 0 ]; then
+if [ "${#A_DATER[@]}" -gt 0 ] || [ "$CLIQUET_ROMPU" -eq 1 ]; then
   dire ""
-  dire "-- Dettes en attente d'echeance (A-DATER) ----------------------------"
+  dire "-- Dettes en attente d'echeance (A-DATER) — CLIQUET $PLAFOND_A_DATER ------------------"
   dire "  ${#A_DATER[@]} capacite(s) reconnue(s) comme dette, dont la date appartient a"
   dire "  Rodolf. Nommees a chaque passage : une dette qu'on ne mentionne plus est"
   dire "  une dette oubliee. Ce n'est PAS un echec — c'est une question ouverte."
   for l in "${A_DATER[@]}"; do dire "    ${l#*|}   (${l%%|*})"; done
+fi
+
+if [ "$CLIQUET_ROMPU" -eq 1 ]; then
+  dire2 ""
+  dire2 "[cap]     CLIQUET ROMPU : ${#A_DATER[@]} dette(s) « A-DATER » pour un plafond de $PLAFOND_A_DATER."
+  dire2 "[cap]     Le stock d'echeances non fixees est un HERITAGE : il peut descendre,"
+  dire2 "[cap]     il ne peut pas MONTER. Toute capacite nouvelle se date a la naissance,"
+  dire2 "[cap]     sans exception — sinon la dette grossit exactement pendant qu'on la date."
+  dire2 "[cap]     Deux issues, et pas une troisieme :"
+  dire2 "[cap]       - donne une date reelle a la (aux) nouvelle(s) ;"
+  dire2 "[cap]       - ou classe-la autrement (implementee / morte-a-retirer)."
+  dire2 "[cap]     Relever le plafond dans $LISTE est possible — et c'est un geste"
+  dire2 "[cap]     DELIBERE qui apparait dans un diff. C'est tout l'interet du cliquet :"
+  dire2 "[cap]     il ne s'oppose pas a la decision, il s'oppose a la derive silencieuse."
+  RC=4
+fi
+
+if [ "$CLIQUET_LACHE" -eq 1 ]; then
+  dire ""
+  dire "[cap]     info le cliquet peut DESCENDRE : ${#A_DATER[@]} dette(s) « A-DATER » pour un"
+  dire "[cap]          plafond de $PLAFOND_A_DATER. Mets « # PLAFOND-A-DATER = ${#A_DATER[@]} » dans $LISTE."
+  dire "[cap]          Un cliquet qu'on ne resserre jamais n'est plus un cliquet — il"
+  dire "[cap]          redevient une marge, et une marge se remplit. Je ne le resserre"
+  dire "[cap]          PAS tout seul : un controle qui modifie sa propre donnee sans que"
+  dire "[cap]          personne ne le voie a cesse d'etre un controle."
 fi
 
 # On compte les LIGNES DE DONNEE, pas les mentions : l'en-tete du fichier parle

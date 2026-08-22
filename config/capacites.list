@@ -70,6 +70,24 @@
 #   corrige sa ligne au passage - plutot qu'une grande revue en une fois, qui
 #   n'arrive jamais.
 #
+# LE CLIQUET DE "A-DATER" (arbitrage de Rodolf)
+#
+#   Le compte de "A-DATER" PEUT DESCENDRE, IL NE PEUT PAS MONTER.
+#
+#   Dater a la place de Rodolf est impossible ; passer 24 drapeaux a "false"
+#   sans lui serait une decision PRODUIT deguisee en hygiene. Le cliquet resout
+#   les deux : le stock est un HERITAGE qui ne se renouvelle pas, et toute
+#   capacite NOUVELLE se date a la naissance, sans exception. La dette ne
+#   grossit pas pendant qu'on la date.
+#
+#   Le plafond ci-dessous est une DONNEE. Le relever est possible, et c'est un
+#   geste DELIBERE qui apparait dans un diff : le cliquet ne s'oppose pas a la
+#   decision, il s'oppose a la derive silencieuse.
+#   Son ABSENCE est un ECHEC D'INSTRUMENT : un cliquet absent et un cliquet
+#   satisfait produisent la meme sortie verte.
+
+# PLAFOND-A-DATER = 24
+
 # =============================================================================
 FrameStats::cpuSubmitTimeMs                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 FrameStats::gpuMemoryUsedBytes               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
