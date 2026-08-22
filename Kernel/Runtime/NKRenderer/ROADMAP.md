@@ -1452,7 +1452,8 @@ Preuve : `Applications/NkMatGraphCheck` — **application** console, **35 cas, 0
 | **compilateur → NkSL** | ✅ v1 | `Materials/Graph/NkMatGraphCompile.h` |
 | **preuve de RENDU sur GPU** | ✅ | `Applications/NkMatGraphDemo` — DX11 headless, 7 cas, 4 mutations rouges |
 | masque de couche par **texture** | ✅ | 4 canaux, binding 9, `SetLayerV1MaskMap()` |
-| nœuds Texture / ColorRamp / Math / Mapping | ❌ | débloqués : le cœur porte enfin des paramètres |
+| nœuds `Value` · `RGB` · `Math` (7 op.) · `Mix Color` (6 modes) | ✅ 2026-08-22 | une propriété de nœud porte une **décision**, pas seulement une valeur |
+| nœuds `ColorRamp` / `Image Texture` / `Mapping` | ❌ | ColorRamp = charge utile variable ; Image Texture = 1er binding piloté par le graphe |
 | canevas d'édition | ❌ | couche 2, `NKEditorKit`, partagé — pas ce chantier |
 
 **Le NkSL émis COMPILE sur les quatre backends** (GL, Vulkan, DX11, DX12), vérifié
@@ -1475,6 +1476,47 @@ celle de Blender ; seule son exécution diffère.
 
 **3. Une entrée ni câblée ni renseignée donne le NOIR.** Le blanc ferait passer un
 matériau non fini pour un matériau clair. Le neutre doit **se voir**.
+
+#### Les nœuds de calcul — une propriété qui porte une **décision** (2026-08-22)
+
+`Math` (7 opérations) et `Mix Color` (6 modes) sont les premiers nœuds dont **le
+calcul lui-même** est choisi par une propriété. Jusque-là une propriété portait
+une *valeur* ; celles-ci portent une *décision*, et c'est le premier endroit du
+compilateur où une propriété pilote le **code émis**.
+
+⚠️ **Une opération inconnue FAIT ÉCHOUER la compilation, en la nommant.** La
+tentation est de retomber sur la première de la liste parce que « ça marche » :
+le matériau compilerait, rendrait, et **calculerait autre chose que ce que le
+fichier dit**. Un fichier écrit par une version future, ou une faute de frappe,
+passerait inaperçu jusqu'au résultat. Le cas distingue explicitement le voisin
+**légitime** : une propriété *absente* (le nœud vient d'être posé, l'auteur n'a
+pas choisi) doit, elle, compiler.
+
+⚠️ **Les opérations sont des MOTS, jamais des numéros**, et la table est à **un
+seul endroit** — lue par le compilateur, énumérée par le banc, bientôt proposée
+par l'interface. Un numéro d'énumération se décale dès qu'on insère une valeur au
+milieu, et les graphes déjà enregistrés se mettent alors à calculer autre chose
+en silence. Trois listes finiraient par diverger, et c'est le compilateur qui
+aurait raison sans que personne le sache.
+
+**Deux gardes numériques, chacune avec son cas** : la division par zéro rend 0
+(comme Blender) — une division nue produirait un NaN qui contamine tout l'aval et
+**change d'aspect d'un backend à l'autre**, donc le pire à diagnostiquer ; et
+`pow` borne sa base à 0, pour la même raison.
+
+**Preuves** : les **13** opérations compilent sur les 4 backends (le compte vient
+de la table, pas d'un nombre écrit dans le banc — ajouter une opération sans
+l'émettre met le cas au rouge tout seul). Et côté **rendu** : `Mix Color` en mode
+`melanger` à `fac=0,5` donne un écart de **64**, en mode `eclaircir` à `fac=1` un
+écart de **128** — exactement le **double**. Un compilateur qui ignorerait le mode
+rendrait 64 dans les deux cas ; c'est la différence entre les deux qui le
+dénonce.
+
+⚠️ **Un déréférencement nul trouvé par une mutation, et corrigé** : retirer le
+refus laissait l'indice d'opération à −1, et le pointeur de table était
+déréférencé sans contrôle — le banc **mourait** au lieu d'échouer. Un code qui ne
+peut se tromper que par un plantage n'est pas robuste, il est chanceux. Le
+pointeur est vérifié désormais.
 
 #### 🎯 LA CIBLE POSÉE PAR RODOLF (2026-08-22) — **chaque paramètre EST une prise typée**
 
