@@ -162,6 +162,15 @@ namespace nkentseu {
 				};
 				static const uint32 kTypesDegradeCount = 4;
 
+				// Types d'onde. `bandes` suit une coordonnee, `anneaux` la
+				// distance a l'origine : c'est la meme difference qu'entre un
+				// degrade lineaire et un degrade spherique.
+				static const NkMatOperation kTypesOnde[] = {
+					{"bandes", "Bands"},
+					{"anneaux", "Rings"},
+				};
+				static const uint32 kTypesOndeCount = 2;
+
 				// Conventions de carte de normales. Des MOTS, une seule table, et
 				// une convention inconnue est REFUSEE : un repli sur OpenGL
 				// donnerait un relief inverse sur la moitie des fichiers, et
@@ -186,6 +195,30 @@ namespace nkentseu {
 				};
 				static const uint32 kOpsMixCount = 6;
 			} // namespace detail
+
+			inline uint32 NkMatTypeOndeCount() {
+				return detail::kTypesOndeCount;
+			}
+
+			inline const NkMatOperation *NkMatTypeOndeAt(uint32 i) {
+				return i < detail::kTypesOndeCount ? &detail::kTypesOnde[i] : nullptr;
+			}
+
+			inline int32 NkMatTrouveTypeOnde(const char *cle) {
+				if (!cle)
+					return -1;
+				for (uint32 i = 0; i < detail::kTypesOndeCount; ++i) {
+					const char *a = detail::kTypesOnde[i].cle;
+					const char *b = cle;
+					while (*a && *a == *b) {
+						++a;
+						++b;
+					}
+					if (!*a && !*b)
+						return (int32)i;
+				}
+				return -1;
+			}
 
 			inline uint32 NkMatTypeDegradeCount() {
 				return detail::kTypesDegradeCount;
@@ -563,6 +596,9 @@ namespace nkentseu {
 			static const char *const NK_MN_NOISE = "mat.bruit";
 			static const char *const NK_MN_GRADIENT = "mat.degrade";
 			static const char *const NK_MN_CHECKER = "mat.damier";
+			static const char *const NK_MN_VORONOI = "mat.voronoi";
+			static const char *const NK_MN_WAVE = "mat.onde";
+			static const char *const NK_MN_BRICK = "mat.briques";
 			// Le type de degrade, meme discipline que les operations : un MOT.
 			static const char *const NK_MPROP_TYPE = "type";
 			static const char *const NK_MPROP_STOPS = "arrets";
@@ -707,6 +743,33 @@ namespace nkentseu {
 					{"fac", NK_MT_REAL, NkSocketDir::Output, false},
 				};
 
+				// Voronoi : la distance a la cellule la plus proche. Reutilise
+				// `NkHash22`, deja recopiee et deja gardee par le banc.
+				static const NkMatSocketDecl kVoronoi[] = {
+					{"vector", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"scale", NK_MT_REAL, NkSocketDir::Input, false},
+					{"distance", NK_MT_REAL, NkSocketDir::Output, false},
+					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
+				};
+
+				static const NkMatSocketDecl kWave[] = {
+					{"vector", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"scale", NK_MT_REAL, NkSocketDir::Input, false},
+					{"fac", NK_MT_REAL, NkSocketDir::Output, false},
+					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
+				};
+
+				// Brick : un appareillage a joints decales une rangee sur deux.
+				static const NkMatSocketDecl kBrick[] = {
+					{"vector", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"color1", NK_MT_COLOR, NkSocketDir::Input, false},
+					{"color2", NK_MT_COLOR, NkSocketDir::Input, false},
+					{"mortar", NK_MT_COLOR, NkSocketDir::Input, false},
+					{"scale", NK_MT_REAL, NkSocketDir::Input, false},
+					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
+					{"fac", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+
 				static const NkMatSocketDecl kColorRamp[] = {
 					{"fac", NK_MT_REAL, NkSocketDir::Input, false},
 					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
@@ -748,8 +811,11 @@ namespace nkentseu {
 					{NK_MN_NOISE, "Noise Texture", kNoise, 5},
 					{NK_MN_GRADIENT, "Gradient Texture", kGradient, 3},
 					{NK_MN_CHECKER, "Checker Texture", kChecker, 6},
+					{NK_MN_VORONOI, "Voronoi Texture", kVoronoi, 4},
+					{NK_MN_WAVE, "Wave Texture", kWave, 4},
+					{NK_MN_BRICK, "Brick Texture", kBrick, 7},
 				};
-				static const uint32 kProtoCount = 19;
+				static const uint32 kProtoCount = 22;
 
 			} // namespace detail
 

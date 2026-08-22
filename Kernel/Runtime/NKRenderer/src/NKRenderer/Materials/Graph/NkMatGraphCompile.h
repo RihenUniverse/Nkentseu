@@ -264,6 +264,33 @@ namespace nkentseu {
 					out.Append("}\n");
 					out.Append("\n");
 				}
+
+				// La cellule la plus proche, sur le voisinage 3x3. Ecrite ICI et
+				// non recopiee : aucun `.glsli` du depot ne porte de Voronoi —
+				// verifie avant d'ecrire. Elle s'appuie en revanche sur
+				// `NkHash22`, qui vient du fichier et reste gardee par le banc.
+				//
+				// ⚠️ La boucle est DEROULEE sur un voisinage FIXE de 3x3. Une
+				// borne connue a la compilation est ce qui permet a tous les
+				// backends de la derouler ; un rayon variable ferait de cette
+				// fonction un shader qui compile ici et pas ailleurs.
+				inline void PutBriqueVoronoi(NkString &out) {
+					out.Append("float NkVoronoiF1(vec2 p) {\n");
+					out.Append("    vec2 cell = floor(p);\n");
+					out.Append("    vec2 f = fract(p);\n");
+					out.Append("    float best = 8.0;\n");
+					out.Append("    for (int j = -1; j <= 1; ++j) {\n");
+					out.Append("        for (int i = -1; i <= 1; ++i) {\n");
+					out.Append("            vec2 g2 = vec2(float(i), float(j));\n");
+					out.Append("            vec2 o = NkHash22(cell + g2);\n");
+					out.Append("            vec2 d = g2 + o - f;\n");
+					out.Append("            best = min(best, dot(d, d));\n");
+					out.Append("        }\n");
+					out.Append("    }\n");
+					out.Append("    return sqrt(best);\n");
+					out.Append("}\n");
+					out.Append("\n");
+				}
 			} // namespace detail
 
 			// Combien de composantes porte un « shader » approxime. Public,
@@ -445,13 +472,20 @@ namespace nkentseu {
 				// un shader qui les porterait sans s'en servir alourdirait chaque
 				// materiau pour rien.
 				bool besoinBruit = false;
+				bool besoinVoronoi = false;
 				bool besoinTBN = false;
 				for (uint32 i = 0; i < (uint32)ordre.Size(); ++i) {
 					const NkNode *n = g.Find(ordre[i]);
 					if (n && n->type == NkString(NK_MN_NORMAL_MAP))
 						besoinTBN = true;
-					if (n && n->type == NkString(NK_MN_NOISE))
+					// ⚠️ Voronoi et Brick emploient les HACHAGES du meme fichier :
+					// oublier l'un des trois donnerait un shader qui appelle une
+					// fonction non declaree, et l'erreur accuserait le backend.
+					if (n && (n->type == NkString(NK_MN_NOISE) || n->type == NkString(NK_MN_VORONOI) ||
+							  n->type == NkString(NK_MN_BRICK)))
 						besoinBruit = true;
+					if (n && n->type == NkString(NK_MN_VORONOI))
+						besoinVoronoi = true;
 				}
 
 				NkVector<NkNodeId> texNodes;
@@ -531,6 +565,8 @@ namespace nkentseu {
 
 				if (besoinBruit)
 					detail::PutBriquesBruit(s);
+				if (besoinVoronoi)
+					detail::PutBriqueVoronoi(s);
 
 				s.Append("@stage(fragment)\n@entry\nvoid main() {\n");
 				// La normale geometrique sert de defaut a toute prise `normal` non
@@ -1392,6 +1428,179 @@ namespace nkentseu {
 						s.Append(", ");
 						detail::PutNom(s, n->id, "fac");
 						s.Append(");\n");
+					} else if (t == NkString(NK_MN_VORONOI)) {
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "distance");
+						s.Append(" = NkVoronoiF1((");
+						{
+							const int32 iv = n->FindSocket("vector", NkSocketDir::Input);
+							if (iv >= 0 && g.IncomingOf(n->id, iv))
+								ecrisEntree(*n, "vector", "vec3", nullptr);
+							else
+								s.Append("vec3(vUV, 0.0)");
+						}
+						s.Append(").xy * ");
+						{
+							const int32 iv = n->FindSocket("scale", NkSocketDir::Input);
+							const bool cable = iv >= 0 && g.IncomingOf(n->id, iv);
+							const NkGraphValue *d = iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+							if (cable || (d && d->IsSet()))
+								ecrisEntree(*n, "scale", "float", nullptr);
+							else
+								s.Append("5.0");
+						}
+						s.Append(");\n");
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "color");
+						s.Append(" = vec3(");
+						detail::PutNom(s, n->id, "distance");
+						s.Append(");\n");
+					} else if (t == NkString(NK_MN_WAVE)) {
+						const NkGraphValue *pto = g.FindProp(n->id, NK_MPROP_TYPE);
+						int32 ito = 0;
+						if (pto && pto->IsSet()) {
+							ito = NkMatTrouveTypeOnde(pto->text.CStr());
+							if (ito < 0) {
+								r.error = NkString("type d onde inconnu sur ");
+								r.error.Append(n->type);
+								r.error.Append(" : ");
+								r.error.Append(pto->text);
+								r.source = NkString("");
+								return r;
+							}
+						}
+						const NkMatOperation *tod = NkMatTypeOndeAt((uint32)ito);
+						if (!tod) {
+							r.error = NkString("type d onde hors table");
+							r.source = NkString("");
+							return r;
+						}
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "co");
+						s.Append(" = ");
+						{
+							const int32 iv = n->FindSocket("vector", NkSocketDir::Input);
+							if (iv >= 0 && g.IncomingOf(n->id, iv))
+								ecrisEntree(*n, "vector", "vec3", nullptr);
+							else
+								s.Append("vec3(vUV, 0.0)");
+						}
+						s.Append(";\n");
+						// L'onde vaut 0,5 + 0,5 sin(x . echelle . 2pi) : periode 1/echelle,
+						// bornee dans [0,1] sans clamp. Un sinus brut sortirait de [0,1]
+						// et un `clamp` ecraserait les creux au lieu de les rendre.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "fac");
+						s.Append(" = 0.5 + 0.5 * sin((");
+						if (detail::OpEst(tod->cle, "bandes")) {
+							detail::PutNom(s, n->id, "co");
+							s.Append(".x");
+						} else {
+							s.Append("length(");
+							detail::PutNom(s, n->id, "co");
+							s.Append(".xy)");
+						}
+						s.Append(") * ");
+						{
+							const int32 iv = n->FindSocket("scale", NkSocketDir::Input);
+							const bool cable = iv >= 0 && g.IncomingOf(n->id, iv);
+							const NkGraphValue *d = iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+							if (cable || (d && d->IsSet()))
+								ecrisEntree(*n, "scale", "float", nullptr);
+							else
+								s.Append("5.0");
+						}
+						s.Append(" * 6.28318531);\n");
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "color");
+						s.Append(" = vec3(");
+						detail::PutNom(s, n->id, "fac");
+						s.Append(");\n");
+					} else if (t == NkString(NK_MN_BRICK)) {
+						s.Append("    vec2 ");
+						detail::PutNom(s, n->id, "q");
+						s.Append(" = ((");
+						{
+							const int32 iv = n->FindSocket("vector", NkSocketDir::Input);
+							if (iv >= 0 && g.IncomingOf(n->id, iv))
+								ecrisEntree(*n, "vector", "vec3", nullptr);
+							else
+								s.Append("vec3(vUV, 0.0)");
+						}
+						s.Append(").xy) * ");
+						{
+							const int32 iv = n->FindSocket("scale", NkSocketDir::Input);
+							const bool cable = iv >= 0 && g.IncomingOf(n->id, iv);
+							const NkGraphValue *d = iv >= 0 ? &n->sockets[(uint32)iv].defaultValue : nullptr;
+							if (cable || (d && d->IsSet()))
+								ecrisEntree(*n, "scale", "float", nullptr);
+							else
+								s.Append("5.0");
+						}
+						s.Append(";\n");
+						// Appareillage a joints decales : une rangee sur deux glisse
+						// d'une demi-brique. Sans ce decalage on obtient un quadrillage,
+						// qui est un mur parfaitement plausible et faux.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "rangee");
+						s.Append(" = floor(");
+						detail::PutNom(s, n->id, "q");
+						s.Append(".y);\n");
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "dec");
+						s.Append(" = mod(");
+						detail::PutNom(s, n->id, "rangee");
+						s.Append(", 2.0) * 0.5;\n");
+						s.Append("    vec2 ");
+						detail::PutNom(s, n->id, "uvb");
+						s.Append(" = vec2(fract(");
+						detail::PutNom(s, n->id, "q");
+						s.Append(".x * 0.5 + ");
+						detail::PutNom(s, n->id, "dec");
+						s.Append("), fract(");
+						detail::PutNom(s, n->id, "q");
+						s.Append(".y));\n");
+						// Le joint : une bande de 6 % sur chaque bord de la brique.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "brique");
+						s.Append(" = step(0.06, ");
+						detail::PutNom(s, n->id, "uvb");
+						s.Append(".x) * step(0.06, ");
+						detail::PutNom(s, n->id, "uvb");
+						s.Append(".y) * step(");
+						detail::PutNom(s, n->id, "uvb");
+						s.Append(".x, 0.94) * step(");
+						detail::PutNom(s, n->id, "uvb");
+						s.Append(".y, 0.94);\n");
+						// Chaque brique tire sa nuance de sa position : deux briques
+						// voisines ne doivent pas avoir la meme couleur.
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "h");
+						s.Append(" = NkHash2(vec2(floor(");
+						detail::PutNom(s, n->id, "q");
+						s.Append(".x * 0.5 + ");
+						detail::PutNom(s, n->id, "dec");
+						s.Append("), ");
+						detail::PutNom(s, n->id, "rangee");
+						s.Append("));\n");
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "color");
+						s.Append(" = mix(");
+						ecrisEntree(*n, "mortar", "vec3", nullptr);
+						s.Append(", mix(");
+						ecrisEntree(*n, "color1", "vec3", nullptr);
+						s.Append(", ");
+						ecrisEntree(*n, "color2", "vec3", nullptr);
+						s.Append(", ");
+						detail::PutNom(s, n->id, "h");
+						s.Append("), ");
+						detail::PutNom(s, n->id, "brique");
+						s.Append(");\n");
+						s.Append("    float ");
+						detail::PutNom(s, n->id, "fac");
+						s.Append(" = ");
+						detail::PutNom(s, n->id, "brique");
+						s.Append(";\n");
 					} else if (t == NkString(NK_MN_OUTPUT)) {
 						// ── LE PUITS : ombrage puis ecriture ────────────────
 						// Le modele d'eclairage est celui de LayeredV1, a

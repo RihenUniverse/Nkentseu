@@ -1169,7 +1169,7 @@ static void CasCompileMixShader() {
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 	// Le puits emet lui aussi un `mix` (specColor) : on en attend donc 4 + 1.
 	NkString d;
-	d = NkFormat("emis={0} ({1} o) | {2}| {3} cite {4} fois (1 declaration + {6} composantes) {5}", r.ok ? 1 : 0, (uint32)r.source.Size(), be, nomFac, nbFac, r.ok ? NkString("") : r.error, NkMatComposanteCount());
+	d = NkFormat("emis={0} ({1} o) | {2}| {3} cite {4} fois (1 declaration + {5} composantes) {6}", r.ok ? 1 : 0, (uint32)r.source.Size(), be, nomFac, nbFac, NkMatComposanteCount(), r.ok ? NkString("") : r.error);
 	Cas("compile/melange-deux-bsdf-4-backends", r.ok && ok == 4 && nbFac == NkMatComposanteCount() + 1u, d);
 	// NK_DUMP=1 imprime le NkSL engendre. Ce n est pas un echafaudage oublie :
 	// quand un cas de compilation tombe, la question est toujours « qu a-t-il
@@ -1349,8 +1349,11 @@ static void CasMenuPriseShader() {
 	// couleur, pas un shader.
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
-	const NkMatNodeProto *menu[16];
-	const uint32 n = NkMatNoeudsPourPrise(g, t.shader, menu, 16);
+	// Dimensionne sur le NOMBRE DE PROTOTYPES, pas sur un nombre choisi :
+	// le menu grandit a chaque noeud ajoute, et un tampon fixe finit
+	// toujours par etre depasse. Il l'a ete a 17.
+	const NkMatNodeProto *menu[64];
+	const uint32 n = NkMatNoeudsPourPrise(g, t.shader, menu, 64);
 	const bool bons = DansLeMenu(menu, n, NK_MN_PRINCIPLED) && DansLeMenu(menu, n, NK_MN_DIFFUSE) &&
 					  DansLeMenu(menu, n, NK_MN_EMISSION) && DansLeMenu(menu, n, NK_MN_MIX_SHADER);
 	const bool absents = !DansLeMenu(menu, n, NK_MN_OUTPUT) && !DansLeMenu(menu, n, NK_MN_VALUE) &&
@@ -1371,9 +1374,9 @@ static void CasMenuPriseCouleurEtReelle() {
 	// deux, et aucun test a sens unique ne le verrait.
 	NkNodeGraph g;
 	NkMatRegisterTypes(g);
-	const NkMatNodeProto *mc[16], *mr[16];
-	const uint32 nc = NkMatNoeudsPourPriseDe(g, NK_MN_PRINCIPLED, "base_color", mc, 16);
-	const uint32 nr = NkMatNoeudsPourPriseDe(g, NK_MN_PRINCIPLED, "roughness", mr, 16);
+	const NkMatNodeProto *mc[64], *mr[64];
+	const uint32 nc = NkMatNoeudsPourPriseDe(g, NK_MN_PRINCIPLED, "base_color", mc, 64);
+	const uint32 nr = NkMatNoeudsPourPriseDe(g, NK_MN_PRINCIPLED, "roughness", mr, 64);
 	// Ce qui produit une COULEUR ou peut s'y convertir : RGB, Mix Color, et
 	// Value (un reel se diffuse en gris). Math aussi, pour la meme raison.
 	const bool couleurOk = DansLeMenu(mc, nc, NK_MN_RGB) && DansLeMenu(mc, nc, NK_MN_VALUE) &&
@@ -1381,7 +1384,8 @@ static void CasMenuPriseCouleurEtReelle() {
 						   DansLeMenu(mc, nc, NK_MN_COLOR_RAMP) &&
 						   DansLeMenu(mc, nc, NK_MN_IMAGE_TEXTURE) &&
 						   DansLeMenu(mc, nc, NK_MN_NORMAL_MAP) && DansLeMenu(mc, nc, NK_MN_BUMP) &&
-						   DansLeMenu(mc, nc, NK_MN_NOISE) && DansLeMenu(mc, nc, NK_MN_CHECKER);
+						   DansLeMenu(mc, nc, NK_MN_NOISE) && DansLeMenu(mc, nc, NK_MN_CHECKER) &&
+						   DansLeMenu(mc, nc, NK_MN_VORONOI) && DansLeMenu(mc, nc, NK_MN_BRICK);
 	// Ce qui produit un REEL : Value et Math. Ni RGB ni Mix Color, parce que
 	// `couleur -> reel` n'est PAS declaree — et c'est la tout le cas.
 	const bool reelOk = DansLeMenu(mr, nr, NK_MN_VALUE) && DansLeMenu(mr, nr, NK_MN_MATH) &&
@@ -1396,8 +1400,9 @@ static void CasMenuPriseCouleurEtReelle() {
 						DansLeMenu(mr, nr, NK_MN_SEPARATE_XYZ) &&
 						// Les proceduraux ont une sortie `fac` REELLE : ils sont dans
 						// les deux menus, par deux prises differentes.
-						DansLeMenu(mr, nr, NK_MN_NOISE) && DansLeMenu(mr, nr, NK_MN_GRADIENT);
-	Cas("biblio/menu-asymetrique-couleur-reel", nc == 14 && nr == 7 && couleurOk && reelOk,
+						DansLeMenu(mr, nr, NK_MN_NOISE) && DansLeMenu(mr, nr, NK_MN_GRADIENT) &&
+						DansLeMenu(mr, nr, NK_MN_WAVE) && DansLeMenu(mr, nr, NK_MN_VORONOI);
+	Cas("biblio/menu-asymetrique-couleur-reel", nc == 17 && nr == 10 && couleurOk && reelOk,
 		NkFormat("base_color : {0} propositions (RGB+MixColor+ColorRamp+ImageTex+Value+Math+coord+mappage, ok={1}) | roughness : {2} (Value+Math "
 				 "SEULS, RGB et MixColor doivent etre absents, ok={3})",
 				 nc, couleurOk ? 1 : 0, nr, reelOk ? 1 : 0));
@@ -2572,13 +2577,16 @@ static void CasProceduralCompile() {
 			const char *prise;
 			const char *cible;
 	};
-	const Jeu jeux[3] = {{NK_MN_NOISE, "fac", "roughness"},
+	const Jeu jeux[6] = {{NK_MN_NOISE, "fac", "roughness"},
 						 {NK_MN_GRADIENT, "fac", "roughness"},
-						 {NK_MN_CHECKER, "color", "base_color"}};
+						 {NK_MN_CHECKER, "color", "base_color"},
+						 {NK_MN_VORONOI, "distance", "roughness"},
+						 {NK_MN_WAVE, "fac", "roughness"},
+						 {NK_MN_BRICK, "color", "base_color"}};
 	uint32 bons = 0;
 	uint32 slotsUtilises = 0;
 	NkString detail;
-	for (uint32 i = 0; i < 3; ++i) {
+	for (uint32 i = 0; i < 6; ++i) {
 		NkMatCompileResult r = CompileProcedural(jeux[i].cle, jeux[i].prise, jeux[i].cible, nullptr);
 		NkString be, err;
 		const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
@@ -2588,7 +2596,7 @@ static void CasProceduralCompile() {
 			++bons;
 		detail.Append(NkFormat("{0}={1} ", NkString(jeux[i].cle), r.ok ? be : r.error));
 	}
-	Cas("procedural/trois-noeuds-4-backends", bons == 3 && slotsUtilises == 0,
+	Cas("procedural/six-noeuds-4-backends", bons == 6 && slotsUtilises == 0,
 		NkFormat("{0}| slots de texture consommes={1} (0 attendu : le procedural est gratuit en ressources)",
 				 detail, slotsUtilises));
 }
@@ -2695,6 +2703,82 @@ static void CasOctavesBornees() {
 	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
 	Cas("procedural/octaves-bornees-dans-le-shader", r.ok && ok == 4 && borne,
 		NkFormat("{0}| borne [1,8] presente dans le code emis={1}", be, borne ? 1 : 0));
+}
+
+
+static void CasOndeTypesEtRefus() {
+	// Meme discipline que le degrade : deux types, deux codes DIFFERENTS, et un
+	// type inconnu refuse en le nommant.
+	NkString a, b;
+	uint32 ok = 0;
+	for (uint32 i = 0; i < NkMatTypeOndeCount(); ++i) {
+		NkMatCompileResult r = CompileProcedural(NK_MN_WAVE, "fac", "roughness", NkMatTypeOndeAt(i)->cle);
+		NkString be, err;
+		if (r.ok && CompileSurLesBackends(r.source, be, &err) == 4)
+			++ok;
+		if (i == 0)
+			a = r.source;
+		else
+			b = r.source;
+	}
+	NkMatCompileResult inc = CompileProcedural(NK_MN_WAVE, "fac", "roughness", "dents_de_scie");
+	const bool nomme = !inc.ok && Apres(inc.error, "dents_de_scie") > 0;
+	Cas("procedural/onde-types-et-refus", ok == NkMatTypeOndeCount() && !(a == b) && nomme,
+		NkFormat("{0}/{1} types compilent | bandes et anneaux different={2} | inconnu refuse en le nommant={3}", ok,
+				 NkMatTypeOndeCount(), (a == b) ? 0 : 1, nomme ? 1 : 0));
+}
+
+static void CasVoronoiBorneFixe() {
+	// ⚠️ Le voisinage de Voronoi est DEROULE sur 3x3, une borne connue a la
+	// compilation. Un rayon variable ferait une boucle que certains backends
+	// refusent de derouler — donc un shader qui compile ici et pas ailleurs, le
+	// defaut le plus penible a diagnostiquer parce qu'il accuse la machine.
+	//
+	// DISCRIMINE : les bornes litterales doivent etre DANS le code emis, et la
+	// fonction ne doit apparaitre QUE si un Voronoi est present.
+	NkMatCompileResult avec = CompileProcedural(NK_MN_VORONOI, "distance", "roughness", nullptr);
+	NkMatCompileResult sans = CompileProcedural(NK_MN_CHECKER, "color", "base_color", nullptr);
+	const bool bornes = avec.ok && ContientSansCasse(avec.source, "for (int j = -1; j <= 1; ++j)") &&
+						ContientSansCasse(avec.source, "for (int i = -1; i <= 1; ++i)");
+	const bool absenteSansVoronoi = sans.ok && Apres(sans.source, "NkVoronoiF1") < 0;
+	const bool presenteAvec = avec.ok && Apres(avec.source, "NkVoronoiF1") > 0;
+	// ⚠️ ET SA DEPENDANCE. `NkVoronoiF1` appelle `NkHash22`, qui vient du bloc des
+	// briques de bruit. Une mutation retirant Voronoi de la liste des noeuds qui
+	// reclament ces briques a SURVECU a la premiere version de ce cas : la
+	// fonction etait bien la, son hachage non, et rien ne le disait.
+	//
+	// Verifier qu'une fonction est emise ne verifie pas que ce qu'elle APPELLE
+	// l'est. C'est la meme famille que « chercher un nom n'est pas chercher un
+	// usage », prise par l'autre bout.
+	const bool dependanceDeclaree = avec.ok && Apres(avec.source, "vec2 NkHash22(vec2 p)") > 0;
+	NkString be, err;
+	const uint32 ok = avec.ok ? CompileSurLesBackends(avec.source, be, &err) : 0u;
+	Cas("procedural/voronoi-voisinage-borne",
+		ok == 4 && bornes && absenteSansVoronoi && presenteAvec && dependanceDeclaree,
+		NkFormat("{0}| voisinage 3x3 litteral={1} | fonction absente sans Voronoi={2} presente avec={3} | sa "
+				 "dependance NkHash22 declaree={4}",
+				 be, bornes ? 1 : 0, absenteSansVoronoi ? 1 : 0, presenteAvec ? 1 : 0, dependanceDeclaree ? 1 : 0));
+}
+
+static void CasBriquesJointsDecales() {
+	// DISCRIMINE : sans le decalage d'une rangee sur deux, on obtient un
+	// QUADRILLAGE — un mur parfaitement plausible, et faux. On verifie que le
+	// decalage est calcule (`mod(rangee, 2.0) * 0.5`) et qu'il entre bien dans la
+	// coordonnee de brique.
+	NkNodeId n = NK_NODE_INVALID;
+	NkMatCompileResult r = CompileProcedural(NK_MN_BRICK, "color", "base_color", nullptr, &n);
+	const NkString dec = NkFormat("n{0}_dec = mod(n{0}_rangee, 2.0) * 0.5", (uint32)n);
+	const NkString usage = NkFormat("fract(n{0}_q.x * 0.5 + n{0}_dec)", (uint32)n);
+	const bool calcule = r.ok && Apres(r.source, dec.CStr()) > 0;
+	// ⚠️ Presence ET usage : un decalage calcule mais jamais employe donnerait
+	// exactement le quadrillage qu'on veut eviter, et le premier controle seul
+	// passerait. C'est la lecon du Mapping, appliquee ici d'avance.
+	const bool employe = r.ok && Apres(r.source, usage.CStr()) > 0;
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	Cas("procedural/briques-joints-decales", ok == 4 && calcule && employe,
+		NkFormat("{0}| decalage calcule={1} | ET employe dans la coordonnee={2}", be, calcule ? 1 : 0,
+				 employe ? 1 : 0));
 }
 
 int main() {
@@ -2807,6 +2891,9 @@ int main() {
 	CasBriquesSeulementSiUtiles();
 	CasDegradeTypesEtRefus();
 	CasOctavesBornees();
+	CasOndeTypesEtRefus();
+	CasVoronoiBorneFixe();
+	CasBriquesJointsDecales();
 
 	logger.Info("\n-- {0} cas, {1} echec(s) --", gCas, gEchecs);
 	return gEchecs == 0 ? 0 : 1;
