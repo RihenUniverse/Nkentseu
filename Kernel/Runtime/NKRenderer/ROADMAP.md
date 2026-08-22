@@ -2125,3 +2125,110 @@ fine est inutilisable en production stylisée.
 Au-delà : Phase H texture pipeline + Phase M Forward+ + Phase I animation
 + Phase J VFX = renderer **complet** AAA. K/O/P/Q/R/S = spécialisations
 selon usage cible (jeu real-time vs cinema vs editor vs VR).
+
+---
+
+## 📌 CONCEPTION EN ATTENTE — la règle de disposition des blocs uniformes, par la réflexion
+
+**Statut : conçu, pas lancé** (2026-08-22). Rien n'est cassé aujourd'hui ; cette
+entrée existe pour que celui qui prendra le chantier n'ait pas à re-dériver le
+raisonnement. Quinze minutes d'écriture contre une demi-journée de réflexion.
+
+### Le fait qui la motive
+
+`std140` et HLSL **ne rangent pas un bloc uniforme de la même façon**, et leur
+désaccord est muet. Mesuré le 22/08/2026, dans les deux sens, en lisant le pixel :
+
+```
+uniform NkGraphParams { float usure; vec3 teinte; };
+```
+
+- `std140` **aligne** tout `vec3` sur 16 → `teinte` est à **16**.
+- HLSL interdit seulement à un membre de **chevaucher** une frontière de 16
+  octets ; un `float3` a besoin de 12 octets et tient donc **entier** dans 4..16
+  → `teinte` est à **4**.
+
+Le moteur écrivait à 16, le shader lisait à 4. Pixel mesuré `(0,0,0)`, aucune
+erreur, aucun journal. En forçant l'écriture à 4 : `(128,0,0)` exact.
+
+⚠️ **Avec un seul `vec3`, les deux conventions donnent zéro.** La panne n'apparaît
+qu'au **second** paramètre. C'est pourquoi elle a survécu à une matrice de sept
+montages différents, tous verts.
+
+### Ce qui existe déjà, et pourquoi ça ne suffit pas
+
+1. **Le graphe de matériaux est corrigé** (voie 2, `NkMatGraphCompile.h`) : le
+   compilateur émet du remplissage nommé `_nkPadN` jusqu'à la prochaine frontière
+   de 16 avant chaque vecteur. Les deux conventions tombent forcément au même
+   endroit. **Ce garde ne couvre que les blocs ENGENDRÉS.**
+
+2. **Les archétypes écrits à la main sont sains** — vérifié : `NkPBRParams` n'a
+   aucun membre `NkVec3f`, ses vecteurs sont tous des `NkVec4f`, ses réels vont
+   par groupes de quatre. Mais ils sont sains **parce que la discipline a été
+   tenue**, pas parce qu'elle est garantie.
+
+3. **Des `static_assert` sur `sizeof`** gardent les cinq structs de
+   `NkMaterialSystem.h` (`NkPBRParams` 96, `NkPBRLayer` 32, `NkLayeredParams`
+   208, `NkLayeredV1Params` 336, `NkToonParams` 96). Ils cassent la
+   **construction**, pas un banc qu'il faut penser à lancer. ⚠️ **Mais ils ne
+   vérifient pas la disposition** : un bloc peut avoir la bonne taille et ranger
+   ses membres au mauvais endroit — c'est exactement la faute ci-dessus, où la
+   taille était identique des deux côtés.
+
+**C'est une liste de nombres. Une liste se périme ; une règle non.**
+
+### La conception proposée
+
+Un banc console qui parcourt les propriétés **réfléchies** et applique une
+règle, pas une énumération.
+
+**Matière première** : `NKReflection` porte déjà `NkProperty` avec son **type**
+et son **décalage**. Tout est là ; rien à instrumenter à la main.
+
+**La règle, en une phrase** :
+
+> Dans tout type marqué « bloc uniforme », **tout membre de type vectoriel doit
+> se trouver à un décalage multiple de 16**, et la taille totale doit être un
+> multiple de 16.
+
+C'est la condition **nécessaire et suffisante** pour que `std140` et HLSL
+coïncident : à un multiple de 16, `std140` ne réaligne rien et HLSL ne peut pas
+chevaucher. Les scalaires ne posent jamais problème — ils tombent au même
+endroit dans les deux conventions tant qu'aucun vecteur ne les suit dans un
+registre partiel.
+
+**Pourquoi c'est une règle et pas une liste** : elle grandit avec la structure
+toute seule. Un membre ajouté est vérifié sans que personne y pense ; un membre
+retiré n'oblige à rien mettre à jour. C'est la même distinction qu'entre une
+table de valeurs par défaut par type et un défaut dérivé du registre : la
+première se périme silencieusement, la seconde suit.
+
+### Trois pièges à ne pas rater en l'implémentant
+
+1. ⚠️ **Ne pas se contenter de vérifier que la règle est cohérente avec
+   elle-même.** Un contrôle qui relit la table de décalages du compilateur et la
+   compare à sa propre arithmétique est vert quoi qu'il arrive — c'est
+   littéralement ce qui s'est passé pendant trois jours avec le cas
+   `variable/decalages-std140`. **Un contrôle qui vérifie une convention ne
+   vérifie pas un accord.** La preuve finale reste
+   `rendu/parametre-expose-pilote-le-pixel` (`NkMatGraphDemo`), qui **lit la
+   valeur depuis la carte** et compare deux variantes — un paramètre contre
+   deux. Le banc de réflexion est une commodité rapide ; il ne remplace pas
+   celui-là.
+
+2. ⚠️ **Les structs imbriqués comptent.** `NkLayeredParams` embarque deux
+   `NkPBRParams`. Un membre vectoriel bien placé dans le parent peut être mal
+   placé dans l'enfant, et l'inverse. La règle doit descendre récursivement.
+
+3. ⚠️ **Le marquage « bloc uniforme » doit être une donnée, pas une heuristique
+   sur le nom.** Un filtre du genre « les types dont le nom finit par `Params` »
+   rate le premier bloc nommé autrement, et le rate en silence — quatrième
+   occurrence dans ce dépôt de « chercher un nom n'est pas chercher un usage ».
+
+### Coût estimé et déclencheur
+
+Une demi-journée. **Déclencheur** : le jour où un membre vectoriel entre dans un
+struct de bloc écrit à la main, ou le jour où quelqu'un ajoute un archétype. Les
+`static_assert` tiendront jusque-là — ils ne laissent pas la dérive être
+silencieuse, ils obligent seulement à un geste conscient.
+

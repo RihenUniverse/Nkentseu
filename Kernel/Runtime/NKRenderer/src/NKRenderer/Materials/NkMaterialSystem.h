@@ -192,6 +192,46 @@ namespace nkentseu {
 				float32 _pad[1] = {};
 		};
 
+		// ═════════════════════════════════════════════════════════════════════
+		//  LES GARDES DE TAILLE DES BLOCS UNIFORMES
+		// ═════════════════════════════════════════════════════════════════════
+		//
+		// ⚠️ CE QU ELLES FONT, ET SURTOUT CE QU ELLES NE FONT PAS.
+		//
+		// Elles ne verifient PAS que la disposition est juste. Un bloc peut avoir
+		// la bonne taille et ranger ses membres au mauvais endroit -- c est
+		// exactement la faute mesuree le 22/08/2026 sur le bloc engendre par le
+		// graphe de materiaux, ou `std140` placait un `vec3` a 16 pendant que HLSL
+		// le placait a 4, pour une taille identique des deux cotes.
+		//
+		// Ce qu elles rendent IMPOSSIBLE, c est la derive SILENCIEUSE : ajouter,
+		// retirer ou retyper un membre casse la COMPILATION. Il faut alors un
+		// geste conscient pour remettre le nombre a jour, et ce geste est
+		// l occasion de se demander si le shader d en face a bouge aussi.
+		//
+		// C est pour cela qu elles valent mieux qu un banc : elles cassent la
+		// CONSTRUCTION, pas un controle qu il faut penser a lancer. La discipline
+		// manuelle de ce fichier -- aucun membre `NkVec3f`, les vecteurs en
+		// `NkVec4f`, les reels par groupes de quatre -- a tenu jusqu ici PARCE
+		// QU ELLE ETAIT TENUE, pas parce qu elle etait garantie. Un `NkVec3f`
+		// ajoute un jour de fatigue passerait sans un mot, et le pixel resterait
+		// plausible.
+		//
+		// 📌 La vraie regle -- « tout membre vectoriel a un multiple de 16 »,
+		// verifiee par la REFLEXION plutot que par une liste de nombres -- est
+		// concue dans le ROADMAP de NKRenderer. Une liste se perime, une regle
+		// non. Ceci est la parade du jour, pas la parade definitive.
+		//
+		// Chaque nombre ci-dessous est aussi ecrit dans un commentaire de la
+		// structure correspondante. Ce n est PAS une redondance : le commentaire
+		// explique, l assertion contraint. Un commentaire seul ment des la
+		// premiere modification.
+		static_assert(sizeof(NkPBRParams) == 96, "NkPBRParams a change de taille : le UBO du shader PBR doit suivre");
+		static_assert(sizeof(NkPBRLayer) == 32, "NkPBRLayer a change de taille : layeredv1.frag doit suivre");
+		static_assert(sizeof(NkLayeredParams) == 208, "NkLayeredParams a change de taille : layered.frag doit suivre");
+		static_assert(sizeof(NkLayeredV1Params) == 336, "NkLayeredV1Params a change de taille : layeredv1.frag doit suivre");
+		static_assert(sizeof(NkToonParams) == 96, "NkToonParams a change de taille : toon.frag doit suivre");
+
 		// =========================================================================
 		// Descripteur template
 		// =========================================================================
