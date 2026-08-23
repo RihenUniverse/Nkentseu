@@ -1573,24 +1573,42 @@ static void CasExecRefusCroiseNomme() {
 	Cas("exec/refus-croise-nomme", lesDeuxNommes && memeFamillePasse && memeType, d);
 }
 
-// ── CONTROLE 3 : LE CYCLE D'EXECUTION EST LEGITIME ─────────────────────────
-// 🔴 C'EST LE CONTROLE QUI PROUVE QUE `TopoSort` NE REGARDE PLUS QUE LA DONNEE.
-// Une boucle d'execution est un programme normal ; l'ordre d'execution est un
-// CHEMIN PARCOURU, pas un tri calcule. Le meme motif en donnee reste un cycle.
-static void CasExecCycleLegitime() {
-	// rebouclage d'EXECUTION : accepte
+// ── CONTROLE 3 : L'ACYCLICITE EST UNIVERSELLE ──────────────────────
+//
+// ⚠️ CE CAS A DIT LE CONTRAIRE PENDANT UNE JOURNEE, et il faut l'ecrire au lieu
+// de le remplacer en silence. Il s'appelait
+// « exec/cycle-execution-legitime-cycle-donnee-refuse » et il mesurait qu'un
+// rebouclage d'EXECUTION etait ACCEPTE. C'etait la proposition du 23/08 au
+// matin. ❌ RETIREE le 23/08 au soir par Rodolf : elle affaiblissait une regle
+// GENERALE pour un cas PARTICULIER.
+//
+//     UN CYCLE VIT A L'INTERIEUR D'UN NOEUD, JAMAIS DANS LE GRAPHE.
+//
+// 🔴 CE QUE CE CAS MESURE MAINTENANT, ET C'EST PLUS FORT QUE « les deux sont
+// refuses » : que les deux familles rendent LE MEME REFUS, ET que le besoin
+// qu'on refuse ainsi reste EXPRIMABLE par un noeud. Une regle qui interdit sans
+// laisser d'issue n'est pas une regle, c'est un mur -- et c'est exactement ce
+// que le § 19.3 croyait avoir trouve.
+//
+// 📌 LE TEMOIN DU TRI EST LA PIECE QU'ON OUBLIERAIT. `TopoSort` comptait lui
+// aussi la seule donnee ; il compte desormais TOUS les liens. Sans un controle
+// qui regarde l'ORDRE RENDU, ce changement-la serait invisible : un tri qui
+// ignore les fils d'execution rend un ordre parfaitement valide -- simplement
+// moins contraint. Il faut donc verifier qu'une succession d'execution est
+// HONOREE dans l'ordre, pas seulement que le tri reussit.
+static void CasAcycliciteUniverselle() {
+	// (1) rebouclage d'EXECUTION : REFUSE, et par WouldCycle
 	NkNodeGraph g;
 	const NkTypeId r = g.RegisterType("reel");
 	const NkNodeId a = PoseNoeudMixte(g, r, "essai.a");
 	const NkNodeId b = PoseNoeudMixte(g, r, "essai.b");
 	const NkLinkError e1 = g.Connect(a, "apres", b, "avant");
-	const NkLinkError e2 = g.Connect(b, "apres", a, "avant"); // referme la boucle
-	const bool cycleExecAccepte = e1 == NkLinkError::Ok && e2 == NkLinkError::Ok;
-	// et le tri topologique tient toujours : il ne voit que la donnee
-	NkVector<NkNodeId> ordre;
-	const bool triTientMalgreLaBoucle = g.TopoSort(ordre) && ordre.Size() == 2;
+	const NkLinkError e2 = g.Connect(b, "apres", a, "avant"); // refermerait la boucle
+	const bool cycleExecRefuse = e1 == NkLinkError::Ok && e2 == NkLinkError::WouldCycle;
 
-	// le MEME motif en DONNEE : refuse
+	// (2) le MEME motif en DONNEE : le MEME refus, sous le MEME nom. C'est ca,
+	//     « sans exception » : un outil n'a pas a demander la famille pour
+	//     savoir ce qui va se passer.
 	NkNodeGraph h;
 	const NkTypeId r2 = h.RegisterType("reel");
 	const NkNodeId x = PoseNoeudMixte(h, r2, "essai.x");
@@ -1598,14 +1616,58 @@ static void CasExecCycleLegitime() {
 	const NkLinkError d1 = h.Connect(x, "resultat", y, "valeur");
 	const NkLinkError d2 = h.Connect(y, "resultat", x, "valeur");
 	const bool cycleDonneeRefuse = d1 == NkLinkError::Ok && d2 == NkLinkError::WouldCycle;
+	const bool memeRefus = e2 == d2;
+
+	// (3) TEMOIN : LE BESOIN RESTE EXPRIMABLE -- la boucle est un NOEUD.
+	//     `Boucle Pour` a une sortie « corps » et une sortie « termine », et le
+	//     corps NE REVIENT JAMAIS au noeud par un fil : le noeud itere lui-meme.
+	//     C'est la forme d'Unreal, et elle passe sans toucher a l'acyclicite.
+	NkNodeGraph k;
+	const NkTypeId r3 = k.RegisterType("reel");
+	const NkNodeId debut = k.AddNode("flot.debut", "Debut");
+	k.AddSocket(debut, "apres", r3, NkSocketDir::Output, NkSocketFamily::Exec);
+	const NkNodeId boucle = k.AddNode("flot.boucle_pour", "Boucle Pour");
+	k.AddSocket(boucle, "avant", r3, NkSocketDir::Input, NkSocketFamily::Exec);
+	k.AddSocket(boucle, "corps", r3, NkSocketDir::Output, NkSocketFamily::Exec);
+	k.AddSocket(boucle, "termine", r3, NkSocketDir::Output, NkSocketFamily::Exec);
+	const NkNodeId corps = k.AddNode("flot.action", "Action");
+	k.AddSocket(corps, "avant", r3, NkSocketDir::Input, NkSocketFamily::Exec);
+	k.AddSocket(corps, "apres", r3, NkSocketDir::Output, NkSocketFamily::Exec);
+	const NkNodeId fin = k.AddNode("flot.fin", "Fin");
+	k.AddSocket(fin, "avant", r3, NkSocketDir::Input, NkSocketFamily::Exec);
+	const bool boucleExprimable = k.Connect(debut, "apres", boucle, "avant") == NkLinkError::Ok &&
+								  k.Connect(boucle, "corps", corps, "avant") == NkLinkError::Ok &&
+								  k.Connect(boucle, "termine", fin, "avant") == NkLinkError::Ok;
+	// et le fil qui REVIENDRAIT au noeud de boucle -- la forme naive -- est
+	// refuse. Sans cette ligne, le temoin ne prouverait que « ca se branche ».
+	const NkLinkError retourNaif = k.Connect(corps, "apres", boucle, "avant");
+	const bool retourRefuse = retourNaif == NkLinkError::WouldCycle;
+
+	// (4) TEMOIN DU TRI : il compte MAINTENANT les fils d'execution. L'ordre
+	//     rendu doit honorer debut < boucle < corps et debut < boucle < fin.
+	NkVector<NkNodeId> ordre;
+	const bool trie = k.TopoSort(ordre) && ordre.Size() == 4;
+	auto rang = [&](NkNodeId id) -> int32 {
+		for (uint32 i = 0; i < (uint32)ordre.Size(); ++i)
+			if (ordre[i] == id)
+				return (int32)i;
+		return -1;
+	};
+	const bool ordreHonoreLExecution = trie && rang(debut) < rang(boucle) && rang(boucle) < rang(corps) &&
+									   rang(boucle) < rang(fin);
 
 	NkString d;
-	d = NkFormat("cycle d EXECUTION accepte={0} ({1}) | le tri topologique tient malgre la boucle={2} ({3} "
-				 "noeuds) | le MEME motif en DONNEE refuse={4} ({5})",
-				 cycleExecAccepte ? 1 : 0, NkString(NkLinkErrorName(e2)), triTientMalgreLaBoucle ? 1 : 0,
-				 (uint32)ordre.Size(), cycleDonneeRefuse ? 1 : 0, NkString(NkLinkErrorName(d2)));
-	Cas("exec/cycle-execution-legitime-cycle-donnee-refuse",
-		cycleExecAccepte && triTientMalgreLaBoucle && cycleDonneeRefuse, d);
+	d = NkFormat("cycle d EXECUTION REFUSE={0} ({1}) | cycle de DONNEE refuse={2} ({3}) | MEME refus des deux "
+				 "cotes={4} | TEMOIN la boucle-NOEUD s exprime={5} et le retour naif est refuse ({6})={7} | "
+				 "TEMOIN le tri HONORE la succession d execution={8} ({9} noeuds)",
+				 cycleExecRefuse ? 1 : 0, NkString(NkLinkErrorName(e2)), cycleDonneeRefuse ? 1 : 0,
+				 NkString(NkLinkErrorName(d2)), memeRefus ? 1 : 0, boucleExprimable ? 1 : 0,
+				 NkString(NkLinkErrorName(retourNaif)), retourRefuse ? 1 : 0, ordreHonoreLExecution ? 1 : 0,
+				 (uint32)ordre.Size());
+	Cas("exec/acyclicite-universelle-la-boucle-est-un-noeud",
+		cycleExecRefuse && cycleDonneeRefuse && memeRefus && boucleExprimable && retourRefuse &&
+			ordreHonoreLExecution,
+		d);
 }
 
 // ── CONTROLE 4 : L'ALLER-RETOUR, OCTET POUR OCTET ──────────────────────────
@@ -1715,7 +1777,18 @@ static void CasExecLePiegeDuTypeExec() {
 		h.Connect(x, "apres", y, "avant") == NkLinkError::Ok &&
 		h.Connect(x, "apres", z, "avant") == NkLinkError::Ok; // il faudrait un REFUS
 
-	// (3) le rebouclage d'execution est refuse comme un cycle de donnee.
+	// (3) ⚠️ CETTE LIGNE-LA N'EST PLUS UN GRIEF, ET IL FAUT LE DIRE.
+	//     Le piege refuse le rebouclage d'execution comme un cycle de donnee.
+	//     C'ETAIT le quatrieme grief tant que la voie choisie l'acceptait ; la
+	//     decision du 23/08 au soir -- L'ACYCLICITE EST UNIVERSELLE -- fait que
+	//     la voie choisie le refuse AUSSI. Les deux voies se comportent donc
+	//     PAREIL ici : le piege garde trois defauts, plus quatre.
+	//
+	//     🔴 ON LE MESURE QUAND MEME, en le nommant pour ce qu'il est : une
+	//     COINCIDENCE. Un lecteur qui verrait « le piege refuse la boucle, la
+	//     voie choisie aussi » pourrait en conclure que le piege est devenu
+	//     acceptable. Il ne l'est pas -- il l'est simplement pour la mauvaise
+	//     raison, et sur les trois autres lignes il reste faux.
 	NkNodeGraph k;
 	const NkTypeId kExec = k.RegisterType("exec");
 	const NkNodeId p = k.AddNode("piege.p", "p");
@@ -1726,30 +1799,41 @@ static void CasExecLePiegeDuTypeExec() {
 	k.AddSocket(q, "apres", kExec, NkSocketDir::Output);
 	k.Connect(p, "apres", q, "avant");
 	const NkLinkError boucle = k.Connect(q, "apres", p, "avant");
-	const bool boucleRefuseeAtort = boucle == NkLinkError::WouldCycle;
+	const bool memeVerdictQueLaVoieChoisie = boucle == NkLinkError::WouldCycle;
 
-	// ── ET LA VOIE CHOISIE, SUR LE MEME MOTIF, FAIT LES QUATRE ──────────
+	// ── ET LA VOIE CHOISIE, SUR LE MEME MOTIF, FAIT LES TROIS ───────────
+	// ⚠️ TROIS, PLUS QUATRE -- depuis que l'acyclicite est universelle, la
+	// famille ne commande plus le cycle. Le compte a baisse et le texte suit :
+	// une preuve qui annonce quatre et n'en montre que trois se lit comme une
+	// preuve qui echoue.
+	//
 	// TEMOIN INDISPENSABLE : sans lui, ce cas prouverait seulement que le piege
 	// existe, pas que la famille le resout.
 	NkNodeGraph bon;
 	const NkTypeId br = bon.RegisterType("reel");
 	const NkNodeId ba = PoseNoeudMixte(bon, br, "bon.a");
 	const NkNodeId bb = PoseNoeudMixte(bon, br, "bon.b");
-	const bool laFamilleResout = bon.Connect(ba, "apres", bb, "avant") == NkLinkError::Ok &&
-								 bon.Connect(bb, "apres", ba, "avant") == NkLinkError::Ok &&
-								 bon.Connect(ba, "apres", bb, "valeur") == NkLinkError::FamilyMismatch;
+	const NkNodeId bc = PoseNoeudMixte(bon, br, "bon.c");
+	const bool laFamilleResout =
+		// compatibilite : le croisement se NOMME
+		bon.Connect(ba, "apres", bb, "valeur") == NkLinkError::FamilyMismatch &&
+		// arite d ENTREE : deux sources d execution TIENNENT
+		bon.Connect(ba, "apres", bc, "avant") == NkLinkError::Ok &&
+		bon.Connect(bb, "apres", bc, "avant") == NkLinkError::Ok &&
+		// arite de SORTIE : la seconde suite est REFUSEE, et nommee
+		bon.Connect(ba, "apres", bb, "avant") == NkLinkError::ExecOutputAlreadyBound;
 
 	NkString d;
 	d = NkFormat("LE PIEGE : exec-sur-exec par le TYPE marche={0} | mais le croisement se nomme « {1} » au lieu "
 				 "de familles-incompatibles={2} | arite d ENTREE FAUSSE ({3} lien au lieu de 2)={4} | deux "
-				 "SUITES acceptees a tort={5} | rebouclage refuse a tort ({6})={7} | TEMOIN : la FAMILLE fait "
-				 "les quatre={8}",
+				 "SUITES acceptees a tort={5} | le rebouclage rend {6} des DEUX cotes (plus un grief depuis "
+				 "l acyclicite universelle)={7} | TEMOIN : la FAMILLE fait les TROIS={8}",
 				 caMarche ? 1 : 0, NkString(NkLinkErrorName(croise)), refusePourLaMauvaiseRaison ? 1 : 0, versC,
 				 ariteEntreeFausse ? 1 : 0, deuxSuitesAcceptees ? 1 : 0, NkString(NkLinkErrorName(boucle)),
-				 boucleRefuseeAtort ? 1 : 0, laFamilleResout ? 1 : 0);
+				 memeVerdictQueLaVoieChoisie ? 1 : 0, laFamilleResout ? 1 : 0);
 	Cas("exec/le-piege-du-type-exec",
 		caMarche && refusePourLaMauvaiseRaison && ariteEntreeFausse && deuxSuitesAcceptees &&
-			boucleRefuseeAtort && laFamilleResout && ariteSortieFausse,
+			memeVerdictQueLaVoieChoisie && laFamilleResout && ariteSortieFausse,
 		d);
 }
 
@@ -7616,7 +7700,7 @@ int main() {
 	CasTypesDeuxFichiersMemeNom();
 	CasExecAriteCroisee();
 	CasExecRefusCroiseNomme();
-	CasExecCycleLegitime();
+	CasAcycliciteUniverselle();
 	CasExecAllerRetourOctetPourOctet();
 	CasExecLePiegeDuTypeExec();
 	CasLienQualifie();

@@ -190,7 +190,7 @@ namespace nkentseu {
 		// serait content -- et c'est exactement ce qui le rend dangereux :
 		//   l'arite d'une entree resterait « une seule source » ;
 		//   l'arite d'une sortie resterait « autant qu'on veut » ;
-		//   un rebouclage resterait refuse comme un cycle ;
+		//   le refus d'un croisement s'appellerait « type » et non « famille » ;
 		// et RIEN ne le signalerait. Une solution qui fonctionne assez pour qu'on
 		// l'adopte, et pas assez pour qu'elle serve.
 		//
@@ -213,9 +213,15 @@ namespace nkentseu {
 				NkTypeId type = NK_TYPE_INVALID;
 				NkSocketDir dir = NkSocketDir::Input;
 				// ⚠️ LA FAMILLE N'EST PAS UN TYPE. Elle ne dit pas ce qui passe,
-				// elle dit comment ca se branche -- et elle commande QUATRE
-				// comportements : compatibilite, arite d'entree, arite de sortie,
-				// acyclicite. Voir NkSocketFamily.
+				// elle dit comment ca se branche -- et elle commande TROIS
+				// comportements : compatibilite, arite d'entree, arite de sortie.
+				//
+				// 🔴 ELLE EN COMMANDAIT QUATRE PENDANT UNE JOURNEE. L'acyclicite
+				// etait le quatrieme, le 23/08 au matin ; Rodolf l'a retire le
+				// soir meme : L'ACYCLICITE EST UNIVERSELLE, elle ne consulte plus
+				// la famille. Un cycle vit A L'INTERIEUR d'un noeud -- boucle et
+				// machine a etats sont des NOEUDS. Voir NkSocketFamily, et le pave
+				// devant `LinkFamily` dans le .inl pour les trois raisons.
 				NkSocketFamily family = NkSocketFamily::Data;
 				// VALEUR D'UNE ENTREE NON CONNECTEE — Base Color, Roughness. Le
 				// compilateur en a besoin exactement quand un lien manque.
@@ -358,7 +364,10 @@ namespace nkentseu {
 			SameNode,		   ///< un noeud ne se connecte pas a lui-meme
 			DirectionMismatch, ///< sortie -> entree, jamais autre chose
 			TypeMismatch,
-			WouldCycle, ///< la connexion fermerait une boucle DE DONNEE
+			// ⚠️ TOUTES FAMILLES CONFONDUES. Un rebouclage d'EXECUTION est refuse
+			// exactement comme un rebouclage de donnee : ce qui boucle, c'est un
+			// NOEUD de boucle, pas un fil qui revient.
+			WouldCycle, ///< la connexion fermerait une boucle, DONNEE OU EXECUTION
 			// ⚠️ JAMAIS `TypeMismatch` POUR UN CROISEMENT DE FAMILLES. Les deux
 			// prises peuvent porter le MEME type : appeler ca un desaccord de
 			// type enverrait l'auteur chercher une conversion qui n'existe pas.
@@ -527,8 +536,12 @@ namespace nkentseu {
 
 				// La famille d'un LIEN est celle de ses prises -- un lien qui
 				// croiserait les familles n'existe pas, `Connect` le refuse.
-				// Rendue par le lien parce que tout le monde en a besoin :
-				// l'acyclicite, le tri, l'arite, et le fichier.
+				//
+				// ⚠️ ELLE N'A PLUS AUCUN APPELANT DANS LE COEUR, et c'est le signe
+				// que l'acyclicite est bien redevenue universelle : ni
+				// `WouldCreateCycle` ni `TopoSort` ne consultent la famille. Ce
+				// qui en a besoin est DEHORS -- le canevas, qui ne dessine pas un
+				// fil d'execution comme un fil de donnee.
 				NkSocketFamily LinkFamily(const NkLink &l) const;
 
 				// ── QUALIFIER UN LIEN ────────────────────────────────────────

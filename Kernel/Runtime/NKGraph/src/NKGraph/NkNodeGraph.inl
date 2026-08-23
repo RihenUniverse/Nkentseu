@@ -461,15 +461,37 @@ namespace nkentseu {
 			return nullptr;
 		}
 
-		// ⚠️ CE PARCOURS NE SUIT QUE LES LIENS DE FAMILLE **DONNEE**, et c'est la
-		// difference qui fait exister la famille EXECUTION.
+		// ✅ LA FAMILLE D'UN LIEN -- ET ELLE NE COMMANDE PLUS L'ACYCLICITE.
 		//
-		// Un rebouclage d'execution est un programme parfaitement normal -- une
-		// boucle. L'ordre d'execution est un CHEMIN PARCOURU a l'execution, pas
-		// un tri calcule a l'avance ; le refuser interdirait la moitie de ce
-		// qu'un graphe d'execution sert a ecrire. Un cycle de DONNEE, lui, reste
-		// une valeur qui se definit par elle-meme : il n'a pas de sens et il
-		// reste refuse.
+		// ⚠️ CE FICHIER A PORTE LE CONTRAIRE PENDANT UNE JOURNEE, et la trace
+		// reste ici parce qu'elle explique le code qu'on lit. Le 23/08 au matin,
+		// ce parcours et `TopoSort` ne suivaient QUE la famille `Data`, pour
+		// qu'un rebouclage d'execution devienne exprimable. ❌ RETIRE le 23/08
+		// au soir par Rodolf : « l'acyclicite reste UNIVERSELLE ».
+		//
+		//     UN CYCLE VIT A L'INTERIEUR D'UN NOEUD, JAMAIS DANS LE GRAPHE.
+		//
+		// Trois raisons, et la premiere est la seule qui compte vraiment :
+		//   1. une regle SANS EXCEPTION est une regle que les outils n'ont pas a
+		//      interroger. Le jour ou l'acyclicite depend de la famille du lien,
+		//      TOUT ce qui parcourt un graphe doit savoir dans quelle famille il
+		//      se trouve -- et ce chantier vient de passer trois jours sur des
+		//      defauts causes par des choses qui NE SAVAIENT PAS a quelle
+		//      famille elles appartenaient ;
+		//   2. le tri topologique reste valide sur le graphe ENTIER. Autoriser un
+		//      cycle QUELQUE PART, c'est perdre l'ordre defini PARTOUT ;
+		//   3. tous les cas connus sont couverts sans fil qui revienne : boucle
+		//      -> noeud de boucle ; machine a etats -> noeud de machine a etats.
+		//      Le `For Loop` d'Unreal a une sortie « corps » et une sortie
+		//      « termine », et LE CORPS NE REVIENT JAMAIS AU NOEUD PAR UN FIL :
+		//      le noeud itere lui-meme. Meme regle, chez le moteur le plus
+		//      employe du metier.
+		//
+		// 📌 CE QUE CETTE FONCTION SERT DONC ENCORE : la VUE. Un fil d'execution
+		// ne se dessine pas comme un fil de donnee, et le canevas (couche 2) doit
+		// pouvoir le demander sans relire les prises lui-meme. Elle n'a plus
+		// aucun appelant DANS le coeur, et c'est voulu : le coeur ne consulte
+		// plus la famille pour decider d'un cycle.
 		inline NkSocketFamily NkNodeGraph::LinkFamily(const NkLink &l) const {
 			// On lit la prise SOURCE. Les deux extremites s'accordent forcement --
 			// `Connect` refuse le croisement -- donc l'une des deux suffit, et
@@ -504,8 +526,10 @@ namespace nkentseu {
 				if (already)
 					continue;
 				seen.PushBack(cur);
+				// ⚠️ TOUS LES LIENS VIVANTS, SANS REGARDER LEUR FAMILLE. C'est
+				// l'acyclicite universelle, et c'est la seule ligne qui la porte.
 				for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i)
-					if (mLinks[i].alive && mLinks[i].fromNode == cur && LinkFamily(mLinks[i]) == NkSocketFamily::Data)
+					if (mLinks[i].alive && mLinks[i].fromNode == cur)
 						stack.PushBack(mLinks[i].toNode);
 			}
 			return false;
@@ -554,22 +578,21 @@ namespace nkentseu {
 				!Accepts(b->sockets[(uint32)di].type, a->sockets[(uint32)si].type))
 				return NkLinkError::TypeMismatch;
 
-			// ── ACYCLICITE : LA DONNEE SEULE ─────────────────────────────────
-			// Un rebouclage d'execution est une BOUCLE, pas une erreur.
+			// ── ACYCLICITE : UNIVERSELLE, SANS EXCEPTION ──────────────────
+			// 🔴 AUCUNE CONDITION DE FAMILLE ICI. Cette ligne a porte
+			// `fa == NkSocketFamily::Data &&` pendant une journee ; le voir
+			// revenir, c'est voir revenir l'exception. Pourquoi elle est partie :
+			// voir le pave devant `LinkFamily`, plus haut dans ce fichier.
 			//
-			// ⚠️ CETTE GARDE EST REDONDANTE AVEC `WouldCreateCycle`, QUI NE
-			// PARCOURT DEJA QUE LA DONNEE -- et la redondance est VOULUE :
-			// `WouldCreateCycle` est publique, un appelant peut l'interroger
-			// directement, donc elle doit etre juste toute seule. Ici on evite en
-			// plus un parcours entier pour un lien qui ne peut pas cycler.
-			//
-			// 🔴 MAIS UNE DEFENSE REDONDANTE EST INVISIBLE A UNE MUTATION A UN
-			// SEUL DEFAUT (regle 6) : M36, qui retire CETTE garde, SURVIT. C'est
-			// M38 -- le couple M36 + le parcours desactive -- qui mesure ce que
-			// chacune achete. Si tu retires l'une des deux en la croyant morte
-			// parce qu'aucune mutation ne rougit, relis M38 avant.
-			
-			if (fa == NkSocketFamily::Data && WouldCreateCycle(from, to))
+			// ⚠️ LA REDONDANCE AVEC `WouldCreateCycle` RESTE VOULUE -- la
+			// fonction est publique, un appelant peut l'interroger seul, donc
+			// elle doit etre juste toute seule. Mais elle N'EST PLUS INVISIBLE :
+			// tant que le parcours ne suivait que la donnee, retirer cette garde
+			// ne changeait rien pour un lien d'execution et M36 SURVIVAIT. Les
+			// deux defenses portent desormais la MEME regle sur les MEMES liens,
+			// donc chacune se mesure seule. Le couple M38 reste ecrit : il dit ce
+			// que la redondance achetait quand elle masquait un defaut.
+			if (WouldCreateCycle(from, to))
 				return NkLinkError::WouldCycle;
 
 			// ── ARITE DE SORTIE ──────────────────────────────────────────────
@@ -696,12 +719,16 @@ namespace nkentseu {
 		}
 
 		// ── ORDRE D'EVALUATION ──────────────────────────────────────────────────
-		// ⚠️ NE COMPTE QUE LES LIENS DE FAMILLE **DONNEE**, pour la meme raison que
-		// `WouldCreateCycle` : l'ordre d'EVALUATION se deduit des dependances de
-		// valeur. Un fil d'execution ne cree aucune dependance de valeur -- il dit
-		// « puis », pas « a besoin de ». Compter les fils d'execution ferait
-		// echouer le tri sur toute boucle, c'est-a-dire sur tout graphe
-		// d'execution reel.
+		// ⚠️ COMPTE **TOUS** LES LIENS VIVANTS, quelle que soit leur famille --
+		// meme regle que `WouldCreateCycle`, et c'est la raison n°2 : le tri
+		// topologique doit rester valide sur le graphe ENTIER.
+		//
+		// 📌 UN FIL D'EXECUTION N'EST PAS UNE DEPENDANCE DE VALEUR -- il dit
+		// « puis », pas « a besoin de » -- mais « puis » EST UN ORDRE, et le
+		// compter ne peut pas faire echouer le tri : le graphe est acyclique
+		// toutes familles confondues, donc il se trie. Ce que ca change : l'ordre
+		// rendu respecte AUSSI la succession d'execution, ce qui est un ordre
+		// PLUS contraint, jamais un ordre faux.
 		inline bool NkNodeGraph::TopoSort(NkVector<NkNodeId> &out) const {
 			out.Clear();
 			NkVector<NkNodeId> ids;
@@ -720,7 +747,7 @@ namespace nkentseu {
 				return -1;
 			};
 			for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i) {
-				if (!mLinks[i].alive || LinkFamily(mLinks[i]) != NkSocketFamily::Data)
+				if (!mLinks[i].alive)
 					continue;
 				const int32 t = indexOf(mLinks[i].toNode);
 				if (t >= 0)
@@ -741,8 +768,7 @@ namespace nkentseu {
 					done[i] = 1;
 					emitted++;
 					for (uint32 k = 0; k < (uint32)mLinks.Size(); ++k) {
-						if (!mLinks[k].alive || mLinks[k].fromNode != ids[i] ||
-							LinkFamily(mLinks[k]) != NkSocketFamily::Data)
+						if (!mLinks[k].alive || mLinks[k].fromNode != ids[i])
 							continue;
 						const int32 t = indexOf(mLinks[k].toNode);
 						if (t >= 0 && indeg[(uint32)t] > 0)
