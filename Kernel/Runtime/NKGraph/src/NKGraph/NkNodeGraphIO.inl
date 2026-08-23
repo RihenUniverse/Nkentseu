@@ -251,6 +251,21 @@ namespace nkentseu {
 				}
 				// Les sockets suivent leur noeud, dans l'ordre : cet ordre EST leur
 				// index, et les liens s'y referent.
+				//
+				// 🔴 ET C'EST LE POINT FAIBLE DU FORMAT, MESURE LE 2026-08-23 par
+				// `graphe/index-de-prise-contre-nom`. Une ligne `sock` glissee
+				// AVANT une autre decale tout ce qui suit ; les lignes `lien` et
+				// `def` ne portent que des nombres, donc le lien se met a designer
+				// une AUTRE prise. `Deserialize` rend `true`, `Validate` rend ZERO
+				// diagnostic : le fichier reste bien forme et le graphe s'evalue
+				// faux. Il n'y a aucun nom du cote du lien a confronter.
+				//
+				// Ce qui nous protege n'est pas le format, c'est que nous sommes le
+				// seul a l'ecrire. Un producteur tiers, une edition a la main, ou
+				// une migration qui regenererait les prises depuis un catalogue ou
+				// le type a gagne une prise suffisent a le casser. Le correctif,
+				// le jour venu : un NOM dans la ligne `lien`, et un refus quand il
+				// ne s'accorde pas avec l'index.
 				for (uint32 k = 0; k < (uint32)n.sockets.Size(); ++k) {
 					const NkSocket &s = n.sockets[k];
 					out.Append("sock ");

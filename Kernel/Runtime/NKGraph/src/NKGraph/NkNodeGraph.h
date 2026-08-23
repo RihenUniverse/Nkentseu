@@ -159,6 +159,43 @@ namespace nkentseu {
 				int32 FindSocket(const char *name, NkSocketDir dir) const;
 		};
 
+		// ⚠️ UN LIEN DESIGNE SA PRISE PAR SON INDEX, ALORS QUE `NkSocket::name` EST
+		// LA CLE STABLE. La question a ete posee par le chantier design le
+		// 2026-08-23 — « faire gagner des prises a un noeud repointerait en
+		// silence les liens suivants » — et elle a ete MESUREE, pas raisonnee.
+		// Le cas est `graphe/index-de-prise-contre-nom` dans NkMatGraphCheck.
+		//
+		// LA REPONSE EST EN DEUX MOITIES QUI NE DISENT PAS LA MEME CHOSE.
+		//
+		// EN MEMOIRE, LA CRAINTE EST INFONDEE. `AddSocket` fait un `PushBack`, et
+		// il n'existe AUCUNE operation qui retire ou insere une prise : un index
+		// deja attribue ne peut pas bouger. Le cas le mesure — on gagne une prise,
+		// le lien garde son index ET son nom.
+		//
+		// 🔴 DANS LE FICHIER, ELLE EST EXACTE. Le format ecrit les prises dans
+		// l'ordre — « cet ordre EST leur index » — puis des lignes `lien` et `def`
+		// qui ne portent QUE des nombres. Une prise glissee AVANT une autre
+		// decale tout ce qui suit ; le cas le fait, et le lien pointe alors sur
+		// une AUTRE prise. `Deserialize` rend `true`, `Validate` rend ZERO
+		// diagnostic, et le fichier reste parfaitement bien forme. Il n'y a
+		// aucun nom du cote du lien a confronter : rien ne PEUT s'en apercevoir.
+		//
+		// ⚠️ CE QUI NOUS PROTEGE AUJOURD'HUI N'EST PAS LE FORMAT, C'EST LE FAIT
+		// QUE NOUS SOMMES LE SEUL A L'ECRIRE. Notre ecrivain emet toujours les
+		// prises et les liens dans un etat coherent, donc l'aller-retour est sur.
+		// Trois choses feraient tomber cette protection, et aucune n'est
+		// farfelue : un producteur tiers, une edition a la main, ou une migration
+		// qui regenererait les prises d'un noeud depuis un catalogue ou le type a
+		// gagne une prise. Le jour ou l'une arrive, il faut un NOM dans le
+		// `lien` — sinon le graphe s'evalue faux en silence.
+		//
+		// 📌 ET LA CONVENTION EXISTE DEJA, UN CRAN PLUS BAS DANS CE MEME FICHIER :
+		// `SetSocketDefault` porte « la prise se designe par son NOM et son SENS,
+		// jamais par son index : un index se decale au premier remaniement, un nom
+		// non ». La regle est ECRITE, l'API la respecte, et LE FORMAT NE LA SUIT
+		// PAS — les lignes `def` designent la prise par son index elles aussi.
+		// Regle 5 dans sa forme la plus couteuse : la regle et sa violation
+		// cohabitent dans le meme module.
 		struct NkLink {
 				NkLinkId id = 0;
 				NkNodeId fromNode = NK_NODE_INVALID;
