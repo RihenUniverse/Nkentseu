@@ -490,6 +490,120 @@ static void CasAllerRetourFichier() {
 	(void)t;
 }
 
+// ── LA MESURE DEMANDEE PAR LE CHANTIER DESIGN : INDEX CONTRE NOM ─────────────
+//
+// SA QUESTION, mot pour mot : « NkLink adresse les prises par indice alors que
+// NkSocket::name est la cle stable -- faire gagner des prises a un noeud
+// repointerait en silence les liens suivants. »
+//
+// On MESURE au lieu de raisonner, et la reponse est en deux moities qui ne
+// disent PAS la meme chose. C'est pour ca que le cas discrimine les deux
+// separement : une seule assertion aurait rendu un vert ou un rouge, et les
+// deux auraient ete faux.
+static void CasIndexDePriseContreNom() {
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	g.Connect(bsdf, "bsdf", out, "surface");
+
+	// ── MOITIE 1 : EN MEMOIRE, LA CRAINTE EST INFONDEE ───────────────────
+	// `AddSocket` fait un `PushBack`, et il n'existe AUCUNE operation qui
+	// retire ou insere une prise. Un index deja attribue ne peut donc pas
+	// bouger. On le mesure au lieu de le lire : on gagne une prise, et on
+	// exige que le lien designe encore LA MEME PRISE PAR SON NOM.
+	const NkLink *avant = g.LinkAt(0);
+	const int32 idxAvant = avant ? avant->toSocket : -1;
+	const bool ajoutee = g.AddSocket(out, "prise_gagnee", t.real, NkSocketDir::Input);
+	const NkLink *apres = g.LinkAt(0);
+	const NkNode *no = g.Find(out);
+	const NkString *nomApres =
+		(apres && no && apres->toSocket >= 0 && apres->toSocket < (int32)no->sockets.Size())
+			? &no->sockets[(uint32)apres->toSocket].name
+			: nullptr;
+	const bool memoireTient = ajoutee && apres && apres->toSocket == idxAvant && nomApres &&
+							  *nomApres == NkString("surface");
+
+	// ── MOITIE 2 : DANS LE FICHIER, ELLE EST EXACTE ──────────────────────
+	// 🔴 ET C'EST LA QUE LA QUESTION PAYE. Le format ecrit les prises DANS
+	// L'ORDRE -- « cet ordre EST leur index » -- puis des lignes `lien` et
+	// `def` qui ne portent QUE des nombres. Une prise inseree AVANT une
+	// autre decale tout ce qui suit, et RIEN dans le fichier ne permet de
+	// s'en apercevoir : il n'y a aucun nom du cote du lien a confronter.
+	//
+	// On simule exactement ce que ferait un producteur de fichiers autre que
+	// notre propre ecrivain -- une version du catalogue ou le noeud a gagne
+	// une prise, un outil tiers, une edition a la main -- en glissant une
+	// ligne `sock` AVANT les prises du noeud de sortie.
+	NkString texte;
+	g.Serialize(texte);
+	NkString entete("sock ");
+	entete.Append(NkFormat("{0}", (uint32)out));
+	entete.Append(" 0 ");
+	// Le meme type que « surface » : on ne veut PAS que la validation attrape
+	// ce decalage par un desaccord de type. C'est le decalage lui-meme qu'on
+	// mesure, pas sa consequence la plus voyante.
+	const NkNode *nout = g.Find(out);
+	const int32 iSurface = nout ? nout->FindSocket("surface", NkSocketDir::Input) : -1;
+	entete.Append(NkFormat("{0}", (uint32)(iSurface >= 0 ? nout->sockets[(uint32)iSurface].type : t.shader)));
+	entete.Append(" intruse\n");
+
+	// insertion juste avant la PREMIERE ligne `sock <out> `
+	NkString marque("sock ");
+	marque.Append(NkFormat("{0}", (uint32)out));
+	marque.Append(" ");
+	NkString truque;
+	{
+		const char *p = texte.CStr();
+		bool pose = false;
+		while (p && *p) {
+			const char *fin = p;
+			while (*fin && *fin != '\n')
+				++fin;
+			NkString ligne;
+			for (const char *q = p; q < fin; ++q)
+				ligne.Append(*q);
+			if (!pose && ligne.Size() >= marque.Size()) {
+				bool debute = true;
+				for (uint32 k = 0; k < (uint32)marque.Size(); ++k)
+					if (ligne.CStr()[k] != marque.CStr()[k])
+						debute = false;
+				if (debute) {
+					truque.Append(entete);
+					pose = true;
+				}
+			}
+			truque.Append(ligne);
+			truque.Append('\n');
+			p = (*fin == '\n') ? fin + 1 : fin;
+		}
+	}
+
+	NkNodeGraph h;
+	const bool relu = h.Deserialize(truque.CStr());
+	const NkLink *lh = h.LinkCount() > 0 ? h.LinkAt(0) : nullptr;
+	const NkNode *nh = h.Find(out);
+	const NkString *nomTruque = (lh && nh && lh->toSocket >= 0 && lh->toSocket < (int32)nh->sockets.Size())
+									? &nh->sockets[(uint32)lh->toSocket].name
+									: nullptr;
+	// Le lien pointe desormais sur la prise INTRUSE, pas sur « surface ».
+	const bool repointe = relu && nomTruque && *nomTruque != NkString("surface");
+	// ⚠️ ET PERSONNE NE LE DIT. Ni la relecture, ni la validation du coeur :
+	// le fichier reste parfaitement bien forme.
+	NkVector<NkGraphDiag> diags;
+	h.Validate(diags);
+	const bool muet = relu && diags.Size() == 0;
+
+	NkString d;
+	d = NkFormat("MEMOIRE : ajout de prise, le lien garde son index {0} et son nom « {1} »={2} (PushBack seul, "
+				 "aucune operation ne retire ni n'insere) | FICHIER : une prise glissee avant les autres "
+				 "repointe le lien vers « {3} »={4} | et rien ne le signale (relu={5} diagnostics={6})={7}",
+				 idxAvant, nomApres ? *nomApres : NkString("?"), memoireTient ? 1 : 0,
+				 nomTruque ? *nomTruque : NkString("?"), repointe ? 1 : 0, relu ? 1 : 0, (uint32)diags.Size(),
+				 muet ? 1 : 0);
+	Cas("graphe/index-de-prise-contre-nom", memoireTient && repointe && muet, d);
+}
+
 // ── outils communs aux cas de valeurs ────────────────────────────────────────
 
 // Cherche une ligne COMMENCANT par `prefixe` dans un texte `.nkgraph`. Sert a
@@ -6257,6 +6371,7 @@ int main() {
 	CasAucuneSortie();
 	CasMelangeShader();
 	CasAllerRetourFichier();
+	CasIndexDePriseContreNom();
 
 	// ── valeurs : defauts de prise et proprietes de noeud ────────────────
 	CasDefautDePrise();

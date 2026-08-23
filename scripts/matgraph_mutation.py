@@ -36,6 +36,7 @@ import sys
 
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COMPILE_H = "Kernel/Runtime/NKRenderer/src/NKRenderer/Materials/Graph/NkMatGraphCompile.h"
+BANC_SRC = "Applications/NkMatGraphCheck/src/main.cpp"
 BANC = "Build/Bin/Debug-Windows/NkMatGraphCheck/NkMatGraphCheck.exe"
 
 # --------------------------------------------------------------------------
@@ -115,6 +116,14 @@ MUTATIONS = {
 			(COMPILE_H, _ANCRE_FILET_UV, _MUTE_FILET_UV),
 			(COMPILE_H, _ANCRE_FILET_ATTR, _MUTE_FILET_ATTR),
 		],
+	},
+	"M15": {
+		"quoi": "l insertion de la prise intruse devient un no-op -- le cas index/nom mesure-t-il l INSERTION ?",
+		"cas": "graphe/index-de-prise-contre-nom",
+		"attendu": "ATTRAPEE -- sinon le cas serait vert pour une autre raison que celle qu il annonce (regle 1).",
+		"edits": [(BANC_SRC, '					truque.Append(entete);
+					pose = true;',
+				   '					pose = true;')],
 	},
 	"M14": {
 		"quoi": "M12 + le second filet DANS SA VERSION D AVANT LE CORRECTIF (jeton imprononcable au lieu de refus)",
