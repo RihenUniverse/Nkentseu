@@ -3096,12 +3096,32 @@ namespace nkentseu {
 						//    -> « rien emis=1 » ; jeton imprononcable -> « rien emis=0 ».
 						//    Le correctif du 23/08 achete donc quelque chose de reel,
 						//    et c'est cette colonne qui le prouve.
-						// 3. ⚠️ CE QUE LE BANC NE VOIT PAS : M13 et M14 sont
-						//    INDISCERNABLES pour lui. Le banc mesure « a-t-on emis ? »,
-						//    pas « ce qu'on a emis est-il credible ? ». L'argument
-						//    « le shader echoue en PORTANT le mot plutot que de rendre
-						//    un pixel credible » reste juste, mais AUCUN CAS NE LE
-						//    MESURE. Le tenir pour acquis serait le refaire.
+						// 3. ⚠️ L'ARGUMENT QUI A MOTIVE CE LOT EST VRAI A MOITIE, ET
+						//    C'EST MAINTENANT MESURE — cas
+						//    `rang4/emis-credible-contre-emis-qui-echoue`, ajoute le
+						//    2026-08-23 parce que le banc ne savait dire que « a-t-on
+						//    emis ? » et que M13/M14 lui etaient indiscernables.
+						//
+						//    ✅ CE QUI EST VRAI, ET PIRE QU'ON NE LE DISAIT : un repli
+						//       plausible ne produit pas une source « proche » de la
+						//       legitime, il produit LA MEME, octet pour octet. Il n'y
+						//       a rien a comparer — aucun controle ne peut les separer.
+						//       Et le jeton imprononcable fait bien REFUSER glslang,
+						//       pendant que les quatre colonnes de generation disent
+						//       « gen » sur les deux : elles attestent la generation,
+						//       jamais la compilation.
+						//
+						//    ❌ CE QUI EST FAUX : « en PORTANT le mot ». Le mot
+						//       n'atteint PAS l'appelant. `NkSLCompiler.cpp`, cas
+						//       NK_SPIRV, remplace le resultat de glslang par celui du
+						//       generateur GLSL quand la compilation echoue — les
+						//       erreurs de glslang meurent la, et `errors` ressort
+						//       VIDE. L'auteur recoit un echec MUET.
+						//
+						//    Le cas EPINGLE cet etat au lieu de souhaiter l'autre : il
+						//    exige que le mot soit absent. Le jour ou NKSL fera
+						//    remonter ses erreurs, il rougira et forcera la mise a jour
+						//    de ce commentaire.
 						if (!c) {
 							r.error = NkString("canal UV non valide a l emission (le filet du rang 4 a repris "
 											   "la main : la passe de refus ne l a pas attrape)");

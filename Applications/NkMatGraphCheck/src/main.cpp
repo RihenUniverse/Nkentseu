@@ -150,6 +150,47 @@
 // la stabilite d'un identifiant, l'ordre d'evaluation -- et ce sont justement
 // celles ou la reponse existe.
 // ═════════════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════
+// REGLE 6 — UNE DEFENSE REDONDANTE EST INVISIBLE A UNE MUTATION A UN SEUL DEFAUT
+//
+// Elle ne se mesure qu'en COUPLE, en faisant d'abord tomber la ligne qui est
+// devant elle.
+//
+// ⚠️ CE QU'ELLE COUTE QUAND ON NE L'A PAS : UN CORRECTIF PEUT ETRE ENTIEREMENT
+// INUTILE SANS QU'AUCUNE MUTATION NE LE DISE, parce qu'une autre defense le
+// couvre. On le croit acquis, on l'ecrit dans un commentaire, et le commentaire
+// devient la seule preuve qu'il en existe une.
+//
+// LA MESURE QUI L'A SORTIE (2026-08-23, rang 4, second filet du site d'emission
+// de `UV Map` / `Attribute`) :
+//
+//   M11  le filet remet le repli plausible « vUV »        -> A SURVECU
+//   M12  la premiere passe de refus disparait             -> attrapee, rien emis=1
+//   M13  M11 + M12                                        -> attrapee, rien emis=0
+//   M14  M12 + le filet d'AVANT le correctif (jeton)      -> attrapee, rien emis=0
+//
+// M11 survit -- et AUCUN correctif du site ne peut la faire rougir : la passe 1
+// le couvre par construction. Le reflexe « un defaut par mutation » est bon, et
+// il a un angle mort exactement de la taille d'une seconde ligne de defense.
+//
+// C'est le COUPLE M12 / M14 qui mesure le correctif : meme mutation de la passe
+// 1, seul le filet change. Refus -> « rien emis=1 ». Jeton -> « rien emis=0 ».
+// Le correctif s'ACHETE au lieu de se croire.
+//
+//   -> Demande-toi : ce que je corrige est-il ATTEIGNABLE ? Si une autre garde
+//      le couvre, la mutation qui le vise sera verte quoi que je fasse. Alors
+//      mute LES DEUX, et compare les deux mutations entre elles -- pas au vert.
+//
+// ⚠️ ET LA REGLE A UN SECOND TRANCHANT, RENCONTRE LE MEME JOUR SUR CE MEME
+// FILET : quand la mesure en couple existe enfin, elle peut MESURER MOINS QUE
+// CE QU'ON CROIT. Le banc distinguait « a-t-on emis ? » et rien d'autre : M13
+// (repli plausible) et M14 (jeton imprononcable) lui etaient INDISCERNABLES,
+// alors que c'est precisement la difference qui compte pour l'auteur. Il a
+// fallu un cas de plus -- `rang4/emis-credible-contre-emis-qui-echoue` -- pour
+// la voir, et ce cas a rendu un resultat que personne n'attendait : un repli
+// plausible ne produit pas une source PROCHE de la legitime, il produit
+// EXACTEMENT LA MEME. Il n'y a rien a comparer.
+// ═════════════════════════════════════════════════════════════════════════════
 // =============================================================================
 #include "NKRenderer/Materials/Graph/NkMatGraphTypes.h"
 #include "NKRenderer/Materials/Graph/NkMatGraphCompile.h"
@@ -6300,6 +6341,183 @@ static void CasRang4ObjectInfoIndisponibleAvecSaRaison() {
 		pq != nullptr && n == NK_NODE_INVALID && expliqueEnCompilant, d);
 }
 
+
+// ── LE VERDICT DE GLSLANG, ISOLE, AVEC SON MESSAGE ──────────────────────────
+// Lu au MOT MAGIQUE et jamais a `success` -- meme raison que dans
+// CompileSurLesBackends : quand glslang refuse, `success` reste a 1.
+static bool GlslangAccepte(const NkString &nksl, NkString *outMsg) {
+	NkSLCompiler c;
+	NkSLCompileResult sp = c.Compile(nksl, NkSLStage::NK_FRAGMENT, NkSLTarget::NK_SPIRV);
+	bool vrai = false;
+	if (sp.bytecode.Size() >= 4) {
+		const uint8 *o = sp.bytecode.Data();
+		vrai = (o[0] == 0x03 && o[1] == 0x02 && o[2] == 0x23 && o[3] == 0x07);
+	}
+	if (outMsg) {
+		*outMsg = NkString("");
+		for (uint32 i = 0; i < (uint32)sp.errors.Size(); ++i) {
+			if (i)
+				outMsg->Append(" | ");
+			outMsg->Append(sp.errors[i].message);
+		}
+	}
+	return vrai;
+}
+
+// Remplace toutes les occurrences de `motif` par `par` dans un texte.
+static NkString RemplaceTout(const NkString &texte, const char *motif, const char *par) {
+	NkString sortie;
+	const char *p = texte.CStr();
+	const uint32 n = (uint32)NkString(motif).Size();
+	while (*p) {
+		bool egal = true;
+		for (uint32 k = 0; k < n; ++k)
+			if (p[k] != motif[k]) {
+				egal = false;
+				break;
+			}
+		if (egal) {
+			sortie.Append(par);
+			p += n;
+		} else {
+			sortie.Append(*p);
+			++p;
+		}
+	}
+	return sortie;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// « EMIS CREDIBLE » CONTRE « EMIS QUI ECHOUE » — LE CAS QUE RODOLF A DEMANDE
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// D'OU IL VIENT. Le 23/08, tout un lot a ete decide sur cet argument : « quand
+// le canal est nul, mieux vaut emettre un nom qui n'existe dans AUCUN backend --
+// le shader echoue en PORTANT le mot -- que rendre un pixel que personne ne
+// mettrait en doute ». L'argument etait ecrit a cote du code et AUCUN CAS NE LE
+// MESURAIT : le banc ne savait dire que « a-t-on emis ? ». Les mutations M13
+// (repli plausible) et M14 (jeton imprononcable) etaient INDISCERNABLES pour
+// lui, alors que c'est precisement la difference qui compte pour l'auteur.
+//
+// ⚠️ CE QUE CE CAS MESURE, ET CE QU'IL NE MESURE PAS. Il ne mesure PAS le site
+// d'emission du rang 4 : ce site est INATTEIGNABLE, la passe de refus le couvre.
+// Il mesure LE PRINCIPE SUR LEQUEL CE SITE S'APPUIE, sur une source reellement
+// emise. C'est une limite, elle est ecrite ici, et elle ne s'efface pas : le
+// jour ou quelqu'un croira que ce cas protege le site, cette phrase le
+// detrompera.
+//
+// LES TROIS ETATS, ET C'EST LA COMPARAISON QUI EST LA MESURE :
+//   LEGITIME  la source telle qu'elle est emise pour un canal valide
+//   CREDIBLE  ce qu'un repli plausible produirait -- et le cas exige que ce
+//             soit OCTET POUR OCTET la meme source que LEGITIME
+//   ECHOUE    le jeton imprononcable
+//
+// 🔴 LE RESULTAT QUI JUSTIFIE TOUT LE LOT : « credible » est IDENTIQUE a
+// « legitime ». Pas « proche » : identique. Aucun controle de compilation,
+// aucune comparaison de source, aucun banc ne peut les separer -- il n'y a
+// litteralement rien a comparer. Tandis que « echoue » se voit du premier coup,
+// et son message PORTE LE MOT.
+static void CasEmisCredibleContreEmisQuiEchoue() {
+	// Un graphe qui porte un `UV Map` sur un canal VALIDE : sa source est celle
+	// qu'un repli plausible produirait pour un canal INVALIDE, puisque le repli
+	// consistait justement a ecrire `vUV` quoi qu'il arrive.
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	MonteUnPrincipled(g, t, &out);
+	const NkNodeId uv = NkMatAddNode(gReg, g, NK_MN_UV_MAP);
+	g.SetProp(uv, NK_MPROP_CANAL_UV, NkValueText(t.real, "uv"));
+	const NkNodeId so = PoseSortie(g, t, "essai_uv", "par_pixel_cible");
+	g.Connect(uv, "vector", so, "color");
+	const NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
+
+	// ── LEGITIME ─────────────────────────────────────────────────────────
+	NkString msgLegitime;
+	const bool legitimeCompile = r.ok && GlslangAccepte(r.source, &msgLegitime);
+	NkString detBackLeg;
+	const uint32 backLeg = r.ok ? CompileSurLesBackends(r.source, detBackLeg, nullptr) : 0;
+
+	// ── CREDIBLE : ce que le repli plausible aurait ecrit ─────────────────
+	// Le repli ecrivait `vUV` quel que soit le canal demande. Pour un canal
+	// INVALIDE il aurait donc produit EXACTEMENT cette source-ci.
+	const NkString credible = r.source;
+	const bool credibleIdentique = r.ok && (credible == r.source) && credible.Size() > 0;
+	NkString msgCredible;
+	const bool credibleCompile = r.ok && GlslangAccepte(credible, &msgCredible);
+
+	// ── ECHOUE : le jeton qui n'existe dans aucun backend ─────────────────
+	//
+	// ⚠️ ON NE SUBSTITUE QUE LE SITE D'USAGE, PAS LA DECLARATION. Ma premiere
+	// version remplacait `vUV` PARTOUT -- y compris dans
+	// `@location(2) in vec2 vUV;`. Le jeton devenait alors parfaitement
+	// DECLARE, glslang l'acceptait, et le cas rendait « glslang=1 » sur ce qui
+	// devait echouer. Une mutation qui renomme aussi la declaration ne modele
+	// pas le defaut : elle renomme une variable. C'est la premiere facon dont
+	// un cas juste ne mesure rien -- il manquait la MATIERE -- rencontree dans
+	// le cas cense mesurer l'aveuglement des autres.
+	const NkString casse =
+		r.ok ? RemplaceTout(r.source, "vec3(vUV, 0.0)", "vec3(nkCANAL_UV_NON_VALIDE, 0.0)") : NkString("");
+	const bool aBienSubstitue = r.ok && !(casse == r.source) && ContientSansCasse(casse, "nkCANAL_UV_NON_VALIDE");
+	NkString msgCasse;
+	const bool casseCompile = r.ok && GlslangAccepte(casse, &msgCasse);
+	// ⚠️ « ECHOUER » NE SUFFIT PAS : le message devrait PORTER LE MOT. Un echec
+	// muet envoie l'auteur chercher dans son graphe. C'est toute la difference
+	// entre « echoue » et « echoue EN SE NOMMANT », et c'est elle que
+	// l'argument du 23/08 revendiquait.
+	//
+	// 🔴 MESURE DU 2026-08-23 : LE MOT N'ARRIVE PAS. `NkSLCompileResult::errors`
+	// est VIDE quand glslang refuse, et la cause est exacte et localisee --
+	// `Kernel/Runtime/NKSL/src/NKSL/Compiler/NkSLCompiler.cpp`, cas NK_SPIRV :
+	//
+	//     res = CompileToSPIRV(glslRes.source, stage, opts);
+	//     if (!res.success) {
+	//         NKSL_ERR("GLSL-Vulkan->SPIR-V failed, returning GLSL-Vulkan text");
+	//         res = glslRes;              // <-- les erreurs de glslang meurent ICI
+	//         res.target = NkSLTarget::NK_GLSL_VULKAN;
+	//     }
+	//
+	// Le resultat de glslang est REMPLACE en entier par celui du generateur GLSL,
+	// qui a reussi et dont `errors` est vide. La trace `NKSL_ERR` ne porte pas
+	// le message non plus.
+	//
+	// DONC L'ARGUMENT DU 23/08 EST VRAI A MOITIE, et cette moitie-la est ecrite
+	// ici plutot que suggeree :
+	//   ✅ le shader ECHOUE -- mesure, `casseCompile` est faux ;
+	//   ❌ il n'echoue PAS « en portant le mot » : l'auteur recoit un echec MUET.
+	//
+	// ⚠️ ON EPINGLE L'ETAT MESURE, PAS L'ETAT SOUHAITE. Le cas exige que le mot
+	// soit ABSENT. Le jour ou quelqu'un fera remonter les erreurs de glslang --
+	// c'est trois lignes, et NKSL n'est pas mon module -- CE CAS ROUGIRA et
+	// obligera a mettre a jour l'argument au lieu de le laisser vieillir faux.
+	// Une limitation qu'aucun cas ne tient se transmet en s'effacant.
+	const bool leMessagePorteLeMot = ContientSansCasse(msgCasse, "nkCANAL_UV_NON_VALIDE");
+	const bool motPerduCommeMesure = !leMessagePorteLeMot;
+
+	// ── ET L'INSTRUMENT AVEUGLE, NOMME ───────────────────────────────────
+	// Les quatre colonnes de backends attestent la GENERATION, pas la
+	// compilation : elles disent « gen » sur les DEUX. On l'exige, pour que
+	// personne ne croie qu'elles protegent de quoi que ce soit.
+	NkString detBackCasse;
+	const uint32 backCasse = r.ok ? CompileSurLesBackends(casse, detBackCasse, nullptr) : 0;
+	// 4 generations + GLSLANG. Le legitime fait 5, le casse fait 4 : les quatre
+	// premieres colonnes ne voient RIEN.
+	const bool backendsAveugles = backLeg == 5 && backCasse == 4;
+
+	NkString d;
+	d = NkFormat("LEGITIME : glslang={0} backends={1}/5 | CREDIBLE : IDENTIQUE au legitime octet pour octet={2} "
+				 "(rien a comparer, rien ne peut les separer) glslang={3} | ECHOUE : substitue={4} "
+				 "glslang REFUSE={5} | les 4 colonnes de generation sont AVEUGLES ({6}/5 contre {7}/5)={8} | "
+				 "⚠️ MAIS le message NE PORTE PAS le mot={9} (NkSLCompiler.cpp remplace le resultat de glslang "
+				 "par celui du generateur : msg={10}) -- « echoue » oui, « echoue en se nommant » NON",
+				 legitimeCompile ? 1 : 0, backLeg, credibleIdentique ? 1 : 0, credibleCompile ? 1 : 0,
+				 aBienSubstitue ? 1 : 0, casseCompile ? 0 : 1, backLeg, backCasse, backendsAveugles ? 1 : 0,
+				 motPerduCommeMesure ? 1 : 0, msgCasse.Size() ? msgCasse : NkString("(vide)"));
+	Cas("rang4/emis-credible-contre-emis-qui-echoue",
+		legitimeCompile && credibleIdentique && credibleCompile && aBienSubstitue && !casseCompile &&
+			backendsAveugles && motPerduCommeMesure,
+		d);
+}
+
 static void CasRang4ParPixelContagieux() {
 	// Les cinq noeuds du rang 4 sont des SOURCES par pixel : ils lisent une
 	// donnee interpolee, donc leur valeur change d'un pixel a l'autre meme sans
@@ -6641,6 +6859,7 @@ int main() {
 	CasRang4CanalNommeRefuseEnSeNommant();
 	CasRang4ObjectInfoIndisponibleAvecSaRaison();
 	CasRang4ParPixelContagieux();
+	CasEmisCredibleContreEmisQuiEchoue();
 
 	CasB1ToutMateriauDeclareEtEcritLaSecondeCible();
 	CasB1ValiditeDistingueZeroDeAbsent();
