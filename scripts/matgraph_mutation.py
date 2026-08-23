@@ -19,6 +19,10 @@ INSUFFISANTE -- elle comptait sur la vigilance. Elle est ici INSTRUMENTEE :
   GARDE 4 -- le compte d'erreurs de CONSTRUCTION se lit AVANT le banc. Un banc
              qui rend « 0 echec » sur un binaire perime ne mesure rien ; c'est
              la seule sortie qui ment sans qu'on puisse le voir.
+  GARDE 6 -- la construction se REJOUE avant d'accuser la mutation. Une
+             construction qui echoue une fois sur deux accuse le LANCEUR, pas
+             la mutation ; un verdict non reproductible est un verdict faux,
+             meme quand il est prudent.
   GARDE 5 -- la restauration RECONSTRUIT. Restaurer la source ne suffit pas :
              le binaire reste celui de la derniere mutation, On branch feat/materiaux-graphe
 Changes not staged for commit:
@@ -396,9 +400,26 @@ def joue(cle):
 	try:
 		bien, nberr, _ = construis()
 		# GARDE 4 : le compte d'erreurs AVANT le banc.
+		#
+		# 🔴 GARDE 6 -- ON REJOUE LA CONSTRUCTION AVANT D'ACCUSER LA MUTATION.
+		# Mesure du 2026-08-23 : M18 a rendu « NE COMPILE PAS » dans une campagne
+		# de douze, et « ATTRAPEE » relancee seule, sans qu'une ligne ait bouge.
+		# Une construction qui echoue une fois sur deux n'accuse pas la mutation,
+		# elle accuse le LANCEUR -- verrou de fichier, artefact a moitie ecrit,
+		# course entre deux reconstructions rapprochees.
+		#
+		# Un verdict non reproductible est un verdict faux, meme quand il est
+		# prudent. On distingue donc les deux : ce qui ne compile pas DEUX FOIS
+		# est une mutation qui ne compile pas ; ce qui ne compile qu'une fois est
+		# un incident de construction, et il se DIT.
+		if not bien:
+			print("   construction : ECHEC (%d erreur(s) lue(s)) -- ON REJOUE avant d'accuser la mutation" % nberr)
+			bien, nberr, _ = construis()
+			if bien:
+				print("   construction : OK a la seconde tentative -- INCIDENT DE LANCEUR, pas la mutation")
 		print("   construction : %s (%d erreur(s) lue(s))" % ("OK" if bien else "ECHEC", nberr))
 		if not bien:
-			print("   => la mutation NE COMPILE PAS : elle ne mesure rien. Verdict indisponible.")
+			print("   => la mutation NE COMPILE PAS (deux fois de suite) : elle ne mesure rien.")
 			return "NE COMPILE PAS"
 		code, sortie = joue_le_banc()
 		if code != 0 and "cas, " not in sortie:
