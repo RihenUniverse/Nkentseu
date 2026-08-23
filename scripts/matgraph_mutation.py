@@ -31,13 +31,7 @@ INSUFFISANTE -- elle comptait sur la vigilance. Elle est ici INSTRUMENTEE :
              la mutation ; un verdict non reproductible est un verdict faux,
              meme quand il est prudent.
   GARDE 5 -- la restauration RECONSTRUIT. Restaurer la source ne suffit pas :
-             le binaire reste celui de la derniere mutation, On branch feat/materiaux-graphe
-Changes not staged for commit:
-  (use "git add <file>..." to update what will be committed)
-  (use "git restore <file>..." to discard changes in working directory)
-	modified:   scripts/matgraph_mutation.py
-
-no changes added to commit (use "git add" and/or "git commit -a") dit
+             le binaire reste celui de la derniere mutation, `git status` dit
              « propre », et le banc lance juste apres rend UN ECHEC pour un
              defaut qui n'existe plus nulle part. Ce piege-la est PIRE que le
              binaire perime ordinaire -- il rend un ROUGE sur du code sain, et
@@ -305,11 +299,17 @@ _ANCRE_M35 = """			if (fa == NkSocketFamily::Exec)
 _MUTE_M35 = """			if (false)
 				return NkLinkError::ExecOutputAlreadyBound;"""
 
-# M36 : l'acyclicite revoit les liens d'execution -- la boucle redevient un
-# cycle, et un graphe d'execution reel devient inexprimable.
-_ANCRE_M36 = """			if (fa == NkSocketFamily::Data && WouldCreateCycle(from, to))
+# ── M36 ET M38 ONT CHANGE DE SENS LE 24/08, ET IL FAUT LE LIRE ─────────────
+# Elles RETIRAIENT l'exemption d'execution ; elles la REINTRODUISENT. Le code a
+# bouge sous elles -- l'acyclicite est redevenue universelle -- et une mutation
+# qui garde son ancienne forme aurait mute vers le code CORRECT en croyant
+# introduire un defaut. La garde 2 l'aurait dit (ancrage x0), et c'est la
+# troisieme fois de ce chantier qu'elle paie.
+#
+# M36 : `Connect` exempte a nouveau les liens d'execution du controle de cycle.
+_ANCRE_M36 = """			if (WouldCreateCycle(from, to))
 				return NkLinkError::WouldCycle;"""
-_MUTE_M36 = """			if (WouldCreateCycle(from, to))
+_MUTE_M36 = """			if (fa == NkSocketFamily::Data && WouldCreateCycle(from, to))
 				return NkLinkError::WouldCycle;"""
 
 # M37 : la famille n'est plus ECRITE dans le fichier -- l'accord redevient un
@@ -320,13 +320,18 @@ _MUTE_M37 = """					if (false) {
 						out.Append("sockf ");"""
 
 
-# M38 : LE COUPLE. M36 (Connect rappelle WouldCreateCycle sur l'exec) PLUS
-# le parcours de WouldCreateCycle qui revoit tous les liens. M36 seule survit
-# parce que le parcours, lui, ne suit deja que la donnee : deux defenses pour
-# le meme comportement, donc invisibles a une mutation a un seul defaut.
-_ANCRE_M38 = """					if (mLinks[i].alive && mLinks[i].fromNode == cur && LinkFamily(mLinks[i]) == NkSocketFamily::Data)
+# M38 : le parcours de `WouldCreateCycle` cesse a nouveau de suivre les liens
+# d'execution.
+#
+# 🔴 CE QU'ELLE MESURE MAINTENANT, ET C'EST LE RESULTAT LE PLUS INTERESSANT DU
+# 24/08 : elle etait un COUPLE (M36 + le parcours) parce que l'exemption
+# s'ecrivait a DEUX endroits, donc invisible a une mutation a un seul defaut.
+# Les deux encodages sont partis ensemble avec l'exception. M36 et M38 doivent
+# donc rougir SEULES desormais -- et si l'une survit, c'est qu'une redondance
+# est revenue quelque part.
+_ANCRE_M38 = """					if (mLinks[i].alive && mLinks[i].fromNode == cur)
 						stack.PushBack(mLinks[i].toNode);"""
-_MUTE_M38 = """					if (mLinks[i].alive && mLinks[i].fromNode == cur)
+_MUTE_M38 = """					if (mLinks[i].alive && mLinks[i].fromNode == cur && LinkFamily(mLinks[i]) == NkSocketFamily::Data)
 						stack.PushBack(mLinks[i].toNode);"""
 
 
@@ -369,7 +374,66 @@ _MUTE_M42 = """			for (uint32 passe = 0; passe < 2; ++passe) {"""
 _ANCRE_M43 = """			const bool qualif = (passe == 2);"""
 _MUTE_M43 = """			const bool qualif = (passe == 1);"""
 
+# ── L'ACYCLICITE UNIVERSELLE, SUITE ─────────────────────────────────────────
+# M44 : `TopoSort` recompte la SEULE donnee. C'est la moitie du changement du
+# 24/08, et la moitie qu'on oublierait : un tri qui ignore les fils d'execution
+# rend un ordre parfaitement VALIDE, simplement moins contraint. Seul un
+# controle qui regarde l'ORDRE RENDU peut le voir.
+_ANCRE_M44A = """				if (!mLinks[i].alive)
+					continue;
+				const int32 t = indexOf(mLinks[i].toNode);"""
+_MUTE_M44A = """				if (!mLinks[i].alive || LinkFamily(mLinks[i]) != NkSocketFamily::Data)
+					continue;
+				const int32 t = indexOf(mLinks[i].toNode);"""
+_ANCRE_M44B = """						if (!mLinks[k].alive || mLinks[k].fromNode != ids[i])
+							continue;"""
+_MUTE_M44B = """						if (!mLinks[k].alive || mLinks[k].fromNode != ids[i] ||
+							LinkFamily(mLinks[k]) != NkSocketFamily::Data)
+							continue;"""
+
+# ── LA MACHINE A ETATS EST UN NOEUD ─────────────────────────────────────────
+# M45 : l'ecrivain croit qu'une valeur, c'est DES NOMBRES -- et il saute les
+# valeurs qui n'en portent pas. C'est la pente naturelle de qui relit
+# `NkGraphValue` en diagonale : `numbers` saute aux yeux, `text` non. La
+# reference vers la machine a etats est un TEXTE ; elle disparait du fichier.
+_ANCRE_M45 = """					if (!pr.value.IsSet())
+						continue;
+					out.Append("prop ");"""
+_MUTE_M45 = """					if (!pr.value.IsSet() || pr.value.numbers.Size() == 0)
+						continue;
+					out.Append("prop ");"""
+
+# M46 : dans le BANC, l'ALLER de la contre-epreuve n'est plus branche -- on
+# pretend seulement qu'il l'est. Le retour ne referme alors AUCUNE boucle.
+# C'est la mutation de la famille de M15 : elle ne touche pas a l'assertion,
+# elle retire la PERTURBATION dont l'assertion depend. Sans elle, on ne saurait
+# pas si « les memes etats cables dehors sont refuses » mesure un CYCLE ou
+# seulement un refus quelconque.
+_ANCRE_M46 = """	const NkLinkError aller = h.Connect(marche, "apres", saut, "avant");"""
+_MUTE_M46 = """	const NkLinkError aller = NkLinkError::Ok;"""
+
 MUTATIONS = {
+	"M44": {
+		"quoi": "TopoSort recompte la SEULE donnee -- l ordre cesse d honorer la succession d execution",
+		"cas": "exec/acyclicite-universelle-la-boucle-est-un-noeud",
+		"attendu": "ATTRAPEE PAR LE VOLET ORDRE SEULEMENT. Le tri REUSSIT toujours et rend 4 noeuds ; "
+				   "seul le rang compare voit que la succession n est plus honoree.",
+		"edits": [(GRAPH_INL, _ANCRE_M44A, _MUTE_M44A), (GRAPH_INL, _ANCRE_M44B, _MUTE_M44B)],
+	},
+	"M45": {
+		"quoi": "l ecrivain saute les valeurs sans NOMBRES -- la reference texte vers la machine disparait",
+		"cas": "etats/la-machine-a-etats-est-un-noeud",
+		"attendu": "ATTRAPEE -- et pas seulement par ce cas : tout aller-retour portant une propriete "
+				   "TEXTE doit tomber. Si un seul cas rougit, c est que le texte n est mesure qu ici.",
+		"edits": [(GRAPH_IO, _ANCRE_M45, _MUTE_M45)],
+	},
+	"M46": {
+		"quoi": "l ALLER de la contre-epreuve n est plus branche -- le retour ne referme plus de boucle",
+		"cas": "etats/la-machine-a-etats-est-un-noeud",
+		"attendu": "ATTRAPEE -- sinon la contre-epreuve mesurerait un refus quelconque et non un CYCLE, "
+				   "et le cas se reduirait a « un graphe sans cycle n a pas de cycle » (regle 1).",
+		"edits": [(BANC_SRC, _ANCRE_M46, _MUTE_M46)],
+	},
 	"M43": {
 		"quoi": "la qualification se lit en passe 1 (avec les references) -- dependance a l ORDRE retablie",
 		"cas": "exec/lien-qualifie",
