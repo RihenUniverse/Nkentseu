@@ -88,9 +88,9 @@ _MUTE_FILET_ATTR = """						s.Append(c ? c->varying : "vColor");
 # 23/08 a change -- et il ne se mesure qu en compagnie de M12, sinon le site est
 # inatteignable.
 _MUTE_FILET_UV_JETON = """						s.Append(c ? c->varying : "nkCANAL_UV_NON_VALIDE");
-						s.Append(", 0.0);\n");"""
+						s.Append(", 0.0);\\n");"""
 _MUTE_FILET_ATTR_JETON = """						s.Append(c ? c->varying : "nkATTRIBUT_NON_VALIDE");
-						s.Append(".rgb;\n");"""
+						s.Append(".rgb;\\n");"""
 
 MUTATIONS = {
 	"M11": {
