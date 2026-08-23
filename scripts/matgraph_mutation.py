@@ -83,6 +83,15 @@ _ANCRE_FILET_ATTR = """						if (!c) {
 _MUTE_FILET_ATTR = """						s.Append(c ? c->varying : "vColor");
 						s.Append(".rgb;\\n");"""
 
+# La version D AVANT LE CORRECTIF du second filet : au lieu de refuser, il emet
+# un nom qui n existe dans aucun backend. Sert a MESURER ce que le correctif du
+# 23/08 a change -- et il ne se mesure qu en compagnie de M12, sinon le site est
+# inatteignable.
+_MUTE_FILET_UV_JETON = """						s.Append(c ? c->varying : "nkCANAL_UV_NON_VALIDE");
+						s.Append(", 0.0);\n");"""
+_MUTE_FILET_ATTR_JETON = """						s.Append(c ? c->varying : "nkATTRIBUT_NON_VALIDE");
+						s.Append(".rgb;\n");"""
+
 MUTATIONS = {
 	"M11": {
 		"quoi": "le second filet (site d emission) REMET le repli plausible : vUV / vColor pour n importe quel nom",
@@ -105,6 +114,16 @@ MUTATIONS = {
 			(COMPILE_H, _ANCRE_PASSE1, _MUTE_PASSE1),
 			(COMPILE_H, _ANCRE_FILET_UV, _MUTE_FILET_UV),
 			(COMPILE_H, _ANCRE_FILET_ATTR, _MUTE_FILET_ATTR),
+		],
+	},
+	"M14": {
+		"quoi": "M12 + le second filet DANS SA VERSION D AVANT LE CORRECTIF (jeton imprononcable au lieu de refus)",
+		"cas": "rang4/canal-nomme-refuse-en-se-nommant",
+		"attendu": "ATTRAPEE, mais A COMPARER A M12 : c est le seul couple qui mesure ce que le correctif a achete.",
+		"edits": [
+			(COMPILE_H, _ANCRE_PASSE1, _MUTE_PASSE1),
+			(COMPILE_H, _ANCRE_FILET_UV, _MUTE_FILET_UV_JETON),
+			(COMPILE_H, _ANCRE_FILET_ATTR, _MUTE_FILET_ATTR_JETON),
 		],
 	},
 }
