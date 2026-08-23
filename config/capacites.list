@@ -91,6 +91,15 @@
 #   satisfait produisent la meme sortie verte.
 
 # PLAFOND-A-DATER = 24
+#
+# OU EST LE DETAIL DE CES 24 (2026-08-23)
+#   CAPACITES_A_DATER.md, a la racine de l'arbre. Pour chacune des 24 : ce
+#   qu'elle pretend faire en une phrase, son fichier et sa ligne, le nombre
+#   d'appelants REELS (comptes, pas estimes), et ce qui casse si on l'abandonne
+#   - ou « rien ». Trie par cette derniere colonne, du plus facile au plus
+#   difficile, avec une recommandation par ligne. Le document ne DATE rien et ne
+#   touche pas au plafond ci-dessus : il rend la decision facile, il ne la prend
+#   pas.
 
 # =============================================================================
 FrameStats::cpuSubmitTimeMs                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
@@ -104,7 +113,7 @@ NkBindlessHeapDesc::maxStorageBuffers        | D2  | vision-assumee  |         |
 NkBindlessHeapDesc::maxStorageTextures       | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkBindlessHeapDesc::maxUniformBuffers        | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkBlendAttachment::alphaOp                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
-NkBlendAttachment::blendEnable               | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkBlendAttachment::blendEnable               | D2  | dette-datee     | A-DATER | A1 de CAPACITES_A_DATER.md. LE DETECTEUR S EST TROMPE : 6 LECTURES sur 5 backends (DX11:1357, DX12:1761, GL Internal:283 et 296, SW:2163, VK:1749). D2 ne resout pas la voie d acces quand le backend ecrit 'auto &a = d.blend.attachments[i]' - le type n apparait pas dans la ligne. Recommandation : reclasser implementee. L abandonner supprimerait la transparence sur les 5 backends.
 NkBlendAttachment::colorOp                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkBlendAttachment::colorWriteMask            | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkBlendAttachment::dstAlpha                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
@@ -114,15 +123,15 @@ NkBlendAttachment::srcColor                  | D2  | vision-assumee  |         |
 NkClusterConfig::maxLightsPerCluster         | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkClusterConfig::tilesX                      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkClusterConfig::tilesY                      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
-NkDescriptorSetLayoutDesc::isBindless        | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDescriptorSetLayoutDesc::isBindless        | D2  | dette-datee     | A-DATER | B1. Examine le 23/08. 0 lecture, 1 ecriture (dans AddBindless(), NkDescs.h:773) - et AddBindless() a 0 appelant. Abandon : RIEN. Recommandation : vision-assumee.
 NkDeviceCaps::bindlessTextures               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkDeviceCaps::conservativeRasterization      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkDeviceCaps::depthClipControl               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
-NkDeviceCaps::drawIndirect                   | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::drawIndirect                   | D2  | dette-datee     | A-DATER | D3. Examine le 23/08. 0 lecture, 5 ecritures (DX11:1743, DX12:3008, GL:1031, SW:732 false - honnete -, VK:2466). DrawIndirect/DrawIndexedIndirect sont reellement implementes (NkICommandBuffer.h:173-182 + DX11, DX12 avec un TODO, VK) mais ont 0 appelant. Le champ VOISIN indirectDispatch est, lui, LU (NkComputeContext.cpp:402). Abandon : rien ne casse, mais false ferait mentir le rapport. Recommandation : implementee, si NkDeviceCaps est une API publique.
 NkDeviceCaps::drawIndirectCount              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
-NkDeviceCaps::geometryShaders                | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
-NkDeviceCaps::independentBlend               | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
-NkDeviceCaps::logicOp                        | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::geometryShaders                | D2  | dette-datee     | A-DATER | D2. Examine le 23/08. 0 lecture, 4 ecritures (DX11:1741, DX12:3006, GL:1029, VK:2464 requete reelle). Chemin implemente de bout en bout (NkShaderLibrary.cpp:325-337 compile un etage NK_GEOMETRY) mais sa porte d entree LoadVGF() a 0 appelant : les 5 particles.geom.* ne sont jamais charges. Abandon : rien ne casse, mais passer le drapeau a false ferait mentir le rapport dans l AUTRE sens - GetCaps() est appele 45 fois et d autres champs decident vraiment. Recommandation : implementee, si NkDeviceCaps est une API publique. Ne pas confondre avec NkSLTargetCaps::geometryShaders (NkSLFeatures.h:34), hors portee du detecteur.
+NkDeviceCaps::independentBlend               | D2  | dette-datee     | A-DATER | D5. Examine le 23/08. 0 lecture, 5 ecritures (DX11:1745, DX12:3010, GL:1033, SW:734 true, VK:2468 requete reelle). LA CAPACITE EST DEJA EXERCEE SANS LE DRAPEAU : NkDirectX11Device.cpp:1356 ecrit bsd.IndependentBlendEnable = d.blend.attachments.Size() > 1 en dur, et Vulkan construit un tableau de melange par attachement. Abandon : rien ne casse. Recommandation : implementee - la preuve d usage est la ligne 1356.
+NkDeviceCaps::logicOp                        | D2  | dette-datee     | A-DATER | B7. Examine le 23/08. 0 lecture, 2 ecritures (DX11:1746 true en dur, VK:2469 requete reelle). Abandon : RIEN - et c est le seul drapeau dont la capacite n est meme pas EXPRIMABLE : aucun NkLogicOp, aucun champ d operation logique dans NkBlendDesc, nulle part dans NKRHI. Recommandation : abandonner.
 NkDeviceCaps::maxColorAttachments            | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkDeviceCaps::maxDescriptorSets              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkDeviceCaps::maxPushConstantBytes           | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
@@ -138,54 +147,54 @@ NkDeviceCaps::minStorageBufferAlign          | D2  | vision-assumee  |         |
 NkDeviceCaps::minUniformBufferAlign          | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkDeviceCaps::mipGenInShader                 | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkDeviceCaps::multiDrawIndirect              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
-NkDeviceCaps::multiViewport                  | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::multiViewport                  | D2  | dette-datee     | A-DATER | D4. Examine le 23/08. 0 lecture, 5 ecritures (DX11:1744, DX12:3009, GL:1032, SW:733 false, VK:2467 requete reelle). SetViewports(vps, n) existe sur DX11, DX12 et Metal - 0 appelant. Abandon : rien ne casse, mais false ferait mentir le rapport. Recommandation : implementee, si NkDeviceCaps est une API publique.
 NkDeviceCaps::nonPowerOfTwoTextures          | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkDeviceCaps::pipelineStats                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkDeviceCaps::rayTracing                     | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkDeviceCaps::shaderAtomicFloat              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkDeviceCaps::shaderAtomicInt64              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
-NkDeviceCaps::shaderFloat16                  | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::shaderFloat16                  | D2  | dette-datee     | A-DATER | C4. Examine le 23/08. 0 lecture, 1 ecriture : NkVulkanDevice.cpp:2474, mCaps.shaderFloat16 = true avec le commentaire // approximation. Le pilote n est JAMAIS interroge (pas de VK_KHR_shader_float16_int8), et NKSL sait emettre du half (NkSLTypes.h:297-300). Faux dans les deux sens : true non verifie sur Vulkan, false sur DX11/DX12 ou HLSL supporte half. Une supposition consignee comme mesure. Recommandation : abandonner (false).
 NkDeviceCaps::shaderInt16                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
-NkDeviceCaps::tessellationShaders            | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::tessellationShaders            | D2  | dette-datee     | A-DATER | D1. Examine le 23/08. 0 lecture, 4 ecritures (DX11:1740, DX12:3005, GL:1030 true en dur ; VK:2463 requete reelle). Les etages NK_TESS_CTRL/EVAL existent et patchControlPoints est honore par GL - mais il n existe PAS UN SEUL fichier .tesc ou .tese dans l arbre. Abandon : rien. Recommandation : vision-assumee (la seule du groupe D a en sortir).
 NkDeviceCaps::textureCompressionASTC         | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
-NkDeviceCaps::textureCompressionBC           | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkDeviceCaps::textureCompressionBC           | D2  | dette-datee     | A-DATER | D6. Examine le 23/08. 0 lecture, 4 ecritures (DX11:1747, DX12:3011, GL:1035, VK:2470 requete reelle). NK_BC1/BC3/BC5/BC7 existent dans NkGPUFormat (NkTypes.h:131-138) et DX11 les traduit (:1836-1840). Abandon : rien ne casse aujourd hui, mais c est le drapeau du groupe le plus susceptible d etre lu bientot - le premier chargeur de texture qui choisira entre BC et non-compresse posera cette question. Recommandation : implementee, si NkDeviceCaps est une API publique.
 NkDeviceCaps::textureCompressionETC2         | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
-NkDeviceCaps::timestampQueries               | D2  | dette-datee     | A-DATER | une des neuf : le drapeau lui-meme. Ecrit 4 fois, lu ZERO fois - personne ne le consulte avant d'appeler les quatre virtuelles creuses ci-dessus.
+NkDeviceCaps::timestampQueries               | D2  | dette-datee     | A-DATER | F1, et les cinq du chronometrage GPU se tranchent ENSEMBLE. Examine le 23/08. 0 lecture, 3 ecritures (DX12:3022, GL:1034 true en dur ; VK:2473 requete reelle). DX11 et Software ne l ecrivent pas. Abandon (false) : rien ne casse, personne ne le lit. Recommandation : abandonner.
 NkDeviceCaps::variableRateShading            | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkDispatchIndirectArgs::groupsX              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkFrameContext::frameNumber                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkGraphicsPipelineDesc::patchControlPoints   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkGraphicsPipelineDesc::subpass              | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkIBLConfig::brdfLUTSize                     | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
-NkIBLConfig::enabled                         | D2  | dette-datee     | A-DATER | une des neuf. Aucune occurrence de '.ibl.enabled' dans tout le depot : le drapeau qui active l'IBL n'est jamais consulte.
+NkIBLConfig::enabled                         | D2  | dette-datee     | A-DATER | B4. Examine le 23/08. 0 lecture, 0 ecriture : AUCUNE occurrence de '.ibl.enabled'. Les ONZE autres champs de NkIBLConfig sont lus par NkRendererImpl.cpp:355-380 - enabled est le seul trou. Abandon : rien. Recommandation : dater, echeance COURTE (c est un if dans une fonction qui lit deja les onze voisins).
 NkIBLConfig::ground                          | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkIBLConfig::hdrPath                         | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkIBLConfig::horizon                         | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkIBLConfig::skyTop                          | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
-NkIDevice::BeginTimestampQuery               | D1  | dette-datee     | A-DATER | une des neuf. Corps VIDE. mCaps.timestampQueries est mis a true par DX12, OpenGL et Vulkan : le moteur croit pouvoir chronometrer le GPU.
-NkIDevice::EndTimestampQuery                 | D1  | dette-datee     | A-DATER | une des neuf. Corps VIDE, appariee au meme drapeau que BeginTimestampQuery.
-NkIDevice::GetTimestampPeriodNs              | D1  | dette-datee     | A-DATER | une des neuf, et la plus dangereuse : rend 1.f en dur. 1.f est un nombre CREDIBLE, et tout calcul de duree base dessus rend un chiffre plausible et faux.
-NkIDevice::GetTimestampResults               | D1  | dette-datee     | A-DATER | une des neuf. Rend false en dur : l'appelant ne peut pas distinguer 'pas de resultat' de 'pas implemente'.
+NkIDevice::BeginTimestampQuery               | D1  | dette-datee     | A-DATER | F2, groupe du chronometrage GPU. Examine le 23/08. Corps VIDE, 0 surcharge dans les six backends, 0 appelant. Abandon : rien. Recommandation : abandonner, avec F1 et F3-F5.
+NkIDevice::EndTimestampQuery                 | D1  | dette-datee     | A-DATER | F3, groupe du chronometrage GPU. Examine le 23/08. Corps VIDE, 0 surcharge, 0 appelant. Abandon : rien. Recommandation : abandonner, avec F1, F2, F4, F5.
+NkIDevice::GetTimestampPeriodNs              | D1  | dette-datee     | A-DATER | F5, LA PLUS DANGEREUSE DES 24. Examine le 23/08. return 1.f en dur, 0 surcharge, 0 appelant. 1.f n est PAS une valeur d erreur : c est un nombre CREDIBLE. Tout calcul de duree base dessus rend un chiffre plausible, precis d apparence, et faux - la vraie valeur cote Vulkan est props.limits.timestampPeriod, qui ne vaut pas 1.0 partout. Recommandation : abandonner, et remplacer 1.f par une valeur qui ne peut pas se confondre avec une mesure - ce geste-la est independant de la date, et c est lui qui protege.
+NkIDevice::GetTimestampResults               | D1  | dette-datee     | A-DATER | F4, groupe du chronometrage GPU. Examine le 23/08. return false en dur, 0 surcharge, 0 appelant. Abandon : rien. Note de forme : false ne distingue pas pas-encore-pret de pas-implemente - un appelant correct reessaierait en boucle, pour toujours. Recommandation : abandonner.
 NkIDevice::arrayLayer                        | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkMappedMemory::depthPitch                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkPostConfig::bloomPasses                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkPostConfig::contrast                       | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
-NkPostConfig::dof                            | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkPostConfig::dof                            | D2  | dette-datee     | A-DATER | B5. Examine le 23/08. 0 lecture, 1 ecriture (ForCinematic(), :469) - et ForCinematic() a 0 appelant. Abandon : rien a l execution, mais il faut assumer que Shaders/PostProcess/DOF/ existe et qu aucune passe ne le monte (NkPostProcessStack ne construit que Tonemap, Bloom, SSAO, SSAOBlur, AutoExposure, TAA, FXAA). Recommandation : vision-assumee.
 NkPostConfig::dofAperture                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkPostConfig::dofFocusDist                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkPostConfig::filmGrain                      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkPostConfig::filmGrainStr                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
-NkPostConfig::motionBlur                     | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkPostConfig::motionBlur                     | D2  | dette-datee     | A-DATER | B6. Examine le 23/08. 0 lecture, 1 ecriture (ForCinematic(), :470), sans appelant. Meme reserve qu en B5 : les shaders MotionBlur GL et VK sont ecrits et versionnes en double, et rien ne les compile. Recommandation : vision-assumee.
 NkPostConfig::motionBlurShutter              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkPostConfig::ssaoSamples                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
-NkPostConfig::ssr                            | D2  | dette-datee     | A-DATER | une des neuf. 6 ecritures dont 2 '= true' dans le fichier meme, 0 lecture : activer les reflexions en espace ecran ne fait rien.
+NkPostConfig::ssr                            | D2  | dette-datee     | A-DATER | C3. Examine le 23/08. 0 lecture, 6 ecritures dont 4 executees (MultiStyle.cpp:274 true, Demo/main.cpp:342/371/390 false) plus ForArchviz() :489, appele par MultiStyle.cpp:263. Abandon : rien ne casse, mais ssr.frag.gl.glsl et ssr.frag.vk.glsl sont ecrits et aucune passe C++ ne les monte. Le plus avance des trois post-traitements creux. Recommandation : dater.
 NkRasterizerDesc::antialiasedLine            | D2  | vision-assumee  |         | non-examine - jamais-mentionne
-NkRenderPassDesc::hasResolve                 | D2  | dette-datee     | A-DATER | une des neuf. Ecrit par SetResolve(), lu nulle part : le resolve MSAA se configure et ne se produit pas.
-NkRendererConfig::debugOverlay               | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkRenderPassDesc::hasResolve                 | D2  | dette-datee     | A-DATER | B2. Examine le 23/08. 0 lecture, 1 ecriture (dans SetResolve(), NkDescs.h:620) - et SetResolve() a 0 appelant. Abandon : rien ne casse, mais c est acter que NKRHI ne sait pas resoudre un MSAA. Recommandation : dater, avec NkRendererConfig::msaaSamples et le correctif MSAA du chantier rendu - meme sujet.
+NkRendererConfig::debugOverlay               | D2  | dette-datee     | A-DATER | C1. Examine le 23/08. 0 lecture, 1 ecriture (ForEditor(), :534) - et son appelant est REEL : NK3DModeler/Viewport/NkViewport3D.cpp:726. NK3DModeler demande un overlay a chaque lancement et ne l obtient jamais ; aucun sous-systeme d overlay n existe. Abandon : rien ne casse. Recommandation : abandonner.
 NkRendererConfig::maxMeshes                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkRendererConfig::maxParticles               | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
-NkRendererConfig::msaaSamples                | D2  | dette-datee     | A-DATER | une des neuf. Regle le nombre d'echantillons MSAA ; aucune lecture dans un fichier nommant NkRendererConfig ni via une voie d'acces.
-NkRendererConfig::voxelAOEnabled             | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkRendererConfig::msaaSamples                | D2  | dette-datee     | A-DATER | E1. Examine le 23/08. 0 lecture ET 0 ecriture - pas une seule dans l arbre. ATTENTION AUX HOMONYMES : les msaaSamples reellement honores sont ceux de NkContextDesc/NkOpenGLDesc (NKCanvas, NKWindow) et de Noge::NkCamera ; les desc.opengl.msaaSamples = 4 des demos ne touchent PAS ce champ. Abandon : rien ne casse a l execution, mais c est un choix d architecture - on retire l unique point d entree entier documente du MSAA cote NKRenderer, que NkMsaaContractCheck:19 et NkMsaaDeviceCheck:215 designent nommement. Recommandation : dater, avec hasResolve et le correctif MSAA du chantier rendu (qui plafonne 3 et 7 au lieu de les refuser).
+NkRendererConfig::voxelAOEnabled             | D2  | dette-datee     | A-DATER | C2. Examine le 23/08. 0 lecture, 2 ecritures LIVREES (NkAnimaEditor/AnimBridge.cpp:691 false, Sandbox/Demo/main.cpp:214 true). LE COMMENTAIRE DU CHAMP EST FAUX AUJOURD HUI : il promet 'false = sous-systeme NON alloue (gratuit)', or NkRendererImpl.cpp:226 alloue INCONDITIONNELLEMENT - NkAnimaEditor demande l economie et la paie. Recommandation : dater ; a defaut, supprimer le commentaire de contrat le jour meme.
 NkRendererConfig::wireframe                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkSamplerDesc::borderColor                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkShaderStageDesc::dxilData                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
@@ -213,7 +222,7 @@ NkSwapchainDesc::depthFormat                 | D2  | vision-assumee  |         |
 NkSwapchainDesc::hdr                         | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkSwapchainDesc::imageCount                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkSwapchainDesc::samples                     | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
-NkSwapchainDesc::vsync                       | D2  | dette-datee     | A-DATER | non-examine - ecrit-jamais-lu ; un drapeau annonce true a du code, vision-assumee est donc interdit ici. L'echeance appartient a Rodolf.
+NkSwapchainDesc::vsync                       | D2  | dette-datee     | A-DATER | B3. Examine le 23/08. 0 lecture, 0 ecriture. Point d entree mort : NkIDevice::CreateSwapchain (NkIDevice.h:474) rend nullptr en dur, 0 surcharge, 0 appelant. Abandon : RIEN. Recommandation : vision-assumee. ET UN DEFAUT A PART : NkSwapchainDesc est declaree DEUX FOIS dans le meme namespace (NkDescs.h:871 et NkISwapchain.h:25) avec des defauts differents - invisible parce que l unique include de NkISwapchain.h, NkRHI.h:11, est en commentaire.
 NkVertexAttribute::format                    | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkVertexAttribute::location                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkVertexAttribute::semanticIdx               | D2  | vision-assumee  |         | non-examine - jamais-mentionne

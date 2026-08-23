@@ -632,6 +632,63 @@ L'épreuve **I** de `contre_epreuve_capacites.sh` mesure les deux sens : une
 dette `A-DATER` de plus → **CLIQUET ROMPU, code 4** ; le fichier sans directive
 de plafond → **code 2**, jamais un vert.
 
+### 📄 `CAPACITES_A_DATER.md` — de quoi trancher les 24 en dix minutes
+
+> **Le cliquet empêche le stock de grossir. Il ne le vide pas.** Et il ne se
+> vidait pas, pour une raison simple : *« les 24 dates »* ne dit à personne ce
+> qu'il faut décider. **Ce n'était pas la faute de Rodolf, c'était la faute de
+> la demande.**
+
+`CAPACITES_A_DATER.md` donne, pour **chacune** des 24 : ce que la capacité
+prétend faire **en une phrase lisible sans ouvrir le code**, le fichier et la
+ligne, le **nombre d'appelants réels — comptés, pas estimés** — et la colonne
+qui décide : **ce qui casse si on l'abandonne, ou « rien »**.
+
+Il est **trié par cette quatrième colonne**, du plus facile au plus difficile,
+et porte **une recommandation par ligne** (`implémenter` / `abandonner` /
+`dater`) : la réponse attendue est *oui* ou *non*, jamais une date inventée
+depuis rien.
+
+⚠️ **Le document ne date rien et ne touche pas au plafond.** Il ne modifie pas
+`config/capacites.list` — pour la raison écrite trois paragraphes plus haut :
+*un contrôle qui modifie sa propre donnée sans que personne ne le voie a cessé
+d'être un contrôle.*
+
+**Ce que la mesure a trouvé, et qui n'était pas prévu** (extraits) :
+
+- **`NkBlendAttachment::blendEnable` n'est PAS creux** : **6 lectures sur
+  5 backends**. D2 ne résout pas la voie d'accès quand le backend écrit
+  `auto &a = d.blend.attachments[i]` — le **type n'apparaît pas dans la ligne**.
+  **Quatrième fois de ce chantier qu'un instrument accuse le sujet à la place de
+  son propre montage.**
+- **`NkDeviceCaps` n'est pas une structure morte** : `GetCaps()` est appelé
+  **45 fois**, et `computeShaders`, `maxComputeGroupSize*`, `indirectDispatch`
+  **décident réellement**. Passer six des drapeaux à `false` ferait donc mentir
+  le rapport **dans l'autre sens** — ce n'est pas une sortie honnête, c'en est
+  une deuxième.
+- **`NkRendererConfig::voxelAOEnabled`** : le commentaire du champ promet
+  *« false = sous-système NON alloué (gratuit) »*. `NkRendererImpl.cpp:226`
+  alloue **inconditionnellement**. **NkAnimaEditor demande explicitement cette
+  économie et la paie.** Le contrat écrit est faux **aujourd'hui**, quoi qu'on
+  décide du champ.
+- **`NkSwapchainDesc` est déclarée deux fois** dans le même `namespace`, avec
+  des défauts **différents** (`imageCount` 3 vs 2, `colorFormat`, `samples`).
+  Ce serait une erreur de compilation — sauf que `NkISwapchain.h` n'est inclus
+  par personne : son unique `#include` (`NkRHI.h:11`) est **en commentaire**.
+  Le conflit ne se voit jamais.
+- **Une limite de portée à dire tout haut** : `ENTETES_D2` ne couvre que trois
+  en-têtes. `NkSLTargetCaps::geometryShaders` (`NkSLFeatures.h:34`) porte
+  **6 écritures et 0 lecture** — le même défaut, dans un fichier que le
+  détecteur **ne lit pas**. Son absence du rapport se lit « rien à signaler ».
+
+⚠️ **Et la mesure a commencé par me corriger moi.** La branche était
+**21 commits derrière `main`** au moment d'écrire ce document. Compter des
+appelants sur cette photo aurait produit des chiffres **crédibles et faux** —
+la leçon de la section *« il ne mesure QU'UNE référence »*, appliquée à son
+propre auteur. J'ai fusionné, **puis** compté. *(Contre-vérifié : les 17 comptes
+bruts sont identiques avant et après. Mais je ne pouvais pas le **savoir** avant
+de fusionner, et c'est exactement le point.)*
+
 ---
 
 ## D3 — ce que le C++ lie contre ce que les shaders échantillonnent
