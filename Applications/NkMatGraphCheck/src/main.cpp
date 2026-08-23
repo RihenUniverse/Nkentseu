@@ -1816,6 +1816,68 @@ static void CasLienQualifie() {
 						  sgApresVoyage && *sgApresVoyage == NkString("cond.vitesse_haute") &&
 						  h.LinkPropCount(id) == 3;
 
+	// ── ET L'ORDRE DES LIGNES NE DOIT RIEN VALOIR ───────────────────────
+	// 🔴 C'EST CE VOLET QUI MESURE LA TROISIEME PASSE, et il a fallu le
+	// decouvrir : la mutation qui supprime la passe (M42) ne mesurait PAS la
+	// dependance a l'ordre, elle mesurait « la qualification est-elle lue du
+	// tout ». Deux choses differentes, et la premiere est celle qui compte.
+	//
+	// On remonte donc toutes les lignes `lienp` / `liensg` AVANT les lignes
+	// `lien` qu'elles qualifient -- ce que ferait n'importe quel producteur
+	// autre que notre propre ecrivain. Le fichier doit charger A L'IDENTIQUE.
+	NkString remonte;
+	{
+		NkString qualifs, reste;
+		const char *q = t1.CStr();
+		while (q && *q) {
+			const char *fin = q;
+			while (*fin && *fin != '\n')
+				++fin;
+			NkString ligne;
+			for (const char *z = q; z < fin; ++z)
+				ligne.Append(*z);
+			const char *k1 = "lienp ";
+			const char *k2 = "liensg ";
+			bool estQ = ligne.Size() >= 6;
+			for (uint32 z = 0; estQ && z < 6; ++z)
+				if (ligne.CStr()[z] != k1[z])
+					estQ = false;
+			if (!estQ && ligne.Size() >= 7) {
+				estQ = true;
+				for (uint32 z = 0; estQ && z < 7; ++z)
+					if (ligne.CStr()[z] != k2[z])
+						estQ = false;
+			}
+			if (estQ) {
+				qualifs.Append(ligne);
+				qualifs.Append('\n');
+			} else {
+				reste.Append(ligne);
+				reste.Append('\n');
+			}
+			q = (*fin == '\n') ? fin + 1 : fin;
+		}
+		// l'en-tete doit rester en premier : on insere juste apres.
+		const char *rp = reste.CStr();
+		const char *finEntete = rp;
+		while (*finEntete && *finEntete != '\n')
+			++finEntete;
+		for (const char *z = rp; z <= finEntete && *z; ++z)
+			remonte.Append(*z);
+		remonte.Append(qualifs);
+		remonte.Append(finEntete && *finEntete ? finEntete + 1 : "");
+	}
+	NkNodeGraph ro;
+	NkString errOrdre;
+	const bool reluRemonte = ro.Deserialize(remonte.CStr(), &errOrdre);
+	const NkGraphValue *seuilRemonte = reluRemonte ? ro.FindLinkProp(id, "seuil") : nullptr;
+	const NkString *sgRemonte = reluRemonte ? ro.LinkSubgraph(id) : nullptr;
+	const bool ordreNeVautRien = reluRemonte && seuilRemonte && seuilRemonte->numbers.Size() > 0 &&
+								 seuilRemonte->numbers[0] == 0.9f && sgRemonte &&
+								 *sgRemonte == NkString("cond.vitesse_haute") && ro.LinkPropCount(id) == 3;
+	// et la perturbation doit avoir EU LIEU, sinon ce vert ne vaut rien
+	const bool perturbationReelle = !(remonte == t1);
+
 	// ── TEMOIN : un lien NU produit les memes octets qu'avant ────────────
 	// Sans lui, on ne saurait pas si la qualification pese sur les documents
 	// qui ne s'en servent pas.
@@ -1832,14 +1894,16 @@ static void CasLienQualifie() {
 	d = NkFormat("lien cree={0} | 3 reglages poses={1} la meme cle REMPLACE={2} relue={3} cle inconnue "
 				 "nullptr={4} | condition : vide au depart={5} lien inexistant nullptr={6} posee={7} relue={8} "
 				 "| ALLER-RETOUR identique={9} ({10} o) et tout a survecu={11} | TEMOIN lien nu : aucune ligne "
-				 "de qualification={12}",
+				 "de qualification={12} | ORDRE : qualifications remontees AVANT leurs liens={13}, charge a "
+				 "l identique={14}",
 				 e == NkLinkError::Ok ? 1 : 0, poses ? 1 : 0, remplace ? 1 : 0, relit ? 1 : 0,
 				 inconnueNulle ? 1 : 0, videAuDepart ? 1 : 0, lienInexistantNul ? 1 : 0, poseSg ? 1 : 0,
 				 sgRelu ? 1 : 0, identique ? 1 : 0, (uint32)t1.Size(), voyageOk ? 1 : 0,
-				 lienNuSansLigne ? 1 : 0);
+				 lienNuSansLigne ? 1 : 0, perturbationReelle ? 1 : 0, ordreNeVautRien ? 1 : 0);
 	Cas("exec/lien-qualifie",
 		e == NkLinkError::Ok && poses && remplace && relit && inconnueNulle && videAuDepart &&
-			lienInexistantNul && poseSg && sgRelu && identique && voyageOk && lienNuSansLigne,
+			lienInexistantNul && poseSg && sgRelu && identique && voyageOk && lienNuSansLigne &&
+			perturbationReelle && ordreNeVautRien,
 		d);
 }
 

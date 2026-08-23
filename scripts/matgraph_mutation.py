@@ -19,6 +19,13 @@ INSUFFISANTE -- elle comptait sur la vigilance. Elle est ici INSTRUMENTEE :
   GARDE 4 -- le compte d'erreurs de CONSTRUCTION se lit AVANT le banc. Un banc
              qui rend « 0 echec » sur un binaire perime ne mesure rien ; c'est
              la seule sortie qui ment sans qu'on puisse le voir.
+  GARDE 7 -- AUCUN CARACTERE HORS CP1252 DANS LES DESCRIPTIONS. Mesure le
+             2026-08-24 : un emoji dans un `attendu` a fait TOMBER `--liste`
+             sur `UnicodeEncodeError`, ce qui a rompu la chaine shell et
+             empeche un commit -- puis la campagne suivante a REFUSE de muter
+             sur un arbre sale. La garde 1 a bien joue son role, mais la cause
+             etait un caractere dans un texte d'aide. Un outil doit rester
+             lisible sur la console qui l'execute.
   GARDE 6 -- la construction se REJOUE avant d'accuser la mutation. Une
              construction qui echoue une fois sur deux accuse le LANCEUR, pas
              la mutation ; un verdict non reproductible est un verdict faux,
@@ -353,7 +360,21 @@ _MUTE_M41 = """			if (false)
 _ANCRE_M42 = """			for (uint32 passe = 0; passe < 3; ++passe) {"""
 _MUTE_M42 = """			for (uint32 passe = 0; passe < 2; ++passe) {"""
 
+
+# M43 : la qualification se lit en passe 1 (avec les references) au lieu de 2.
+# Elle remarche TANT QUE l'ecrivain place chaque `lienp` APRES son `lien` --
+# c'est la dependance a l'ORDRE, et seul un fichier reordonne la voit.
+_ANCRE_M43 = """			const bool qualif = (passe == 2);"""
+_MUTE_M43 = """			const bool qualif = (passe == 1);"""
+
 MUTATIONS = {
+	"M43": {
+		"quoi": "la qualification se lit en passe 1 (avec les references) -- dependance a l ORDRE retablie",
+		"cas": "exec/lien-qualifie",
+		"attendu": "ATTRAPEE PAR LE VOLET ORDRE SEULEMENT. Avec l ordre naturel de l ecrivain elle marche ; "
+				   "c est le fichier REORDONNE qui la fait tomber. C est la mutation que M42 pretendait etre.",
+		"edits": [(GRAPH_IO, _ANCRE_M43, _MUTE_M43)],
+	},
 	"M39": {
 		"quoi": "la qualification du lien n est plus ecrite dans le fichier",
 		"cas": "exec/lien-qualifie",
@@ -376,9 +397,10 @@ MUTATIONS = {
 	"M42": {
 		"quoi": "la qualification retombe en passe 2 -- la lecture redevient dependante de l ORDRE",
 		"cas": "exec/lien-qualifie",
-		"attendu": "ATTRAPEE ou SURVIVANTE : si elle SURVIT, c est que l ecrivain place deja chaque `lienp` "
-				   "apres son `lien` -- la dependance existe alors sans se voir, et il faut un cas qui "
-				   "REORDONNE le fichier pour l attraper. A lire, pas a supposer.",
+		"attendu": "ATTRAPEE -- mais ATTENTION, ELLE NE MESURE PAS CE QUE SON NOM ANNONCAIT. Supprimer la passe "
+				   "empeche la qualification d etre lue DU TOUT ; elle mesure donc « la qualification est-elle "
+				   "lue », pas « la lecture depend-elle de l ORDRE ». Les deux sont differentes, et la seconde "
+				   "est celle qui compte : c est M43 qui la mesure, avec le volet ORDRE du cas.",
 		"edits": [(GRAPH_IO, _ANCRE_M42, _MUTE_M42)],
 	},
 	"M38": {
