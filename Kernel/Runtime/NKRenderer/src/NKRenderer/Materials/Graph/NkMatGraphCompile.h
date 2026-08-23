@@ -2938,7 +2938,15 @@ namespace nkentseu {
 						s.Append("    vec3 ");
 						detail::PutNom(s, n->id, "vector");
 						s.Append(" = vec3(");
-						s.Append(c ? c->varying : "vUV");
+						// ⚠️ AUCUN REPLI PLAUSIBLE ICI. Le canal a ete valide par la
+							// passe de refus ; ce ternaire n'est qu'un filet. Mais ecrire
+							// `vUV` quand `c` est nul rendrait une image CREDIBLE ET FAUSSE
+							// -- exactement ce que la decision du rang interdit, et la forme
+							// de mensonge la plus chere a debusquer. On emet donc un nom qui
+							// n'existe dans AUCUN backend : le shader echoue a la
+							// compilation en PORTANT le mot, au lieu de rendre un pixel que
+							// personne ne mettrait en doute.
+							s.Append(c ? c->varying : "nkCANAL_UV_NON_VALIDE");
 						s.Append(", 0.0);\n");
 					} else if (t == NkString(NK_MN_ATTRIBUTE)) {
 						const NkGraphValue *pa = g.FindProp(n->id, NK_MPROP_ATTRIBUT);
@@ -2946,7 +2954,8 @@ namespace nkentseu {
 						s.Append("    vec3 ");
 						detail::PutNom(s, n->id, "color");
 						s.Append(" = ");
-						s.Append(c ? c->varying : "vColor");
+						// Meme raison qu'au-dessus : pas de repli plausible.
+							s.Append(c ? c->varying : "nkATTRIBUT_NON_VALIDE");
 						s.Append(".rgb;\n");
 					} else if (t == NkString(NK_MN_OUTPUT)) {
 						// ── LE PUITS : ombrage puis ecriture ────────────────
