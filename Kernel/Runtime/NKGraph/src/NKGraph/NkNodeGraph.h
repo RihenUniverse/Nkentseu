@@ -175,10 +175,48 @@ namespace nkentseu {
 				NkGraphValue value;
 		};
 
+		// ═════════════════════════════════════════════════════════════════════
+		// LA FAMILLE D'UNE PRISE — UN AXE SEPARE DU TYPE
+		// ═════════════════════════════════════════════════════════════════════
+		// § 20.2 de la specification du chantier design. Trois chantiers y sont
+		// arrives par des chemins qui ne se connaissaient pas : les types
+		// composes, le mode etats, et la planche d'execution.
+		//
+		//   UN TYPE dit CE QUI PASSE.   UNE FAMILLE dit COMMENT CA SE BRANCHE.
+		//
+		// 🔴 LE PIEGE, ET IL RESSEMBLE A UNE BONNE IDEE. Le registre de types est
+		// PLAT : on peut y enregistrer un type « exec » et brancher exec-sur-exec
+		// des aujourd'hui, sans toucher au coeur. CA MARCHERAIT -- `Accepts()`
+		// serait content -- et c'est exactement ce qui le rend dangereux :
+		//   l'arite d'une entree resterait « une seule source » ;
+		//   l'arite d'une sortie resterait « autant qu'on veut » ;
+		//   un rebouclage resterait refuse comme un cycle ;
+		// et RIEN ne le signalerait. Une solution qui fonctionne assez pour qu'on
+		// l'adopte, et pas assez pour qu'elle serve.
+		//
+		// 📌 `Engine/Noge/.../NkBlueprint.h` porte deja
+		// `NkPinPrimitiveType { Exec, Float, Int, ... }` : le besoin y etait vu,
+		// mais `Exec` y est MELANGE aux types -- c'est le piege ci-dessus, ecrit.
+		// Il doit etre realigne sur cet axe, pas recopie.
+		//
+		// ⚠️ `Data = 0` EXPRES : toute prise existante garde son sens sans etre
+		// touchee, et un fichier ancien se relit inchange.
+		enum class NkSocketFamily : uint8 {
+			Data = 0, ///< une valeur circule
+			Exec = 1, ///< un ORDRE de passage circule : rien n'est transporte
+		};
+
+		const char *NkSocketFamilyName(NkSocketFamily f);
+
 		struct NkSocket {
 				NkString name;					  ///< CLE stable, jamais un libelle
 				NkTypeId type = NK_TYPE_INVALID;
 				NkSocketDir dir = NkSocketDir::Input;
+				// ⚠️ LA FAMILLE N'EST PAS UN TYPE. Elle ne dit pas ce qui passe,
+				// elle dit comment ca se branche -- et elle commande QUATRE
+				// comportements : compatibilite, arite d'entree, arite de sortie,
+				// acyclicite. Voir NkSocketFamily.
+				NkSocketFamily family = NkSocketFamily::Data;
 				// VALEUR D'UNE ENTREE NON CONNECTEE — Base Color, Roughness. Le
 				// compilateur en a besoin exactement quand un lien manque.
 				//
@@ -256,6 +294,8 @@ namespace nkentseu {
 		//     INDEX — l'ordre des lignes `sock`. Encore LU, jamais plus ecrit.
 		// 2 : ils la designent par son NOM. Voir NkNodeGraphIO.inl pour la mesure
 		//     qui a decide, et pour ce que la version 2 garantit.
+		// 4 : les prises portent leur FAMILLE (donnee / execution), sur une
+		//     ligne `sockf` ecrite SEULEMENT quand la famille n'est pas `Data`.
 		// 3 : les types COMPOSITES portent leur definition -- genre, membres
 		//     ordonnes, et une EMPREINTE DE STRUCTURE. Un fichier sans type
 		//     composite est identique a un fichier de version 2 : la ligne `type`
@@ -264,7 +304,7 @@ namespace nkentseu {
 		// ⚠️ ELLE VIT ICI ET PAS DANS LE .inl : c'est la version du MODELE, pas
 		// un detail de l'ecrivain. Un lecteur qui veut savoir ce qu'il sait lire
 		// ne devrait pas avoir a ouvrir le fichier de serialisation.
-		static const uint32 NK_NKGRAPH_VERSION = 3;
+		static const uint32 NK_NKGRAPH_VERSION = 4;
 
 		struct NkLink {
 				NkLinkId id = 0;
@@ -286,7 +326,12 @@ namespace nkentseu {
 			SameNode,		   ///< un noeud ne se connecte pas a lui-meme
 			DirectionMismatch, ///< sortie -> entree, jamais autre chose
 			TypeMismatch,
-			WouldCycle, ///< la connexion fermerait une boucle
+			WouldCycle, ///< la connexion fermerait une boucle DE DONNEE
+			// ⚠️ JAMAIS `TypeMismatch` POUR UN CROISEMENT DE FAMILLES. Les deux
+			// prises peuvent porter le MEME type : appeler ca un desaccord de
+			// type enverrait l'auteur chercher une conversion qui n'existe pas.
+			FamilyMismatch,			 ///< exec branche sur donnee, ou l'inverse
+			ExecOutputAlreadyBound,	 ///< une instruction n'a qu'UNE suite
 		};
 
 		const char *NkLinkErrorName(NkLinkError e);
@@ -396,7 +441,10 @@ namespace nkentseu {
 
 				// ── NOEUDS ───────────────────────────────────────────────────────
 				NkNodeId AddNode(const char *type, const char *label = nullptr);
-				bool AddSocket(NkNodeId n, const char *name, NkTypeId type, NkSocketDir dir);
+				// `family` par defaut a `Data` : tous les appelants existants
+				// gardent leur sens sans etre touches.
+				bool AddSocket(NkNodeId n, const char *name, NkTypeId type, NkSocketDir dir,
+							   NkSocketFamily family = NkSocketFamily::Data);
 				// Supprime le noeud ET toutes ses connexions. Laisser des liens
 				// pendants serait pire qu'une suppression refusee : le graphe
 				// paraitrait valide et s'evaluerait faux.
@@ -443,7 +491,13 @@ namespace nkentseu {
 				bool Disconnect(NkLinkId link);
 				uint32 LinkCount() const;
 				const NkLink *LinkAt(uint32 i) const;
-				const NkLink *IncomingOf(NkNodeId n, int32 socketIndex) const; ///< nullptr si l'entree est libre
+				const NkLink *IncomingOf(NkNodeId n, int32 socketIndex) const;
+
+				// La famille d'un LIEN est celle de ses prises -- un lien qui
+				// croiserait les familles n'existe pas, `Connect` le refuse.
+				// Rendue par le lien parce que tout le monde en a besoin :
+				// l'acyclicite, le tri, l'arite, et le fichier.
+				NkSocketFamily LinkFamily(const NkLink &l) const; ///< nullptr si l'entree est libre
 
 				// ── ORDRE D'EVALUATION ───────────────────────────────────────────
 				// Tri topologique : les producteurs avant les consommateurs. Renvoie

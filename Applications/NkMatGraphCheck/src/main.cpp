@@ -1431,6 +1431,226 @@ static void CasFichierPriseInconnueRefusee() {
 // ⚠️ LE TEMOIN QUI COMPTE, ET C'EST LUI QUI PAIE TOUT LE RESTE : deux fichiers
 // declarant LE MEME NOM QUALIFIE avec des CONTENUS DIFFERENTS doivent etre
 // refuses EN SE NOMMANT, jamais relies en silence.
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LA FAMILLE DE PRISE — DONNEE contre EXECUTION (§ 20.2 de la specification)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ LES QUATRE CONTROLES SONT ECRITS AVANT LE CODE, comme le § 20.6 l'exige.
+//
+// 🔴 MAIS ILS N'ONT PAS PU ETRE « VERIFIES ROUGES » AVANT, ET C'EST UNE LIMITE
+// QU'IL FAUT DIRE AU LIEU DE LA MAQUILLER. J'avais d'abord ecrit ici qu'ils
+// l'avaient ete ; c'etait faux. Ils emploient `NkSocketFamily`, un `AddSocket`
+// a cinq arguments, `FamilyMismatch` et `ExecOutputAlreadyBound` -- AUCUN
+// n'existe avant l'implementation. Sans elle, ils ne ROUGISSENT pas : ils NE
+// COMPILENT PAS.
+//
+// « Ne compile pas » est une preuve plus FAIBLE que « rougit » : elle dit que le
+// cas parle d'une API neuve, pas qu'il mesure le bon comportement. Un cas qui
+// appellerait la nouvelle API et n'assertait rien d'utile ne compilerait pas non
+// plus, et passerait pour valide.
+//
+// ✅ CE QUI TIENT LIEU DE PREUVE A LA PLACE : une MUTATION par comportement
+// (M33 a M37). Chacune retire UNE des quatre lignes du tableau du § 20.2 et
+// doit faire rougir le controle qui la vise. C'est plus fort que « rouge
+// avant », parce que ca mesure chaque comportement SEPAREMENT au lieu de
+// mesurer leur absence en bloc.
+//
+// 🔴 LE PIEGE QUE LA SPECIFICATION NOMME, ET QU'ON NE PREND PAS. Le registre de
+// types est PLAT : on peut y enregistrer un type « exec » et brancher
+// exec-sur-exec des aujourd'hui, sans toucher au coeur. CA MARCHERAIT --
+// `Accepts()` serait content -- et c'est exactement ce qui le rend dangereux :
+// l'arite resterait celle de la donnee, le cycle resterait refuse, et RIEN ne
+// le signalerait.
+//
+//   UN TYPE dit CE QUI PASSE.  UNE FAMILLE dit COMMENT CA SE BRANCHE.
+//
+// Ce sont deux axes, et les confondre donne une solution qui fonctionne assez
+// pour qu'on l'adopte, et pas assez pour qu'elle serve.
+
+// Monte un noeud portant les deux familles en entree et en sortie.
+static NkNodeId PoseNoeudMixte(NkNodeGraph &g, NkTypeId tReel, const char *type) {
+	const NkNodeId n = g.AddNode(type, type);
+	g.AddSocket(n, "avant", tReel, NkSocketDir::Input, NkSocketFamily::Exec);
+	g.AddSocket(n, "apres", tReel, NkSocketDir::Output, NkSocketFamily::Exec);
+	g.AddSocket(n, "valeur", tReel, NkSocketDir::Input, NkSocketFamily::Data);
+	g.AddSocket(n, "resultat", tReel, NkSocketDir::Output, NkSocketFamily::Data);
+	return n;
+}
+
+// ── CONTROLE 1 : L'ARITE CROISEE ───────────────────────────────────────────
+// C'est le controle qui distingue vraiment les deux familles, parce qu'il porte
+// sur le COMPORTEMENT et non sur un drapeau. Lire `socket.family` prouverait
+// que le champ existe ; ici on prouve qu'il SERT.
+static void CasExecAriteCroisee() {
+	NkNodeGraph g;
+	const NkTypeId r = g.RegisterType("reel");
+	const NkNodeId a = PoseNoeudMixte(g, r, "essai.a");
+	const NkNodeId b = PoseNoeudMixte(g, r, "essai.b");
+	const NkNodeId c = PoseNoeudMixte(g, r, "essai.c");
+
+	// ENTREE d'EXECUTION : plusieurs sources tiennent -- dix chemins peuvent
+	// mener au meme noeud.
+	const NkLinkError e1 = g.Connect(a, "apres", c, "avant");
+	const NkLinkError e2 = g.Connect(b, "apres", c, "avant");
+	uint32 versAvant = 0;
+	for (uint32 i = 0; i < g.LinkCount(); ++i) {
+		const NkLink *l = g.LinkAt(i);
+		const NkNode *n = g.Find(c);
+		if (l && l->alive && l->toNode == c && n && l->toSocket >= 0 &&
+			l->toSocket < (int32)n->sockets.Size() && n->sockets[(uint32)l->toSocket].name == NkString("avant"))
+			++versAvant;
+	}
+	const bool deuxExecTiennent = e1 == NkLinkError::Ok && e2 == NkLinkError::Ok && versAvant == 2;
+
+	// ENTREE de DONNEE : la seconde REMPLACE -- comportement inchange.
+	const NkLinkError d1 = g.Connect(a, "resultat", c, "valeur");
+	const NkLinkError d2 = g.Connect(b, "resultat", c, "valeur");
+	uint32 versValeur = 0;
+	for (uint32 i = 0; i < g.LinkCount(); ++i) {
+		const NkLink *l = g.LinkAt(i);
+		const NkNode *n = g.Find(c);
+		if (l && l->alive && l->toNode == c && n && l->toSocket >= 0 &&
+			l->toSocket < (int32)n->sockets.Size() && n->sockets[(uint32)l->toSocket].name == NkString("valeur"))
+			++versValeur;
+	}
+	const bool donneeRemplace = d1 == NkLinkError::Ok && d2 == NkLinkError::Ok && versValeur == 1;
+
+	// SORTIE d'EXECUTION : une seule -- une instruction n'a qu'une suite.
+	NkNodeGraph h;
+	const NkTypeId r2 = h.RegisterType("reel");
+	const NkNodeId x = PoseNoeudMixte(h, r2, "essai.x");
+	const NkNodeId y = PoseNoeudMixte(h, r2, "essai.y");
+	const NkNodeId z = PoseNoeudMixte(h, r2, "essai.z");
+	const NkLinkError s1 = h.Connect(x, "apres", y, "avant");
+	const NkLinkError s2 = h.Connect(x, "apres", z, "avant");
+	const bool sortieExecUnique = s1 == NkLinkError::Ok && s2 == NkLinkError::ExecOutputAlreadyBound;
+
+	// SORTIE de DONNEE : autant qu'on veut -- inchange.
+	const NkLinkError t1 = h.Connect(x, "resultat", y, "valeur");
+	const NkLinkError t2 = h.Connect(x, "resultat", z, "valeur");
+	const bool sortieDonneeMultiple = t1 == NkLinkError::Ok && t2 == NkLinkError::Ok;
+
+	NkString d;
+	d = NkFormat("ENTREE exec : 2 sources tiennent={0} ({1} liens) | ENTREE donnee : la 2e remplace={2} ({3}) | "
+				 "SORTIE exec : la 2e refusee par {4}={5} | SORTIE donnee : les 2 tiennent={6}",
+				 deuxExecTiennent ? 1 : 0, versAvant, donneeRemplace ? 1 : 0, versValeur,
+				 NkString(NkLinkErrorName(s2)), sortieExecUnique ? 1 : 0, sortieDonneeMultiple ? 1 : 0);
+	Cas("exec/arite-croisee", deuxExecTiennent && donneeRemplace && sortieExecUnique && sortieDonneeMultiple, d);
+}
+
+// ── CONTROLE 2 : LE REFUS CROISE, ET IL DOIT SE NOMMER ─────────────────────
+// ⚠️ `FamilyMismatch`, JAMAIS `TypeMismatch`. Les deux prises portent ici le
+// MEME type : si le refus s'appelait « type », l'auteur chercherait une
+// conversion qui n'existe pas et ne trouverait jamais. Le message est ce qui
+// distingue un refus compris d'un refus subi.
+static void CasExecRefusCroiseNomme() {
+	NkNodeGraph g;
+	const NkTypeId r = g.RegisterType("reel");
+	const NkNodeId a = PoseNoeudMixte(g, r, "essai.a");
+	const NkNodeId b = PoseNoeudMixte(g, r, "essai.b");
+
+	const NkLinkError execVersDonnee = g.Connect(a, "apres", b, "valeur");
+	const NkLinkError donneeVersExec = g.Connect(a, "resultat", b, "avant");
+	const bool lesDeuxNommes =
+		execVersDonnee == NkLinkError::FamilyMismatch && donneeVersExec == NkLinkError::FamilyMismatch;
+	// TEMOIN : les memes prises, MEME FAMILLE, passent. Sans lui, un Connect qui
+	// refuserait tout rendrait ce cas vert.
+	const bool memeFamillePasse = g.Connect(a, "apres", b, "avant") == NkLinkError::Ok &&
+								  g.Connect(a, "resultat", b, "valeur") == NkLinkError::Ok;
+	// et le type est le MEME des deux cotes : le refus ne peut pas etre un type
+	const NkNode *na = g.Find(a);
+	const NkNode *nb = g.Find(b);
+	const bool memeType = na && nb &&
+						  na->sockets[(uint32)na->FindSocket("apres", NkSocketDir::Output)].type ==
+							  nb->sockets[(uint32)nb->FindSocket("valeur", NkSocketDir::Input)].type;
+
+	NkString d;
+	d = NkFormat("exec->donnee={0} | donnee->exec={1} | les deux sont FamilyMismatch={2} | TEMOIN meme famille "
+				 "passe={3} | et le TYPE est identique des deux cotes={4} (donc ce n est pas un TypeMismatch)",
+				 NkString(NkLinkErrorName(execVersDonnee)), NkString(NkLinkErrorName(donneeVersExec)),
+				 lesDeuxNommes ? 1 : 0, memeFamillePasse ? 1 : 0, memeType ? 1 : 0);
+	Cas("exec/refus-croise-nomme", lesDeuxNommes && memeFamillePasse && memeType, d);
+}
+
+// ── CONTROLE 3 : LE CYCLE D'EXECUTION EST LEGITIME ─────────────────────────
+// 🔴 C'EST LE CONTROLE QUI PROUVE QUE `TopoSort` NE REGARDE PLUS QUE LA DONNEE.
+// Une boucle d'execution est un programme normal ; l'ordre d'execution est un
+// CHEMIN PARCOURU, pas un tri calcule. Le meme motif en donnee reste un cycle.
+static void CasExecCycleLegitime() {
+	// rebouclage d'EXECUTION : accepte
+	NkNodeGraph g;
+	const NkTypeId r = g.RegisterType("reel");
+	const NkNodeId a = PoseNoeudMixte(g, r, "essai.a");
+	const NkNodeId b = PoseNoeudMixte(g, r, "essai.b");
+	const NkLinkError e1 = g.Connect(a, "apres", b, "avant");
+	const NkLinkError e2 = g.Connect(b, "apres", a, "avant"); // referme la boucle
+	const bool cycleExecAccepte = e1 == NkLinkError::Ok && e2 == NkLinkError::Ok;
+	// et le tri topologique tient toujours : il ne voit que la donnee
+	NkVector<NkNodeId> ordre;
+	const bool triTientMalgreLaBoucle = g.TopoSort(ordre) && ordre.Size() == 2;
+
+	// le MEME motif en DONNEE : refuse
+	NkNodeGraph h;
+	const NkTypeId r2 = h.RegisterType("reel");
+	const NkNodeId x = PoseNoeudMixte(h, r2, "essai.x");
+	const NkNodeId y = PoseNoeudMixte(h, r2, "essai.y");
+	const NkLinkError d1 = h.Connect(x, "resultat", y, "valeur");
+	const NkLinkError d2 = h.Connect(y, "resultat", x, "valeur");
+	const bool cycleDonneeRefuse = d1 == NkLinkError::Ok && d2 == NkLinkError::WouldCycle;
+
+	NkString d;
+	d = NkFormat("cycle d EXECUTION accepte={0} ({1}) | le tri topologique tient malgre la boucle={2} ({3} "
+				 "noeuds) | le MEME motif en DONNEE refuse={4} ({5})",
+				 cycleExecAccepte ? 1 : 0, NkString(NkLinkErrorName(e2)), triTientMalgreLaBoucle ? 1 : 0,
+				 (uint32)ordre.Size(), cycleDonneeRefuse ? 1 : 0, NkString(NkLinkErrorName(d2)));
+	Cas("exec/cycle-execution-legitime-cycle-donnee-refuse",
+		cycleExecAccepte && triTientMalgreLaBoucle && cycleDonneeRefuse, d);
+}
+
+// ── CONTROLE 4 : L'ALLER-RETOUR, OCTET POUR OCTET ──────────────────────────
+// ⚠️ C'EST LUI QUI ATTRAPE LE § 20.4, et le seul qui le puisse : si les liens
+// etaient adresses par INDICE, une prise inseree AU MILIEU produirait un
+// fichier VALIDE ET FAUX, et seuls les octets le diraient.
+//
+// 📌 Ce controle passe deja, parce que le format est passe au NOM le 23/08 --
+// le besoin 3 du § 20 etait fait avant d'etre demande. Il reste ecrit : c'est
+// lui qui empechera d'y revenir.
+static void CasExecAllerRetourOctetPourOctet() {
+	NkNodeGraph g;
+	const NkTypeId r = g.RegisterType("reel");
+	const NkNodeId a = PoseNoeudMixte(g, r, "essai.a");
+	const NkNodeId b = PoseNoeudMixte(g, r, "essai.b");
+	g.Connect(a, "apres", b, "avant");
+	g.Connect(a, "resultat", b, "valeur");
+	// une prise inseree AU MILIEU de la liste : elle decale tous les index qui
+	// suivent, et c'est exactement ce que le format ne doit plus voir.
+	g.AddSocket(a, "insere_au_milieu", r, NkSocketDir::Input, NkSocketFamily::Data);
+
+	NkString t1;
+	g.Serialize(t1);
+	NkNodeGraph h;
+	NkString err;
+	const bool relu = h.Deserialize(t1.CStr(), &err);
+	NkString t2;
+	h.Serialize(t2);
+	const bool identique = relu && (t1 == t2) && t1.Size() > 0;
+
+	// et les DEUX familles ont survecu au voyage
+	const NkNode *nb = h.Find(b);
+	const int32 iAvant = nb ? nb->FindSocket("avant", NkSocketDir::Input) : -1;
+	const int32 iValeur = nb ? nb->FindSocket("valeur", NkSocketDir::Input) : -1;
+	const bool famillesRelues = nb && iAvant >= 0 && iValeur >= 0 &&
+								nb->sockets[(uint32)iAvant].family == NkSocketFamily::Exec &&
+								nb->sockets[(uint32)iValeur].family == NkSocketFamily::Data;
+
+	NkString d;
+	d = NkFormat("relu={0} | ecrire->relire->reecrire IDENTIQUE octet pour octet={1} ({2} octets) | les deux "
+				 "familles ont survecu={3} | {4}",
+				 relu ? 1 : 0, identique ? 1 : 0, (uint32)t1.Size(), famillesRelues ? 1 : 0, err);
+	Cas("exec/aller-retour-octet-pour-octet", identique && famillesRelues, d);
+}
+
 static void CasTypesEspaceEtEmpreinte() {
 	// ── 1. LE NOM QUALIFIE : sa forme est verifiee, jamais resolue ───────
 	const bool formesBonnes = NkNodeGraph::NomQualifieValide("Rihen::Difficulte") &&
@@ -7138,6 +7358,10 @@ int main() {
 	CasFichierMigrationVersion1();
 	CasTypesEspaceEtEmpreinte();
 	CasTypesDeuxFichiersMemeNom();
+	CasExecAriteCroisee();
+	CasExecRefusCroiseNomme();
+	CasExecCycleLegitime();
+	CasExecAllerRetourOctetPourOctet();
 
 	// ── valeurs : defauts de prise et proprietes de noeud ────────────────
 	CasDefautDePrise();

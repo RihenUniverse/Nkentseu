@@ -387,6 +387,24 @@ namespace nkentseu {
 					out.Append(' ');
 					out.Append(s.name);
 					out.Append('\n');
+					// ⚠️ LA FAMILLE S'ECRIT SUR UNE LIGNE A PART, ET SEULEMENT SI ELLE
+					// N'EST PAS `Data`. La ligne `sock` ne bouge donc pas d'un octet pour
+					// un document sans execution -- meme choix que `typec` : ce qui
+					// n'existe pas dans un document ne doit pas peser sur son fichier,
+					// et un fichier ancien se relit inchange.
+					//
+					// La prise se designe par son NOM et son SENS, jamais par son rang :
+					// c'est la regle du format depuis la version 2, et elle vaut aussi
+					// pour ce qui QUALIFIE une prise, pas seulement pour ce qui la vise.
+					if (s.family != NkSocketFamily::Data) {
+						out.Append("sockf ");
+						detail::PutU32(out, n.id);
+						out.Append(s.dir == NkSocketDir::Output ? " 1 " : " 0 ");
+						detail::PutU32(out, (uint32)s.family);
+						out.Append(' ');
+						out.Append(s.name);
+						out.Append('\n');
+					}
 					// ⚠️ LE DEFAUT SUIT SA PRISE ET LA DESIGNE PAR SON NOM ET SON SENS
 					// (version 2). Il portait son INDEX en version 1, et c'etait le
 					// meme defaut que les liens : reordonner les `sock` posait la
@@ -580,6 +598,22 @@ namespace nkentseu {
 					NkNode *n = Find(nid);
 					if (n)
 						n->sockets.PushBack(s);
+				} else if (detail::GraphStrEq(kw, "sockf")) {
+					// La FAMILLE d'une prise deja creee par sa ligne `sock`. Lue en
+					// passe MATIERE : les liens, en passe 2, en dependent pour leur
+					// arite.
+					const uint32 nid = detail::TokenU32(p);
+					const uint32 dir = detail::TokenU32(p);
+					const uint32 fam = detail::TokenU32(p);
+					NkString nom;
+					detail::RestOfLine(p, nom);
+					NkNode *n = Find(nid);
+					if (n) {
+						const int32 idx =
+							n->FindSocket(nom.CStr(), dir ? NkSocketDir::Output : NkSocketDir::Input);
+						if (idx >= 0)
+							n->sockets[(uint32)idx].family = (NkSocketFamily)fam;
+					}
 				} else if (detail::GraphStrEq(kw, "prop")) {
 					const uint32 nid = detail::TokenU32(p);
 					NkString name;

@@ -25,6 +25,10 @@ namespace nkentseu {
 			}
 		} // namespace detail
 
+		inline const char *NkSocketFamilyName(NkSocketFamily f) {
+			return f == NkSocketFamily::Exec ? "execution" : "donnee";
+		}
+
 		inline const char *NkLinkErrorName(NkLinkError e) {
 			switch (e) {
 				case NkLinkError::Ok:
@@ -39,6 +43,10 @@ namespace nkentseu {
 					return "sens-invalide";
 				case NkLinkError::TypeMismatch:
 					return "type-incompatible";
+				case NkLinkError::FamilyMismatch:
+					return "familles-incompatibles";
+				case NkLinkError::ExecOutputAlreadyBound:
+					return "sortie-execution-deja-reliee";
 				case NkLinkError::WouldCycle:
 					return "cycle";
 			}
@@ -396,7 +404,8 @@ namespace nkentseu {
 			return n;
 		}
 
-		inline bool NkNodeGraph::AddSocket(NkNodeId id, const char *name, NkTypeId type, NkSocketDir dir) {
+		inline bool NkNodeGraph::AddSocket(NkNodeId id, const char *name, NkTypeId type, NkSocketDir dir,
+										   NkSocketFamily family) {
 			NkNode *n = Find(id);
 			if (!n || !name || type == NK_TYPE_INVALID)
 				return false;
@@ -406,6 +415,7 @@ namespace nkentseu {
 			s.name = NkString(name);
 			s.type = type;
 			s.dir = dir;
+			s.family = family;
 			n->sockets.PushBack(s);
 			return true;
 		}
@@ -451,6 +461,26 @@ namespace nkentseu {
 			return nullptr;
 		}
 
+		// ⚠️ CE PARCOURS NE SUIT QUE LES LIENS DE FAMILLE **DONNEE**, et c'est la
+		// difference qui fait exister la famille EXECUTION.
+		//
+		// Un rebouclage d'execution est un programme parfaitement normal -- une
+		// boucle. L'ordre d'execution est un CHEMIN PARCOURU a l'execution, pas
+		// un tri calcule a l'avance ; le refuser interdirait la moitie de ce
+		// qu'un graphe d'execution sert a ecrire. Un cycle de DONNEE, lui, reste
+		// une valeur qui se definit par elle-meme : il n'a pas de sens et il
+		// reste refuse.
+		inline NkSocketFamily NkNodeGraph::LinkFamily(const NkLink &l) const {
+			// On lit la prise SOURCE. Les deux extremites s'accordent forcement --
+			// `Connect` refuse le croisement -- donc l'une des deux suffit, et
+			// choisir la source rend la reponse stable meme si la cible a ete
+			// retiree entre-temps.
+			const NkNode *n = Find(l.fromNode);
+			if (!n || l.fromSocket < 0 || l.fromSocket >= (int32)n->sockets.Size())
+				return NkSocketFamily::Data;
+			return n->sockets[(uint32)l.fromSocket].family;
+		}
+
 		inline bool NkNodeGraph::WouldCreateCycle(NkNodeId from, NkNodeId to) const {
 			// Existe-t-il DEJA un chemin de `to` vers `from` ? Si oui, ajouter
 			// from -> to fermerait la boucle. Parcours en profondeur avec garde.
@@ -475,7 +505,7 @@ namespace nkentseu {
 					continue;
 				seen.PushBack(cur);
 				for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i)
-					if (mLinks[i].alive && mLinks[i].fromNode == cur)
+					if (mLinks[i].alive && mLinks[i].fromNode == cur && LinkFamily(mLinks[i]) == NkSocketFamily::Data)
 						stack.PushBack(mLinks[i].toNode);
 			}
 			return false;
@@ -504,15 +534,50 @@ namespace nkentseu {
 					return NkLinkError::DirectionMismatch;
 				return NkLinkError::UnknownSocket;
 			}
-			if (!Accepts(b->sockets[(uint32)di].type, a->sockets[(uint32)si].type))
+			// ── LA FAMILLE SE COMPARE **AVANT** LE TYPE ──────────────────────
+			// ⚠️ L'ORDRE EST LA MOITIE DE LA REGLE. Deux prises de familles
+			// differentes portent tres souvent le MEME type -- dans le banc,
+			// « apres » (exec) et « valeur » (donnee) sont toutes deux `reel`.
+			// Comparer les types d'abord rendrait `Ok` sur un croisement, ou,
+			// si les types differaient, rendrait `TypeMismatch` : l'auteur
+			// chercherait une conversion, et il n'y en a pas a trouver.
+			const NkSocketFamily fa = a->sockets[(uint32)si].family;
+			const NkSocketFamily fb = b->sockets[(uint32)di].family;
+			if (fa != fb)
+				return NkLinkError::FamilyMismatch;
+
+			// ⚠️ UN FIL D'EXECUTION NE TRANSPORTE RIEN, donc son type ne veut rien
+			// dire et on ne le compare pas. Le comparer imposerait aux auteurs de
+			// donner le meme type bidon a toutes les prises d'execution du
+			// catalogue -- une contrainte inventee, que rien ne justifierait.
+			if (fa == NkSocketFamily::Data &&
+				!Accepts(b->sockets[(uint32)di].type, a->sockets[(uint32)si].type))
 				return NkLinkError::TypeMismatch;
-			if (WouldCreateCycle(from, to))
+
+			// ── ACYCLICITE : LA DONNEE SEULE ─────────────────────────────────
+			// Un rebouclage d'execution est une BOUCLE, pas une erreur.
+			if (fa == NkSocketFamily::Data && WouldCreateCycle(from, to))
 				return NkLinkError::WouldCycle;
 
-			// Une ENTREE n'accepte qu'une source : l'ancienne est remplacee.
-			for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i)
-				if (mLinks[i].alive && mLinks[i].toNode == to && mLinks[i].toSocket == di)
-					mLinks[i].alive = false;
+			// ── ARITE DE SORTIE ──────────────────────────────────────────────
+			// DONNEE : autant de liens qu'on veut, une valeur se lit partout.
+			// EXECUTION : UN SEUL -- une instruction n'a qu'une suite. Deux
+			// suites seraient un branchement, et un branchement est un NOEUD, pas
+			// un cablage ; l'accepter en silence rendrait l'ordre d'execution
+			// dependant de l'ordre d'insertion des liens.
+			if (fa == NkSocketFamily::Exec)
+				for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i)
+					if (mLinks[i].alive && mLinks[i].fromNode == from && mLinks[i].fromSocket == si)
+						return NkLinkError::ExecOutputAlreadyBound;
+
+			// ── ARITE D'ENTREE ───────────────────────────────────────────────
+			// DONNEE : une seule source, l'ancienne est remplacee -- inchange.
+			// EXECUTION : PLUSIEURS sources tiennent. Dix chemins peuvent mener
+			// au meme noeud, et remplacer serait perdre neuf branches sans un mot.
+			if (fb == NkSocketFamily::Data)
+				for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i)
+					if (mLinks[i].alive && mLinks[i].toNode == to && mLinks[i].toSocket == di)
+						mLinks[i].alive = false;
 
 			NkLink l;
 			l.id = mNextLink++;
@@ -537,6 +602,12 @@ namespace nkentseu {
 		}
 
 		// ── ORDRE D'EVALUATION ──────────────────────────────────────────────────
+		// ⚠️ NE COMPTE QUE LES LIENS DE FAMILLE **DONNEE**, pour la meme raison que
+		// `WouldCreateCycle` : l'ordre d'EVALUATION se deduit des dependances de
+		// valeur. Un fil d'execution ne cree aucune dependance de valeur -- il dit
+		// « puis », pas « a besoin de ». Compter les fils d'execution ferait
+		// echouer le tri sur toute boucle, c'est-a-dire sur tout graphe
+		// d'execution reel.
 		inline bool NkNodeGraph::TopoSort(NkVector<NkNodeId> &out) const {
 			out.Clear();
 			NkVector<NkNodeId> ids;
@@ -555,7 +626,7 @@ namespace nkentseu {
 				return -1;
 			};
 			for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i) {
-				if (!mLinks[i].alive)
+				if (!mLinks[i].alive || LinkFamily(mLinks[i]) != NkSocketFamily::Data)
 					continue;
 				const int32 t = indexOf(mLinks[i].toNode);
 				if (t >= 0)
@@ -576,7 +647,8 @@ namespace nkentseu {
 					done[i] = 1;
 					emitted++;
 					for (uint32 k = 0; k < (uint32)mLinks.Size(); ++k) {
-						if (!mLinks[k].alive || mLinks[k].fromNode != ids[i])
+						if (!mLinks[k].alive || mLinks[k].fromNode != ids[i] ||
+							LinkFamily(mLinks[k]) != NkSocketFamily::Data)
 							continue;
 						const int32 t = indexOf(mLinks[k].toNode);
 						if (t >= 0 && indeg[(uint32)t] > 0)
