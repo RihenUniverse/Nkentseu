@@ -53,14 +53,280 @@ namespace nkentseu {
 		}
 
 		// ── TYPES ───────────────────────────────────────────────────────────────
+		// ── L'EMPREINTE DE STRUCTURE ─────────────────────────────────────────
+		//
+		// ⚠️ FNV-1a EN LARGEUR FIXE, ET C'EST TOUT L'INTERET. Le depot porte deja
+		// un FNV-1a -- `NkHash<NkString>` dans NKContainers -- et le reutiliser
+		// ici serait FAUX : il travaille en `usize`, donc 8 octets sur une
+		// machine 64 bits et 4 sur une 32 bits, avec des constantes differentes.
+		// Une empreinte ECRITE DANS UN FICHIER ne peut pas dependre de la
+		// machine qui l'ecrit : un graphe sauve en 64 bits serait refuse au
+		// chargement en 32 bits, pour une divergence qui n'existe pas.
+		//
+		// 📌 Regle 5 par un bout inhabituel : la convention EXISTE en dessous, et
+		// il faut quand meme ne pas la prendre -- parce que mon usage
+		// (persistance) a une exigence que le sien (table de hachage en memoire)
+		// n'a pas. Aller voir ce qui existe ne veut pas dire s'en servir ; ca
+		// veut dire savoir POURQUOI on s'en ecarte.
+		namespace detail {
+			// ⚠️ ECRITURE DE NOMBRE LOCALE, ET LA RAISON EST UN ORDRE D'INCLUSION.
+			// `detail::PutU32` existe -- dans NkNodeGraphIO.inl, qui est inclus
+			// APRES ce fichier. S'en servir ici compilerait ou non selon l'ordre
+			// des inclusions chez l'appelant, ce qui est la pire forme de
+			// dependance : elle marche jusqu'au jour ou quelqu'un reordonne.
+			inline void NombreDansTexte(NkString &s, uint32 v) {
+				char b[16];
+				uint32 n = 0;
+				if (v == 0)
+					b[n++] = '0';
+				while (v > 0 && n < 15) {
+					b[n++] = (char)('0' + (v % 10));
+					v /= 10;
+				}
+				for (uint32 i = 0; i < n; ++i)
+					s.Append(b[n - 1 - i]);
+			}
+
+			inline void EmpreinteAvale(uint64 &h, const char *s) {
+				if (!s)
+					return;
+				for (const char *p = s; *p; ++p) {
+					h ^= (uint64)(uint8)(*p);
+					h *= 1099511628211ULL; // FNV-1a 64, largeur FIXE
+				}
+			}
+
+			// La forme canonique : le genre, puis chaque membre DANS L'ORDRE.
+			//
+			// ⚠️ L'ORDRE FAIT PARTIE DE L'EMPREINTE, et ce n'est pas un detail :
+			// les valeurs d'une enumeration sont POSITIONNELLES. Permuter deux
+			// enumerateurs ne renomme pas, ca change ce que valent les donnees
+			// deja sauvees. Une empreinte insensible a l'ordre laisserait passer
+			// exactement la corruption la plus silencieuse.
+			//
+			// Les separateurs ne sont pas decoratifs : sans eux, {"ab","c"} et
+			// {"a","bc"} auraient la meme empreinte.
+			inline uint64 EmpreinteDeStructure(NkTypeKind kind, const NkTypeMember *m, uint32 n) {
+				uint64 h = 14695981039346656037ULL; // FNV-1a 64, decalage initial
+				char g[2] = {(char)('0' + (int)kind), 0};
+				EmpreinteAvale(h, g);
+				EmpreinteAvale(h, "|");
+				for (uint32 i = 0; i < n; ++i) {
+					EmpreinteAvale(h, m[i].name.CStr());
+					EmpreinteAvale(h, ":");
+					EmpreinteAvale(h, m[i].type.CStr());
+					EmpreinteAvale(h, ";");
+				}
+				return h;
+			}
+			// ⚠️ « LES DEUX NE CORRESPONDENT PAS » NE SUFFIT PAS. Un refus qui ne
+			// dit pas QUOI force a ouvrir deux fichiers et a les comparer a la
+			// main -- et sur une enumeration de trente entrees, personne ne le
+			// fait correctement. On nomme donc la PREMIERE divergence, dans
+			// l'ordre ou quelqu'un la chercherait : le genre, puis le nombre de
+			// membres, puis le premier membre qui differe.
+			//
+			// On s'arrete au PREMIER ecart plutot que de tout lister : au-dela,
+			// les differences suivantes sont souvent des consequences du
+			// decalage, et une liste de vingt lignes se lit moins bien qu'une.
+			inline NkString DecrisDivergence(const NkVector<NkTypeMember> &a, NkTypeKind ka,
+											 const NkTypeMember *b, uint32 nb, NkTypeKind kb) {
+				NkString q;
+				if (ka != kb) {
+					q.Append("le genre differe : ");
+					q.Append(NkTypeKindName(ka));
+					q.Append(" ici, ");
+					q.Append(NkTypeKindName(kb));
+					q.Append(" la");
+					return q;
+				}
+				const uint32 na = (uint32)a.Size();
+				const uint32 n = na < nb ? na : nb;
+				for (uint32 i = 0; i < n; ++i) {
+					if (!(a[i].name == b[i].name)) {
+						q.Append("le membre ");
+						NombreDansTexte(q, i);
+						q.Append(" s'appelle « ");
+						q.Append(a[i].name);
+						q.Append(" » ici et « ");
+						q.Append(b[i].name);
+						q.Append(" » la");
+						return q;
+					}
+					if (!(a[i].type == b[i].type)) {
+						q.Append("le membre « ");
+						q.Append(a[i].name);
+						q.Append(" » porte le type « ");
+						q.Append(a[i].type.Size() ? a[i].type : NkString("(sans objet)"));
+						q.Append(" » ici et « ");
+						q.Append(b[i].type.Size() ? b[i].type : NkString("(sans objet)"));
+						q.Append(" » la");
+						return q;
+					}
+				}
+				if (na != nb) {
+					// Le cas `Rihen::Difficulte` : meme debut, un membre en plus.
+					q.Append(na < nb ? "il manque " : "il y a en trop ");
+					NombreDansTexte(q, na < nb ? (nb - na) : (na - nb));
+					q.Append(" membre(s) -- ");
+					NombreDansTexte(q, na);
+					q.Append(" ici, ");
+					NombreDansTexte(q, nb);
+					q.Append(" la");
+					const NkTypeMember *sup = (na < nb) ? &b[na] : &a[na < nb ? 0 : nb];
+					q.Append(" ; le premier en plus est « ");
+					q.Append(sup->name);
+					q.Append(" »");
+					return q;
+				}
+				// Meme genre, memes membres, empreintes differentes : impossible
+				// par construction. On le dit au lieu de rendre un message vide.
+				return NkString("les empreintes different alors que genre et membres concordent -- "
+								"incoherence interne du registre, a signaler");
+			}
+
+		} // namespace detail
+
+		inline const char *NkTypeKindName(NkTypeKind k) {
+			switch (k) {
+				case NkTypeKind::Leaf:
+					return "feuille";
+				case NkTypeKind::Enum:
+					return "enumeration";
+				case NkTypeKind::Struct:
+					return "structure";
+				case NkTypeKind::Union:
+					return "union";
+			}
+			return "?";
+		}
+
+		inline bool NkNodeGraph::NomQualifieValide(const char *n) {
+			if (!n || !*n)
+				return false;
+			// Un segment : lettre ou souligne, puis lettres/chiffres/souligne.
+			// Les segments se separent par `::`. Ni segment vide, ni `::` final.
+			const char *p = n;
+			for (;;) {
+				const bool debutOk = (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || *p == '_';
+				if (!debutOk)
+					return false;
+				++p;
+				while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_')
+					++p;
+				if (*p == 0)
+					return true;
+				if (p[0] != ':' || p[1] != ':')
+					return false;
+				p += 2;
+			}
+		}
+
+		inline void NkNodeGraph::SepareNomQualifie(const char *n, NkString *outEspace, NkString *outSimple) {
+			if (outEspace)
+				*outEspace = NkString("");
+			if (outSimple)
+				*outSimple = NkString(n ? n : "");
+			if (!n)
+				return;
+			int32 dernier = -1;
+			for (int32 i = 0; n[i]; ++i)
+				if (n[i] == ':' && n[i + 1] == ':')
+					dernier = i;
+			if (dernier < 0)
+				return;
+			NkString esp, simple;
+			for (int32 i = 0; i < dernier; ++i)
+				esp.Append(n[i]);
+			for (const char *p = n + dernier + 2; *p; ++p)
+				simple.Append(*p);
+			if (outEspace)
+				*outEspace = esp;
+			if (outSimple)
+				*outSimple = simple;
+		}
+
 		inline NkTypeId NkNodeGraph::RegisterType(const char *name) {
 			const NkTypeId existing = FindType(name);
 			if (existing != NK_TYPE_INVALID)
 				return existing; // idempotent : deux consommateurs peuvent declarer le meme
 			if (mTypeNames.Empty())
 				mTypeNames.PushBack(NkString("")); // l'index 0 reste « invalide »
+			while (mTypeDefs.Size() < mTypeNames.Size())
+				mTypeDefs.PushBack(TypeDef());
 			mTypeNames.PushBack(NkString(name ? name : ""));
+			mTypeDefs.PushBack(TypeDef()); // feuille : pas d'empreinte, pas zero
 			return (NkTypeId)(mTypeNames.Size() - 1);
+		}
+
+		inline NkTypeId NkNodeGraph::RegisterCompositeType(const char *name, NkTypeKind kind,
+														   const NkTypeMember *members, uint32 count,
+														   NkString *outErreur) {
+			if (outErreur)
+				*outErreur = NkString("");
+			auto refuse = [&](const NkString &q) {
+				if (outErreur)
+					*outErreur = q;
+				return NK_TYPE_INVALID;
+			};
+			if (!name || !*name)
+				return refuse(NkString("type composite sans nom"));
+			if (kind == NkTypeKind::Leaf)
+				return refuse(NkString("un type composite ne peut pas etre declare « feuille » : une feuille "
+									   "n'a pas de membres, et son nom EST sa definition"));
+
+			const uint64 emp = detail::EmpreinteDeStructure(kind, members, count);
+			const NkTypeId existant = FindType(name);
+			if (existant != NK_TYPE_INVALID) {
+				// ⚠️ IDEMPOTENT SI IDENTIQUE, REFUS NOMME SINON. Ecraser ferait
+				// dependre le sens du graphe de l'ORDRE d'enregistrement -- deux
+				// consommateurs, deux definitions, et le dernier gagne en
+				// silence. C'est le cas `Rihen::Difficulte` de la decision.
+				const TypeDef &d = mTypeDefs[existant];
+				if (d.aEmpreinte && d.empreinte == emp)
+					return existant;
+				NkString q("le type « ");
+				q.Append(name);
+				q.Append(" » est deja declare avec une AUTRE definition -- ");
+				q.Append(detail::DecrisDivergence(d.members, d.kind, members, count, kind));
+				return refuse(q);
+			}
+
+			if (mTypeNames.Empty())
+				mTypeNames.PushBack(NkString(""));
+			while (mTypeDefs.Size() < mTypeNames.Size())
+				mTypeDefs.PushBack(TypeDef());
+			mTypeNames.PushBack(NkString(name));
+			TypeDef d;
+			d.kind = kind;
+			for (uint32 i = 0; i < count; ++i)
+				d.members.PushBack(members[i]);
+			d.empreinte = emp;
+			d.aEmpreinte = true;
+			mTypeDefs.PushBack(d);
+			return (NkTypeId)(mTypeNames.Size() - 1);
+		}
+
+		inline NkTypeKind NkNodeGraph::TypeKind(NkTypeId t) const {
+			return t < (NkTypeId)mTypeDefs.Size() ? mTypeDefs[t].kind : NkTypeKind::Leaf;
+		}
+
+		inline bool NkNodeGraph::TypeFingerprint(NkTypeId t, uint64 *out) const {
+			if (t >= (NkTypeId)mTypeDefs.Size() || !mTypeDefs[t].aEmpreinte)
+				return false; // FEUILLE : pas d'empreinte. Pas une empreinte nulle.
+			if (out)
+				*out = mTypeDefs[t].empreinte;
+			return true;
+		}
+
+		inline uint32 NkNodeGraph::TypeMemberCount(NkTypeId t) const {
+			return t < (NkTypeId)mTypeDefs.Size() ? (uint32)mTypeDefs[t].members.Size() : 0;
+		}
+
+		inline const NkTypeMember *NkNodeGraph::TypeMemberAt(NkTypeId t, uint32 i) const {
+			if (t >= (NkTypeId)mTypeDefs.Size() || i >= (uint32)mTypeDefs[t].members.Size())
+				return nullptr;
+			return &mTypeDefs[t].members[i];
 		}
 
 		inline NkTypeId NkNodeGraph::FindType(const char *name) const {

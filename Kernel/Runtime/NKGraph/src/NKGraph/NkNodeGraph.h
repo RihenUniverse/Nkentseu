@@ -50,6 +50,61 @@ namespace nkentseu {
 		// sait seulement que deux sockets de meme identifiant sont compatibles.
 		// C'est ce qui lui permet de servir les materiaux et la modelisation sans
 		// connaitre ni les textures ni les maillages.
+		// ═════════════════════════════════════════════════════════════════════
+		// L'IDENTITE D'UN TYPE : LE NOM QUALIFIE, ET L'EMPREINTE DE STRUCTURE
+		// ═════════════════════════════════════════════════════════════════════
+		// Decision de Rodolf, 2026-08-23 : « on fait comme en C++, et si possible
+		// avec des espaces de noms et des portees. » Adoptee -- et completee,
+		// parce que les espaces de noms SEULS ne suffisent pas.
+		//
+		// 🔴 LE CAS QUI LE PROUVE :
+		//
+		//     graphe A :  Rihen::Difficulte { Facile, Normal, Difficile }
+		//     graphe B :  Rihen::Difficulte { Facile, Normal, Difficile, Expert }
+		//
+		// Meme espace de noms, meme nom, CONTENU DIFFERENT. Le nom les declare
+		// identiques ; ils ne le sont pas. On brancherait un fil de l'un a
+		// l'autre SANS RIEN DIRE -- exactement le defaut du lien par indice que
+		// la version 2 du format vient de retirer, transpose sur les types.
+		//
+		// ⚠️ POURQUOI LE C++ N'A PAS CE PROBLEME ET NOUS SI : le C++ a un
+		// EDITEUR DE LIENS, qui refuse deux definitions differentes du meme nom.
+		// UN GRAPHE DE NOEUDS N'A AUCUNE ETAPE DE LIAISON -- les graphes sont
+		// ecrits separement, sauves, et charges a l'execution par une
+		// application qui n'a jamais vu l'autre. La garantie que le C++ obtient
+		// gratuitement, il faut ici la CONSTRUIRE.
+		//
+		//   le NOM QUALIFIE (`espace::nom`) repond « LEQUEL »
+		//                                    -> il regle les collisions
+		//   l'EMPREINTE DE STRUCTURE repond  « EST-CE ENCORE LE MEME
+		//                                      QU'A LA SAUVEGARDE »
+		//
+		// ⚠️ ET L'EMPREINTE NE CONCERNE QUE LES TYPES QUI PORTENT UNE CHARGE
+		// UTILE. Un type feuille (`reel`, `booleen`) n'en a pas besoin : SON NOM
+		// EST SA DEFINITION. Lui en donner une obligerait a inventer un contenu
+		// a quelque chose qui n'en a pas -- et c'est la regle 3 : « rien » ne se
+		// represente pas par « zero ». Une feuille n'a PAS d'empreinte ;
+		// `TypeFingerprint` rend `false`, il ne rend pas 0.
+		enum class NkTypeKind : uint8 {
+			Leaf = 0,  ///< son nom EST sa definition : ni membres, ni empreinte
+			Enum,	   ///< enumerateurs ORDONNES -- l'ordre est le sens
+			Struct,	   ///< champs nommes et types
+			Union,	   ///< memes membres qu'une structure, un seul vivant
+		};
+
+		const char *NkTypeKindName(NkTypeKind k);
+
+		// Un membre d'un type composite.
+		struct NkTypeMember {
+				NkString name; ///< nom du membre ou de l'enumerateur
+				// ⚠️ VIDE POUR UN ENUMERATEUR, et ce n'est pas un oubli : un
+				// enumerateur ne porte pas de type, il EST une valeur. Le vide
+				// se lit ici comme « sans objet », et le `kind` du type dit
+				// lequel des deux sens s'applique -- sans lui, on ne saurait
+				// pas distinguer « pas de type » de « type oublie ».
+				NkString type;
+		};
+
 		using NkTypeId = uint32;
 		static const NkTypeId NK_TYPE_INVALID = 0;
 
@@ -281,6 +336,34 @@ namespace nkentseu {
 				NkTypeId FindType(const char *name) const;
 				const NkString *TypeName(NkTypeId t) const;
 
+				// ── TYPES COMPOSITES : CEUX QUI PORTENT UNE CHARGE UTILE ─────
+				// Enregistre un type dont la STRUCTURE fait partie de l'identite.
+				// Idempotent SI la structure est identique ; en cas de conflit,
+				// rend NK_TYPE_INVALID et renseigne `outErreur` en NOMMANT ce qui
+				// differe -- jamais un ecrasement silencieux, qui ferait dependre
+				// le sens du graphe de l'ordre d'enregistrement.
+				NkTypeId RegisterCompositeType(const char *name, NkTypeKind kind, const NkTypeMember *members,
+											   uint32 count, NkString *outErreur = nullptr);
+
+				NkTypeKind TypeKind(NkTypeId t) const;
+				// `false` pour une FEUILLE -- elle n'a pas d'empreinte, elle n'en
+				// a pas une qui vaut zero. Regle 3.
+				bool TypeFingerprint(NkTypeId t, uint64 *out) const;
+				uint32 TypeMemberCount(NkTypeId t) const;
+				const NkTypeMember *TypeMemberAt(NkTypeId t, uint32 i) const;
+
+				// ── LES ESPACES DE NOMS ──────────────────────────────────────
+				// Un nom qualifie s'ecrit `espace::sous_espace::nom`. Le coeur ne
+				// fait que VERIFIER la forme : il ne resout rien, ne cherche pas
+				// dans un espace englobant, et n'a pas de `using`. Une resolution
+				// implicite ferait qu'un meme fichier changerait de sens selon
+				// l'espace ouvert au moment du chargement.
+				static bool NomQualifieValide(const char *n);
+				// Rend la partie « espace » (vide si le nom n'est pas qualifie) et
+				// la partie simple. Utilitaire de PRESENTATION -- le coeur compare
+				// toujours le nom ENTIER.
+				static void SepareNomQualifie(const char *n, NkString *outEspace, NkString *outSimple);
+
 				// Conversion IMPLICITE autorisee : `from` peut alimenter `to`.
 				// Declaree par le consommateur (ex. un flottant alimente un vecteur).
 				// Le coeur ne l'invente jamais — deviner une conversion produirait des
@@ -396,6 +479,18 @@ namespace nkentseu {
 				NkVector<NkNode> mNodes;
 				NkVector<NkLink> mLinks;
 				NkVector<NkString> mTypeNames; ///< index 0 reserve = invalide
+				// Definition des types COMPOSITES, indexee comme `mTypeNames`.
+				// Une feuille y porte `kind = Leaf`, aucun membre, `aEmpreinte`
+				// faux. C'est ce drapeau -- et pas une empreinte a zero -- qui
+				// distingue « ce type n'a pas de structure » de « sa structure se
+				// resume a rien ».
+				struct TypeDef {
+						NkTypeKind kind = NkTypeKind::Leaf;
+						NkVector<NkTypeMember> members;
+						uint64 empreinte = 0;
+						bool aEmpreinte = false;
+				};
+				NkVector<TypeDef> mTypeDefs;
 				NkVector<uint64> mConversions; ///< (from << 32) | to, DIRIGEE
 				NkNodeId mNextNode = 1;
 				NkLinkId mNextLink = 1;
