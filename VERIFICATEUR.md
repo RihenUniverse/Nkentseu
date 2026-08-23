@@ -222,6 +222,22 @@ habituellement. C'est un défaut qui traverse le filet entier par construction.
    ```
    `i/` c'est l'index, `w/` la copie de travail. Les deux doivent dire `lf`.
 
+   ⚠️ **Et ça s'est produit, mesuré le 23/08** : après la fusion de `main`,
+   `config/bancs.list` rendait `i/lf  w/crlf  attr/text eol=lf`. **L'index et
+   l'attribut disaient `lf` ; le fichier sur le disque était en CRLF.** Un outil
+   Windows l'avait réécrit après la sortie de caisse.
+
+   Ce qui rend le cas instructif, c'est ce qu'il ne déclenche **pas** :
+   `git diff` est **vide**, `git hash-object` rend **exactement** le blob de
+   `HEAD` — git n'a jamais rien vu, parce que le filtre `eol` normalise avant de
+   comparer. **Aucun diff, aucune revue, aucun commit n'aurait pu l'attraper.**
+   Seul `git ls-files --eol` le dit, et c'est précisément pourquoi la
+   vérification est cette commande-là et pas une lecture du `.gitattributes`.
+
+   *(Sans conséquence ici — les `awk` des deux scripts font `sub(/\r$/, "", ligne)`.
+   Mais la parade vit dans le **parseur**, pas dans le fichier : elle protège ces
+   deux scripts-ci, et rien d'autre qui lirait ces `.list` un jour.)*
+
 3. **Le même raisonnement vaut pour toute règle qui agit entre le dépôt et le
    disque** : filtres `clean`/`smudge`, `ident`, `export-subst`, LFS. Toutes
    transforment le fichier **après** que le diff a été calculé.
