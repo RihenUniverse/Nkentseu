@@ -1651,6 +1651,108 @@ static void CasExecAllerRetourOctetPourOctet() {
 	Cas("exec/aller-retour-octet-pour-octet", identique && famillesRelues, d);
 }
 
+
+// ── LE PIEGE DU § 20.2, MESURE AU LIEU D'ETRE CRU ──────────────────────────
+//
+// 🔴 LA SPECIFICATION DIT : « on peut enregistrer un type `exec` et brancher
+// exec-sur-exec des aujourd'hui. CA MARCHERAIT, et c'est exactement ce qui le
+// rend dangereux. » Ce cas le VERIFIE, dans les deux sens.
+//
+// Pourquoi le mesurer alors qu'on a choisi l'autre voie : parce qu'un piege
+// decrit se transmet mal. Le prochain qui voudra « faire simple » retrouvera
+// tout seul l'idee du type `exec`, essaiera, verra que ca marche, et n'aura
+// aucune raison de se mefier -- sauf si un cas lui montre EXACTEMENT ou ca
+// casse. Un avertissement dans un commentaire n'aurait pas cette force.
+static void CasExecLePiegeDuTypeExec() {
+	// La voie du piege : `exec` enregistre comme un TYPE, prises en famille
+	// Data (puisqu'on n'a rien change au coeur, dans cette hypothese).
+	NkNodeGraph g;
+	const NkTypeId tExec = g.RegisterType("exec");
+	const NkTypeId tReel = g.RegisterType("reel");
+	auto pose = [&](const char *nom) {
+		const NkNodeId n = g.AddNode(nom, nom);
+		g.AddSocket(n, "avant", tExec, NkSocketDir::Input);	 // famille Data !
+		g.AddSocket(n, "apres", tExec, NkSocketDir::Output); // famille Data !
+		g.AddSocket(n, "valeur", tReel, NkSocketDir::Input);
+		return n;
+	};
+	const NkNodeId a = pose("piege.a");
+	const NkNodeId b = pose("piege.b");
+	const NkNodeId c = pose("piege.c");
+
+	// ✅ CE QUI MARCHE, ET C'EST TOUT LE PROBLEME : exec-sur-exec est accepte.
+	const NkLinkError branche = g.Connect(a, "apres", b, "avant");
+	const bool caMarche = branche == NkLinkError::Ok;
+	// et le croisement est refuse... mais par le MAUVAIS motif.
+	const NkLinkError croise = g.Connect(a, "apres", b, "valeur");
+	const bool refusePourLaMauvaiseRaison = croise == NkLinkError::TypeMismatch;
+
+	// 🔴 ET VOICI LES TROIS LIGNES DU TABLEAU QUI RESTENT FAUSSES :
+
+	// (1) l'arite d'ENTREE reste celle de la donnee : la 2e source REMPLACE,
+	//     et huit chemins sur dix disparaissent sans un mot.
+	g.Connect(a, "apres", c, "avant");
+	g.Connect(b, "apres", c, "avant");
+	uint32 versC = 0;
+	for (uint32 i = 0; i < g.LinkCount(); ++i) {
+		const NkLink *l = g.LinkAt(i);
+		if (l && l->alive && l->toNode == c)
+			++versC;
+	}
+	const bool ariteEntreeFausse = versC == 1; // il en faudrait DEUX
+
+	// (2) l'arite de SORTIE reste celle de la donnee : deux suites acceptees.
+	const bool ariteSortieFausse = g.LinkCount() > 0; // a et b ont chacun tire
+	NkNodeGraph h;
+	const NkTypeId hExec = h.RegisterType("exec");
+	const NkNodeId x = h.AddNode("piege.x", "x");
+	const NkNodeId y = h.AddNode("piege.y", "y");
+	const NkNodeId z = h.AddNode("piege.z", "z");
+	h.AddSocket(x, "apres", hExec, NkSocketDir::Output);
+	h.AddSocket(y, "avant", hExec, NkSocketDir::Input);
+	h.AddSocket(z, "avant", hExec, NkSocketDir::Input);
+	const bool deuxSuitesAcceptees =
+		h.Connect(x, "apres", y, "avant") == NkLinkError::Ok &&
+		h.Connect(x, "apres", z, "avant") == NkLinkError::Ok; // il faudrait un REFUS
+
+	// (3) le rebouclage d'execution est refuse comme un cycle de donnee.
+	NkNodeGraph k;
+	const NkTypeId kExec = k.RegisterType("exec");
+	const NkNodeId p = k.AddNode("piege.p", "p");
+	const NkNodeId q = k.AddNode("piege.q", "q");
+	k.AddSocket(p, "avant", kExec, NkSocketDir::Input);
+	k.AddSocket(p, "apres", kExec, NkSocketDir::Output);
+	k.AddSocket(q, "avant", kExec, NkSocketDir::Input);
+	k.AddSocket(q, "apres", kExec, NkSocketDir::Output);
+	k.Connect(p, "apres", q, "avant");
+	const NkLinkError boucle = k.Connect(q, "apres", p, "avant");
+	const bool boucleRefuseeAtort = boucle == NkLinkError::WouldCycle;
+
+	// ── ET LA VOIE CHOISIE, SUR LE MEME MOTIF, FAIT LES QUATRE ──────────
+	// TEMOIN INDISPENSABLE : sans lui, ce cas prouverait seulement que le piege
+	// existe, pas que la famille le resout.
+	NkNodeGraph bon;
+	const NkTypeId br = bon.RegisterType("reel");
+	const NkNodeId ba = PoseNoeudMixte(bon, br, "bon.a");
+	const NkNodeId bb = PoseNoeudMixte(bon, br, "bon.b");
+	const bool laFamilleResout = bon.Connect(ba, "apres", bb, "avant") == NkLinkError::Ok &&
+								 bon.Connect(bb, "apres", ba, "avant") == NkLinkError::Ok &&
+								 bon.Connect(ba, "apres", bb, "valeur") == NkLinkError::FamilyMismatch;
+
+	NkString d;
+	d = NkFormat("LE PIEGE : exec-sur-exec par le TYPE marche={0} | mais le croisement se nomme « {1} » au lieu "
+				 "de familles-incompatibles={2} | arite d ENTREE FAUSSE ({3} lien au lieu de 2)={4} | deux "
+				 "SUITES acceptees a tort={5} | rebouclage refuse a tort ({6})={7} | TEMOIN : la FAMILLE fait "
+				 "les quatre={8}",
+				 caMarche ? 1 : 0, NkString(NkLinkErrorName(croise)), refusePourLaMauvaiseRaison ? 1 : 0, versC,
+				 ariteEntreeFausse ? 1 : 0, deuxSuitesAcceptees ? 1 : 0, NkString(NkLinkErrorName(boucle)),
+				 boucleRefuseeAtort ? 1 : 0, laFamilleResout ? 1 : 0);
+	Cas("exec/le-piege-du-type-exec",
+		caMarche && refusePourLaMauvaiseRaison && ariteEntreeFausse && deuxSuitesAcceptees &&
+			boucleRefuseeAtort && laFamilleResout && ariteSortieFausse,
+		d);
+}
+
 static void CasTypesEspaceEtEmpreinte() {
 	// ── 1. LE NOM QUALIFIE : sa forme est verifiee, jamais resolue ───────
 	const bool formesBonnes = NkNodeGraph::NomQualifieValide("Rihen::Difficulte") &&
@@ -7362,6 +7464,7 @@ int main() {
 	CasExecRefusCroiseNomme();
 	CasExecCycleLegitime();
 	CasExecAllerRetourOctetPourOctet();
+	CasExecLePiegeDuTypeExec();
 
 	// ── valeurs : defauts de prise et proprietes de noeud ────────────────
 	CasDefautDePrise();
