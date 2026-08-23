@@ -196,6 +196,17 @@ namespace nkentseu {
 		// PAS — les lignes `def` designent la prise par son index elles aussi.
 		// Regle 5 dans sa forme la plus couteuse : la regle et sa violation
 		// cohabitent dans le meme module.
+		// ── LA VERSION DU FORMAT `.nkgraph` ──────────────────────────────────
+		// 1 : les liens et les valeurs par defaut designent leur prise par son
+		//     INDEX — l'ordre des lignes `sock`. Encore LU, jamais plus ecrit.
+		// 2 : ils la designent par son NOM. Voir NkNodeGraphIO.inl pour la mesure
+		//     qui a decide, et pour ce que la version 2 garantit.
+		//
+		// ⚠️ ELLE VIT ICI ET PAS DANS LE .inl : c'est la version du MODELE, pas
+		// un detail de l'ecrivain. Un lecteur qui veut savoir ce qu'il sait lire
+		// ne devrait pas avoir a ouvrir le fichier de serialisation.
+		static const uint32 NK_NKGRAPH_VERSION = 2;
+
 		struct NkLink {
 				NkLinkId id = 0;
 				NkNodeId fromNode = NK_NODE_INVALID;
@@ -368,7 +379,14 @@ namespace nkentseu {
 				// un format binaire ferait gagner des octets sur des fichiers qui
 				// pesent quelques kilo-octets.
 				void Serialize(NkString &out) const;
-				bool Deserialize(const char *text);
+				// `outErreur` est renseignee UNIQUEMENT en cas de refus, et elle
+				// NOMME ce qui manque : la prise demandee et son noeud. Un `false`
+				// muet enverrait l'appelant chercher dans son propre code.
+				//
+				// ⚠️ UN REFUS VIDE LE GRAPHE. Un graphe a moitie charge porterait
+				// des noeuds justes et des liens faux, et l'appelant qui ignore le
+				// `false` compilerait un materiau qui a l'air complet.
+				bool Deserialize(const char *text, NkString *outErreur = nullptr);
 
 				void Clear();
 

@@ -490,16 +490,17 @@ static void CasAllerRetourFichier() {
 	(void)t;
 }
 
-// ── LA MESURE DEMANDEE PAR LE CHANTIER DESIGN : INDEX CONTRE NOM ─────────────
+// ── INDEX CONTRE NOM : LA MESURE, PUIS LE FORMAT QU'ELLE A DECIDE ────────────
 //
-// SA QUESTION, mot pour mot : « NkLink adresse les prises par indice alors que
-// NkSocket::name est la cle stable -- faire gagner des prises a un noeud
-// repointerait en silence les liens suivants. »
+// LA QUESTION DU CHANTIER DESIGN, mot pour mot : « NkLink adresse les prises par
+// indice alors que NkSocket::name est la cle stable -- faire gagner des prises a
+// un noeud repointerait en silence les liens suivants. »
 //
-// On MESURE au lieu de raisonner, et la reponse est en deux moities qui ne
-// disent PAS la meme chose. C'est pour ca que le cas discrimine les deux
-// separement : une seule assertion aurait rendu un vert ou un rouge, et les
-// deux auraient ete faux.
+// Mesuree le 2026-08-23. La reponse etait en DEUX MOITIES qui ne disaient pas la
+// meme chose : infondee en memoire, EXACTE dans le fichier. Le format est passe
+// en version 2 le meme jour ; ce cas garde la premiere moitie et prouve que la
+// seconde est refermee. Le temoin qui PAIE le changement de format est
+// `fichier/ordre-des-sock`, plus bas.
 static void CasIndexDePriseContreNom() {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
@@ -512,6 +513,10 @@ static void CasIndexDePriseContreNom() {
 	// retire ou insere une prise. Un index deja attribue ne peut donc pas
 	// bouger. On le mesure au lieu de le lire : on gagne une prise, et on
 	// exige que le lien designe encore LA MEME PRISE PAR SON NOM.
+	//
+	// ⚠️ CETTE MOITIE RESTE VRAIE APRES LE PASSAGE EN VERSION 2, et c'est
+	// voulu : le nom est la cle SUR DISQUE, l'index reste la cle EN MEMOIRE.
+	// Un graphe s'evalue a chaque image, un fichier se lit une fois.
 	const NkLink *avant = g.LinkAt(0);
 	const int32 idxAvant = avant ? avant->toSocket : -1;
 	const bool ajoutee = g.AddSocket(out, "prise_gagnee", t.real, NkSocketDir::Input);
@@ -524,31 +529,22 @@ static void CasIndexDePriseContreNom() {
 	const bool memoireTient = ajoutee && apres && apres->toSocket == idxAvant && nomApres &&
 							  *nomApres == NkString("surface");
 
-	// ── MOITIE 2 : DANS LE FICHIER, ELLE EST EXACTE ──────────────────────
-	// 🔴 ET C'EST LA QUE LA QUESTION PAYE. Le format ecrit les prises DANS
-	// L'ORDRE -- « cet ordre EST leur index » -- puis des lignes `lien` et
-	// `def` qui ne portent QUE des nombres. Une prise inseree AVANT une
-	// autre decale tout ce qui suit, et RIEN dans le fichier ne permet de
-	// s'en apercevoir : il n'y a aucun nom du cote du lien a confronter.
-	//
-	// On simule exactement ce que ferait un producteur de fichiers autre que
-	// notre propre ecrivain -- une version du catalogue ou le noeud a gagne
-	// une prise, un outil tiers, une edition a la main -- en glissant une
-	// ligne `sock` AVANT les prises du noeud de sortie.
+	// ── MOITIE 2 : DANS LE FICHIER, ELLE NE L'EST PLUS ───────────────────
+	// 🔴 CE BLOC MESURAIT LE DEFAUT ; IL MESURE MAINTENANT SA FERMETURE, ET ON
+	// GARDE LA MEME PERTURBATION EXPRES. Un cas reecrit avec une perturbation
+	// plus douce aurait verdi sans rien prouver : c'est exactement l'insertion
+	// qui repointait le 23/08 qu'il faut voir echouer.
 	NkString texte;
 	g.Serialize(texte);
 	NkString entete("sock ");
 	entete.Append(NkFormat("{0}", (uint32)out));
 	entete.Append(" 0 ");
-	// Le meme type que « surface » : on ne veut PAS que la validation attrape
-	// ce decalage par un desaccord de type. C'est le decalage lui-meme qu'on
-	// mesure, pas sa consequence la plus voyante.
 	const NkNode *nout = g.Find(out);
 	const int32 iSurface = nout ? nout->FindSocket("surface", NkSocketDir::Input) : -1;
 	entete.Append(NkFormat("{0}", (uint32)(iSurface >= 0 ? nout->sockets[(uint32)iSurface].type : t.shader)));
-	entete.Append(" intruse\n");
+	entete.Append(" intruse");
+	entete.Append('\n');
 
-	// insertion juste avant la PREMIERE ligne `sock <out> `
 	NkString marque("sock ");
 	marque.Append(NkFormat("{0}", (uint32)out));
 	marque.Append(" ");
@@ -580,28 +576,23 @@ static void CasIndexDePriseContreNom() {
 	}
 
 	NkNodeGraph h;
-	const bool relu = h.Deserialize(truque.CStr());
+	NkString err;
+	const bool relu = h.Deserialize(truque.CStr(), &err);
 	const NkLink *lh = h.LinkCount() > 0 ? h.LinkAt(0) : nullptr;
 	const NkNode *nh = h.Find(out);
 	const NkString *nomTruque = (lh && nh && lh->toSocket >= 0 && lh->toSocket < (int32)nh->sockets.Size())
 									? &nh->sockets[(uint32)lh->toSocket].name
 									: nullptr;
-	// Le lien pointe desormais sur la prise INTRUSE, pas sur « surface ».
-	const bool repointe = relu && nomTruque && *nomTruque != NkString("surface");
-	// ⚠️ ET PERSONNE NE LE DIT. Ni la relecture, ni la validation du coeur :
-	// le fichier reste parfaitement bien forme.
-	NkVector<NkGraphDiag> diags;
-	h.Validate(diags);
-	const bool muet = relu && diags.Size() == 0;
+	const bool tientBon = relu && nomTruque && *nomTruque == NkString("surface");
 
 	NkString d;
 	d = NkFormat("MEMOIRE : ajout de prise, le lien garde son index {0} et son nom « {1} »={2} (PushBack seul, "
-				 "aucune operation ne retire ni n'insere) | FICHIER : une prise glissee avant les autres "
-				 "repointe le lien vers « {3} »={4} | et rien ne le signale (relu={5} diagnostics={6})={7}",
+				 "aucune operation ne retire ni n'insere) | FICHIER v{3} : une prise glissee avant les autres "
+				 "laisse le lien sur « {4} »={5} (relu={6})",
 				 idxAvant, nomApres ? *nomApres : NkString("?"), memoireTient ? 1 : 0,
-				 nomTruque ? *nomTruque : NkString("?"), repointe ? 1 : 0, relu ? 1 : 0, (uint32)diags.Size(),
-				 muet ? 1 : 0);
-	Cas("graphe/index-de-prise-contre-nom", memoireTient && repointe && muet, d);
+				 (uint32)NK_NKGRAPH_VERSION, nomTruque ? *nomTruque : NkString("?"), tientBon ? 1 : 0,
+				 relu ? 1 : 0);
+	Cas("graphe/index-de-prise-contre-nom", memoireTient && tientBon, d);
 }
 
 // ── outils communs aux cas de valeurs ────────────────────────────────────────
@@ -1128,6 +1119,299 @@ static bool ContientSansCasse(const NkString &s, const char *motif) {
 		++p;
 	}
 	return false;
+}
+
+// ── outil : REORDONNER les lignes `sock` d'un noeud dans un texte serialise ──
+//
+// La perturbation doit etre REELLE, pas cosmetique : on INVERSE l'ordre, ce qui
+// change l'index de toutes les prises du noeud des qu'il en a plus d'une.
+static NkString InverseLesSock(const NkString &texte, uint32 idNoeud) {
+	NkString marque("sock ");
+	marque.Append(NkFormat("{0}", idNoeud));
+	marque.Append(" ");
+	NkVector<NkString> visees;
+	{
+		const char *p = texte.CStr();
+		while (p && *p) {
+			const char *fin = p;
+			while (*fin && *fin != '\n')
+				++fin;
+			NkString ligne;
+			for (const char *q = p; q < fin; ++q)
+				ligne.Append(*q);
+			bool debute = ligne.Size() >= marque.Size();
+			for (uint32 k = 0; debute && k < (uint32)marque.Size(); ++k)
+				if (ligne.CStr()[k] != marque.CStr()[k])
+					debute = false;
+			if (debute)
+				visees.PushBack(ligne);
+			p = (*fin == '\n') ? fin + 1 : fin;
+		}
+	}
+	NkString sortie;
+	uint32 rang = 0;
+	{
+		const char *p = texte.CStr();
+		while (p && *p) {
+			const char *fin = p;
+			while (*fin && *fin != '\n')
+				++fin;
+			NkString ligne;
+			for (const char *q = p; q < fin; ++q)
+				ligne.Append(*q);
+			bool debute = ligne.Size() >= marque.Size();
+			for (uint32 k = 0; debute && k < (uint32)marque.Size(); ++k)
+				if (ligne.CStr()[k] != marque.CStr()[k])
+					debute = false;
+			if (debute && visees.Size() > 0) {
+				sortie.Append(visees[(uint32)visees.Size() - 1 - rang]);
+				++rang;
+			} else {
+				sortie.Append(ligne);
+			}
+			sortie.Append('\n');
+			p = (*fin == '\n') ? fin + 1 : fin;
+		}
+	}
+	return sortie;
+}
+
+// ── LE TEMOIN QUI PAIE LA VERSION 2 DU FORMAT ───────────────────────────────
+//
+// 🔴 C'EST CE CAS QUI JUSTIFIE LE CHANGEMENT, PAS LE RAISONNEMENT. Condition
+// posee par Rodolf : « un fichier dont les `sock` sont reordonnes doit soit
+// charger A L'IDENTIQUE, soit etre REFUSE en se nommant. Jamais charger autre
+// chose en silence. »
+//
+// ⚠️ ET IL DISCRIMINE DANS LES DEUX SENS. Un cas qui ne montrerait que le vert
+// de la version 2 serait vert AUSSI si l'inversion ne perturbait rien -- une
+// assertion juste sur une perturbation qui n'a pas eu lieu ne mesure rien. Le
+// second volet rejoue donc LA MEME inversion sur un fichier en version 1 et
+// exige qu'elle REPOINTE. C'est la troisieme facon dont un cas juste ne mesure
+// rien -- il manquait la PROFONDEUR -- prise par l'autre bout : ici c'est la
+// perturbation elle-meme qu'il faut prouver reelle.
+static void CasFichierOrdreDesSock() {
+	// ── VOLET 1 : EN VERSION 2, L'ORDRE N'A PLUS DE SENS ─────────────────
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	g.Connect(bsdf, "bsdf", out, "surface");
+
+	// On pose un DEFAUT sur une prise du Principled : la ligne `def` portait
+	// elle aussi un index, et elle avait exactement le meme piege. Un temoin
+	// qui ne verifierait que le lien laisserait la moitie du defaut en place.
+	const NkNode *nb = g.Find(bsdf);
+	NkString prisePosee;
+	uint32 nbPrises = 0;
+	if (nb) {
+		nbPrises = (uint32)nb->sockets.Size();
+		for (uint32 i = 0; i < nbPrises; ++i)
+			if (nb->sockets[i].dir == NkSocketDir::Input && nb->sockets[i].type == t.real) {
+				prisePosee = nb->sockets[i].name;
+				break;
+			}
+	}
+	const bool defautPose = prisePosee.Size() > 0 &&
+							g.SetSocketDefault(bsdf, prisePosee.CStr(), NkSocketDir::Input,
+											   NkValueReal(t.real, 0.3721f));
+
+	NkString texte;
+	g.Serialize(texte);
+	const NkString inverse = InverseLesSock(texte, (uint32)bsdf);
+	const bool perturbationEcrite = !(inverse == texte) && nbPrises > 1;
+
+	NkNodeGraph h;
+	NkString err;
+	const bool relu = h.Deserialize(inverse.CStr(), &err);
+	const NkLink *lh = h.LinkCount() > 0 ? h.LinkAt(0) : nullptr;
+	const NkNode *nho = h.Find(out);
+	const bool lienIntact = relu && lh && nho && lh->toSocket >= 0 &&
+							lh->toSocket < (int32)nho->sockets.Size() &&
+							nho->sockets[(uint32)lh->toSocket].name == NkString("surface");
+	const NkGraphValue *dv =
+		(relu && prisePosee.Size() > 0) ? h.SocketDefault(bsdf, prisePosee.CStr(), NkSocketDir::Input) : nullptr;
+	const bool defautIntact = dv && dv->IsSet() && dv->numbers.Size() > 0 && dv->numbers[0] == 0.3721f;
+
+	// ── VOLET 2 : LE TEMOIN. LA MEME PERTURBATION, EN VERSION 1 ──────────
+	// Deux prises de SORTIE sur le meme noeud, un lien sur la premiere. En
+	// version 1 le lien vaut « rang 0 » : inverser les `sock` le fait pointer
+	// sur l'autre, et rien ne le dit. C'est le defaut que la version 2 retire,
+	// montre sur le format qui le porte encore.
+	static const char *kV1 = "nkgraph 1\n"
+							 "compteurs 3 2\n"
+							 "type 1 reel\n"
+							 "noeud 1 0.000000 0.000000 essai.source A\n"
+							 "sock 1 1 1 sortie_a\n"
+							 "sock 1 1 1 sortie_b\n"
+							 "noeud 2 0.000000 0.000000 essai.puits B\n"
+							 "sock 2 0 1 entree\n"
+							 "lien 1 1 0 2 0\n";
+	NkNodeGraph v1;
+	const bool v1Lu = v1.Deserialize(kV1);
+	const NkLink *lv1 = v1.LinkCount() > 0 ? v1.LinkAt(0) : nullptr;
+	const NkNode *nv1 = v1.Find(1);
+	const bool v1Pointe = v1Lu && lv1 && nv1 && lv1->fromSocket >= 0 &&
+						  lv1->fromSocket < (int32)nv1->sockets.Size() &&
+						  nv1->sockets[(uint32)lv1->fromSocket].name == NkString("sortie_a");
+
+	const NkString v1Inverse = InverseLesSock(NkString(kV1), 1);
+	NkNodeGraph v1b;
+	const bool v1bLu = v1b.Deserialize(v1Inverse.CStr());
+	const NkLink *lv1b = v1b.LinkCount() > 0 ? v1b.LinkAt(0) : nullptr;
+	const NkNode *nv1b = v1b.Find(1);
+	const NkString *nomV1b =
+		(lv1b && nv1b && lv1b->fromSocket >= 0 && lv1b->fromSocket < (int32)nv1b->sockets.Size())
+			? &nv1b->sockets[(uint32)lv1b->fromSocket].name
+			: nullptr;
+	const bool v1Repointe = v1bLu && nomV1b && *nomV1b == NkString("sortie_b");
+
+	NkString d;
+	d = NkFormat("v{0} : {1} prises inversees={2} | le lien reste sur « surface »={3} | le defaut « {4} » reste "
+				 "a 0.3721={5} | TEMOIN v1 : la MEME inversion repointe sortie_a -> « {6} »={7}",
+				 (uint32)NK_NKGRAPH_VERSION, nbPrises, perturbationEcrite ? 1 : 0, lienIntact ? 1 : 0, prisePosee,
+				 (defautPose && defautIntact) ? 1 : 0, nomV1b ? *nomV1b : NkString("?"), v1Repointe ? 1 : 0);
+	Cas("fichier/ordre-des-sock",
+		perturbationEcrite && lienIntact && defautPose && defautIntact && v1Pointe && v1Repointe, d);
+}
+
+// ── UN NOM ABSENT EST REFUSE EN SE NOMMANT ──────────────────────────────────
+//
+// L'autre branche de la condition : « soit charger a l'identique, SOIT etre
+// refuse en se nommant ». Un fichier qui nomme une prise inexistante ne PEUT pas
+// charger a l'identique -- il doit donc etre refuse, et le refus doit porter le
+// nom demande. Se rabattre sur la prise 0 rendrait un graphe qui charge et qui
+// calcule autre chose : « rien » charge comme « la premiere ».
+//
+// ⚠️ ET LE GRAPHE DOIT RESSORTIR VIDE. Un graphe a moitie charge porterait des
+// noeuds justes et des liens faux : l'appelant qui ignore le `false` compilerait
+// un materiau qui a l'air complet. Meme regle que « rien emis » sur un refus de
+// compilation -- un refus qui laisse de la matiere derriere lui est un piege.
+static void CasFichierPriseInconnueRefusee() {
+	NkNodeGraph g;
+	NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	NkString texte;
+	g.Serialize(texte);
+
+	// On renomme la prise DANS LA LIGNE `lien` seulement : le lien designe
+	// alors une prise que le fichier ne contient pas.
+	NkString casse;
+	{
+		const char *p = texte.CStr();
+		while (p && *p) {
+			const char *fin = p;
+			while (*fin && *fin != '\n')
+				++fin;
+			NkString ligne;
+			for (const char *q = p; q < fin; ++q)
+				ligne.Append(*q);
+			bool estLien = ligne.Size() >= 5;
+			const char *kw = "lien ";
+			for (uint32 k = 0; estLien && k < 5; ++k)
+				if (ligne.CStr()[k] != kw[k])
+					estLien = false;
+			if (estLien) {
+				NkString remplacee;
+				const char *q = ligne.CStr();
+				while (*q) {
+					if (q[0] == 's' && q[1] == 'u' && q[2] == 'r' && q[3] == 'f' && q[4] == 'a' && q[5] == 'c' &&
+						q[6] == 'e') {
+						remplacee.Append("surfacce_disparue");
+						q += 7;
+					} else {
+						remplacee.Append(*q);
+						++q;
+					}
+				}
+				ligne = remplacee;
+			}
+			casse.Append(ligne);
+			casse.Append('\n');
+			p = (*fin == '\n') ? fin + 1 : fin;
+		}
+	}
+
+	NkNodeGraph h;
+	NkString err;
+	const bool relu = h.Deserialize(casse.CStr(), &err);
+	const bool refuse = !relu;
+	const bool nommeLaPrise = ContientSansCasse(err, "surfacce_disparue");
+	const bool nommeLeSens = ContientSansCasse(err, "entree");
+	const bool videApresRefus = h.NodeCount() == 0 && h.LinkCount() == 0;
+
+	NkString d;
+	d = NkFormat("refuse={0} | nomme la prise demandee={1} | dit de quel cote={2} | graphe VIDE apres refus={3} "
+				 "(noeuds={4} liens={5}) | message : {6}",
+				 refuse ? 1 : 0, nommeLaPrise ? 1 : 0, nommeLeSens ? 1 : 0, videApresRefus ? 1 : 0, h.NodeCount(),
+				 h.LinkCount(), err);
+	Cas("fichier/prise-inconnue-refusee-en-se-nommant", refuse && nommeLaPrise && nommeLeSens && videApresRefus,
+		d);
+}
+
+// ── LA MIGRATION EXISTE, ET ELLE EST EXERCEE ────────────────────────────────
+//
+// Condition posee par Rodolf : « une migration qui lit l'ancien -- meme vide de
+// logique, elle doit exister ET ETRE EXERCEE ». Elle l'est deja a chaque course
+// du banc : les neuf fichiers ecrits a la main des cas `fichier/*` sont tous en
+// version 1. Ce cas la NOMME, pour qu'on sache qu'elle est VOULUE et non
+// survivante -- une migration que rien ne designe finit par etre retiree par
+// quelqu'un qui la prend pour du code mort.
+//
+// ⚠️ ET IL MESURE L'AUTRE BOUT : une version inconnue est REFUSEE en se nommant.
+// Lire un fichier futur « au mieux » rendrait un graphe plausible et faux --
+// exactement la meme faute que le repli plausible sur un canal inconnu.
+static void CasFichierMigrationVersion1() {
+	// `def 2 0 1 1 3.5` : noeud 2, prise d'INDEX 0, valeur (type 1, 1 nombre).
+	static const char *kV1 = "nkgraph 1\n"
+							 "compteurs 3 2\n"
+							 "type 1 reel\n"
+							 "noeud 1 0.000000 0.000000 essai.source A\n"
+							 "sock 1 1 1 sortie_a\n"
+							 "sock 1 1 1 sortie_b\n"
+							 "noeud 2 0.000000 0.000000 essai.puits B\n"
+							 "sock 2 0 1 entree\n"
+							 "def 2 0 1 1 3.5\n"
+							 "lien 1 1 1 2 0\n";
+	NkNodeGraph v1;
+	NkString err1;
+	const bool lu = v1.Deserialize(kV1, &err1);
+	const NkLink *l = v1.LinkCount() > 0 ? v1.LinkAt(0) : nullptr;
+	const NkNode *n1 = v1.Find(1);
+	// `lien 1 1 1 2 0` : rang 1 sur le noeud 1, donc « sortie_b ».
+	const bool indexRespecte = lu && l && n1 && l->fromSocket == 1 && (uint32)n1->sockets.Size() > 1 &&
+							   n1->sockets[1].name == NkString("sortie_b");
+	const NkGraphValue *dv = lu ? v1.SocketDefault(2, "entree", NkSocketDir::Input) : nullptr;
+	const bool defautV1 = dv && dv->IsSet() && dv->numbers.Size() > 0 && dv->numbers[0] == 3.5f;
+
+	// L'ecrivain, lui, ne produit QUE la version courante : la migration est un
+	// chemin de LECTURE, jamais un mode d'ecriture qu'on pourrait oublier actif.
+	NkString reecrit;
+	v1.Serialize(reecrit);
+	NkString entete("nkgraph ");
+	entete.Append(NkFormat("{0}", (uint32)NK_NKGRAPH_VERSION));
+	const bool reecritEnCourant = ContientLigne(reecrit, entete.CStr());
+
+	// ── ET UNE VERSION INCONNUE EST REFUSEE EN SE NOMMANT ────────────────
+	NkString futur("nkgraph ");
+	futur.Append(NkFormat("{0}", (uint32)NK_NKGRAPH_VERSION + 1));
+	futur.Append("\ncompteurs 2 1\n");
+	NkNodeGraph vf;
+	NkString errF;
+	const bool refuseFutur = !vf.Deserialize(futur.CStr(), &errF);
+	const bool nommeLaVersion = ContientSansCasse(errF, "version");
+
+	NkString d;
+	d = NkFormat("v1 relue par INDEX={0} (prise « {1} ») | defaut v1 par index={2} | reecrite en v{3}={4} | "
+				 "version inconnue refusee={5} en la nommant={6} : {7}",
+				 indexRespecte ? 1 : 0,
+				 (lu && n1 && (uint32)n1->sockets.Size() > 1) ? n1->sockets[1].name : NkString("?"),
+				 defautV1 ? 1 : 0, (uint32)NK_NKGRAPH_VERSION, reecritEnCourant ? 1 : 0, refuseFutur ? 1 : 0,
+				 nommeLaVersion ? 1 : 0, errF);
+	Cas("fichier/migration-version-1",
+		indexRespecte && defautV1 && reecritEnCourant && refuseFutur && nommeLaVersion, d);
 }
 
 static void CasBindingDeclareDesDeuxCotes() {
@@ -6372,6 +6656,9 @@ int main() {
 	CasMelangeShader();
 	CasAllerRetourFichier();
 	CasIndexDePriseContreNom();
+	CasFichierOrdreDesSock();
+	CasFichierPriseInconnueRefusee();
+	CasFichierMigrationVersion1();
 
 	// ── valeurs : defauts de prise et proprietes de noeud ────────────────
 	CasDefautDePrise();

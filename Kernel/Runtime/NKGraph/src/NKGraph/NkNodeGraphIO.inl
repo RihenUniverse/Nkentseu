@@ -10,13 +10,52 @@
 // quand une version future casse quelque chose. Un format binaire ferait gagner
 // des octets sur des fichiers qui pesent quelques kilo-octets.
 //
-//   nkgraph 1
+//   nkgraph 2
 //   compteurs <prochainNoeud> <prochainLien>
 //   type <id> <nom...>
 //   conv <de> <vers>
 //   noeud <id> <x> <y> <cleType> <libelle...>
 //   sock <idNoeud> <0=entree|1=sortie> <idType> <nom...>
-//   lien <id> <deNoeud> <deSock> <versNoeud> <versSock>
+//   def  <idNoeud> <0=entree|1=sortie> <nomPrise> <valeur...>
+//   lien <id> <deNoeud> <nomPriseSortie> <versNoeud> <nomPriseEntree>
+//
+// ═══════════════════════════════════════════════════════════════════════════
+// VERSION 2 (2026-08-23) — UNE PRISE SE DESIGNE PAR SON NOM, PLUS PAR SON RANG
+// ═══════════════════════════════════════════════════════════════════════════
+// ⚠️ CE QUI A ETE MESURE, ET QUI A DECIDE. En version 1, `lien` et `def` ne
+// portaient que des NOMBRES : le rang de la prise dans l'ordre d'ecriture des
+// lignes `sock`. Le cas `graphe/index-de-prise-contre-nom` a montre qu'une
+// ligne `sock` glissee AVANT une autre repointe le lien vers une prise
+// differente — et que `Deserialize` rendait `true`, `Validate` ZERO
+// diagnostic. Un graphe silencieusement recable, avec un verdict vert.
+//
+// Ce n'etait pas une hypothese : le cas le FAIT et lit le nouveau nom.
+//
+// 🔴 ET CE QUI NOUS PROTEGEAIT N'ETAIT PAS LE FORMAT, C'ETAIT D'EN ETRE LE SEUL
+// ECRIVAIN. Notre ecrivain emet toujours prises et liens dans un etat coherent,
+// donc l'aller-retour etait sur — une propriete de l'unique producteur qui se
+// lisait comme une propriete du format. Un outil tiers, une edition a la main
+// ou une fusion de fichiers la faisait tomber, SANS MESSAGE.
+//
+// 📌 Et la convention etait deja ecrite dans `NkNodeGraph.h`, au-dessus de
+// `SetSocketDefault` : « la prise se designe par son NOM et son SENS, jamais
+// par son index ». L'API la respectait ; le format non. La regle et sa
+// violation cohabitaient dans le meme module.
+//
+// ── LES TROIS CHOSES QUE LA VERSION 2 GARANTIT ────────────────────────────
+// 1. L'ORDRE DES LIGNES `sock` N'A PLUS DE SENS. Un fichier dont les prises
+//    sont reordonnees charge A L'IDENTIQUE. Temoin : `fichier/ordre-des-sock`.
+// 2. UN NOM ABSENT EST REFUSE EN SE NOMMANT. `Deserialize` rend `false` et
+//    remplit `outErreur` avec le nom demande et le noeud. Jamais de repli sur
+//    une prise voisine : ce serait « rien » charge comme « la prise 0 ».
+// 3. LA VERSION 1 SE LIT ENCORE, par les index, sans conversion. La migration
+//    est EXERCEE — neuf fichiers ecrits a la main dans NkMatGraphCheck sont en
+//    version 1 et doivent continuer de charger a l'identique.
+//
+// ⚠️ EN MEMOIRE, `NkLink` GARDE SON INDEX. Le nom est la cle SUR DISQUE ; la
+// resolution se fait UNE FOIS au chargement. Un format se lit une fois, un
+// graphe s'evalue a chaque image — payer une recherche par nom a chaque
+// evaluation serait echanger un defaut rare contre un cout permanent.
 //
 // LA LIGNE `compteurs` EST LA PLUS IMPORTANTE DU FICHIER. Sans elle, un graphe
 // recharge REATTRIBUERAIT les identifiants liberes par une suppression — et une
@@ -178,7 +217,12 @@ namespace nkentseu {
 
 		// ── ECRITURE ────────────────────────────────────────────────────────────
 		inline void NkNodeGraph::Serialize(NkString &out) const {
-			out = NkString("nkgraph 1\n");
+			// ⚠️ LA VERSION VIENT DE LA CONSTANTE, PAS D'UN LITTERAL. Deux endroits qui
+			// decideraient du meme numero finiraient par ne plus s'accorder — et
+			// c'est l'ecrivain qui aurait raison contre le lecteur, en silence.
+			out = NkString("nkgraph ");
+			detail::PutU32(out, NK_NKGRAPH_VERSION);
+			out.Append('\n');
 
 			out.Append("compteurs ");
 			detail::PutU32(out, mNextNode);
@@ -275,14 +319,17 @@ namespace nkentseu {
 					out.Append(' ');
 					out.Append(s.name);
 					out.Append('\n');
-					// Le defaut suit SA prise et la designe par son INDEX — le meme index
-					// que les liens emploient, donc la meme regle : il vaut l'ordre
-					// d'ecriture des prises, et rien d'autre.
+					// ⚠️ LE DEFAUT SUIT SA PRISE ET LA DESIGNE PAR SON NOM ET SON SENS
+					// (version 2). Il portait son INDEX en version 1, et c'etait le
+					// meme defaut que les liens : reordonner les `sock` posait la
+					// valeur sur une prise QUI N'EST PAS LA SIENNE. Le commentaire
+					// d'origine disait « il vaut l'ordre d'ecriture des prises, et
+					// rien d'autre » — c'etait exact, et c'etait le probleme.
 					if (s.defaultValue.IsSet()) {
 						out.Append("def ");
 						detail::PutU32(out, n.id);
-						out.Append(' ');
-						detail::PutU32(out, k);
+						out.Append(s.dir == NkSocketDir::Output ? " 1 " : " 0 ");
+						out.Append(s.name);
 						out.Append(' ');
 						detail::PutValue(out, s.defaultValue);
 						out.Append('\n');
@@ -294,32 +341,105 @@ namespace nkentseu {
 				const NkLink &l = mLinks[i];
 				if (!l.alive)
 					continue;
+				// ⚠️ LES DEUX PRISES SE DESIGNENT PAR LEUR NOM (version 2). Le sens
+				// n'a pas besoin d'etre ecrit : `de` est forcement une SORTIE et
+				// `vers` une ENTREE — c'est la seule forme qu'un lien puisse
+				// prendre, et `Connect` refuse tout le reste.
+				//
+				// Un lien dont une extremite ne se resout pas s'ecrit avec un nom
+				// que rien ne porte : la lecture le REFUSERA en le nommant. Ecrire
+				// un nom vide, ou retomber sur l'index, redonnerait au fichier le
+				// defaut qu'on vient d'en retirer.
+				const NkNode *nf = Find(l.fromNode);
+				const NkNode *nt = Find(l.toNode);
+				const bool okF = nf && l.fromSocket >= 0 && l.fromSocket < (int32)nf->sockets.Size();
+				const bool okT = nt && l.toSocket >= 0 && l.toSocket < (int32)nt->sockets.Size();
 				out.Append("lien ");
 				detail::PutU32(out, l.id);
 				out.Append(' ');
 				detail::PutU32(out, l.fromNode);
 				out.Append(' ');
-				detail::PutU32(out, (uint32)l.fromSocket);
+				out.Append(okF ? nf->sockets[(uint32)l.fromSocket].name : NkString("?prise-introuvable"));
 				out.Append(' ');
 				detail::PutU32(out, l.toNode);
 				out.Append(' ');
-				detail::PutU32(out, (uint32)l.toSocket);
+				out.Append(okT ? nt->sockets[(uint32)l.toSocket].name : NkString("?prise-introuvable"));
 				out.Append('\n');
 			}
 		}
 
 		// ── LECTURE ─────────────────────────────────────────────────────────────
-		inline bool NkNodeGraph::Deserialize(const char *text) {
-			if (!text)
+		inline bool NkNodeGraph::Deserialize(const char *text, NkString *outErreur) {
+			if (outErreur)
+				*outErreur = NkString("");
+			auto refuse = [&](const NkString &quoi) {
+				if (outErreur)
+					*outErreur = quoi;
+				// ⚠️ ON VIDE. Un graphe a moitie charge est la pire des reponses :
+				// il porte des noeuds justes et des liens faux, et l'appelant qui
+				// ignore le `false` compile un materiau qui a l'air complet.
+				Clear();
 				return false;
+			};
+			if (!text)
+				return refuse(NkString("texte absent"));
 			Clear();
 			if (!detail::LineIs(text, "nkgraph"))
-				return false;
+				return refuse(NkString("ce n'est pas un fichier .nkgraph (premiere ligne)"));
 
+			// ── LA VERSION, LUE AVANT TOUT LE RESTE ──────────────────────────
+			// Elle decide comment `lien` et `def` designent leur prise : par
+			// INDEX en version 1, par NOM a partir de la 2. Une version qu'on ne
+			// reconnait pas est REFUSEE en se nommant — lire un fichier futur
+			// « au mieux » produirait un graphe plausible et faux.
+			uint32 versionFichier = 0;
+			{
+				const char *pv = text;
+				NkString kwv;
+				detail::TokenStr(pv, kwv);
+				versionFichier = detail::TokenU32(pv);
+			}
+			if (versionFichier < 1 || versionFichier > NK_NKGRAPH_VERSION) {
+				NkString q("version de .nkgraph non prise en charge : ");
+				detail::PutU32(q, versionFichier);
+				q.Append(" (cette construction lit 1 a ");
+				detail::PutU32(q, NK_NKGRAPH_VERSION);
+				q.Append(")");
+				return refuse(q);
+			}
+			const bool parNom = versionFichier >= 2;
+
+			// ═══════════════════════════════════════════════════════════════
+			// 🔴 DEUX PASSES, ET C'EST LA MESURE QUI L'A IMPOSE
+			// ═══════════════════════════════════════════════════════════════
+			// La version 2 devait rendre l'ORDRE DES LIGNES SANS IMPORTANCE. En
+			// une seule passe elle ne le faisait qu'a moitie : l'ecrivain emet
+			// chaque `def` JUSTE APRES sa prise, donc reordonner les `sock` place
+			// des `def` AVANT la prise qu'ils nomment. Le cas
+			// `fichier/ordre-des-sock` l'a fait tomber du premier coup — refus
+			// nomme, ce qui est correct, mais ce n'est pas « charger a
+			// l'identique », et c'etait bien la promesse.
+			//
+			// ⚠️ LA LECON EST PLUS GENERALE QUE LE CORRECTIF : passer de l'index
+			// au nom ne suffit pas si la RESOLUTION reste dependante de l'ordre.
+			// On avait retire la dependance a l'ordre du DESIGNANT, pas celle du
+			// MOMENT. Ce sont deux choses, et la premiere cache la seconde.
+			//
+			// Passe 1 : la MATIERE (types, noeuds, prises, proprietes).
+			// Passe 2 : les REFERENCES (valeurs par defaut, liens) — a ce
+			//           moment, toutes les prises existent, quel que soit
+			//           l'ordre dans lequel le fichier les a ecrites.
+			for (uint32 passe = 0; passe < 2; ++passe) {
+			const bool matiere = (passe == 0);
 			for (const char *line = text; *line; line = detail::NextLine(line)) {
 				const char *p = line;
 				NkString kw;
 				detail::TokenStr(p, kw);
+
+				if (!matiere && !detail::GraphStrEq(kw, "def") && !detail::GraphStrEq(kw, "lien"))
+					continue;
+				if (matiere && (detail::GraphStrEq(kw, "def") || detail::GraphStrEq(kw, "lien")))
+					continue;
 
 				if (detail::GraphStrEq(kw, "compteurs")) {
 					mNextNode = detail::TokenU32(p);
@@ -376,7 +496,18 @@ namespace nkentseu {
 					}
 				} else if (detail::GraphStrEq(kw, "def")) {
 					const uint32 nid = detail::TokenU32(p);
-					const uint32 sidx = detail::TokenU32(p);
+					int32 sidx = -1;
+					NkString nomPrise;
+					if (parNom) {
+						const uint32 dir = detail::TokenU32(p);
+						detail::TokenStr(p, nomPrise);
+						NkNode *nn = Find(nid);
+						if (nn)
+							sidx = nn->FindSocket(nomPrise.CStr(),
+												  dir ? NkSocketDir::Output : NkSocketDir::Input);
+					} else {
+						sidx = (int32)detail::TokenU32(p);
+					}
 					NkGraphValue v;
 					detail::TakeValue(p, v);
 					NkNode *n = Find(nid);
@@ -384,18 +515,80 @@ namespace nkentseu {
 					// la derniere prise — ou sur zero — poserait la valeur sur une prise QUI
 					// N'EST PAS LA SIENNE : le graphe paraitrait sain et calculerait autre
 					// chose. Une valeur perdue finit par se voir ; une valeur DEPLACEE, non.
-					if (n && sidx < (uint32)n->sockets.Size())
-						n->sockets[sidx].defaultValue = v;
+					//
+					// ⚠️ EN VERSION 2 UN NOM INTROUVABLE EST REFUSE, PAS LAISSE TOMBER.
+					// La difference tient a ce que chacun signifie : un index hors
+					// bornes est un fichier d'une autre epoque, un NOM absent est un
+					// fichier qui ment sur ce qu'il contient.
+					if (parNom && sidx < 0) {
+						NkString q("valeur par defaut sur une prise inconnue « ");
+						q.Append(nomPrise);
+						q.Append(" » du noeud ");
+						detail::PutU32(q, nid);
+						return refuse(q);
+					}
+					if (n && sidx >= 0 && sidx < (int32)n->sockets.Size())
+						n->sockets[(uint32)sidx].defaultValue = v;
 				} else if (detail::GraphStrEq(kw, "lien")) {
 					NkLink l;
 					l.id = detail::TokenU32(p);
-					l.fromNode = detail::TokenU32(p);
-					l.fromSocket = (int32)detail::TokenU32(p);
-					l.toNode = detail::TokenU32(p);
-					l.toSocket = (int32)detail::TokenU32(p);
+					if (parNom) {
+						// ⚠️ LA RESOLUTION SE FAIT ICI, UNE SEULE FOIS. Le nom est la
+						// cle SUR DISQUE ; en memoire `NkLink` garde son index, parce
+						// qu'un graphe s'evalue a chaque image et qu'un fichier ne se
+						// lit qu'une fois. Payer une recherche par nom a chaque
+						// evaluation echangerait un defaut rare contre un cout
+						// permanent.
+						NkString nomDe, nomVers;
+						l.fromNode = detail::TokenU32(p);
+						detail::TokenStr(p, nomDe);
+						l.toNode = detail::TokenU32(p);
+						detail::TokenStr(p, nomVers);
+						const NkNode *nde = Find(l.fromNode);
+						const NkNode *nvers = Find(l.toNode);
+						// Le sens n'est pas ecrit parce qu'il n'a qu'une forme
+						// possible : `de` est une SORTIE, `vers` une ENTREE.
+						l.fromSocket = nde ? nde->FindSocket(nomDe.CStr(), NkSocketDir::Output) : -1;
+						l.toSocket = nvers ? nvers->FindSocket(nomVers.CStr(), NkSocketDir::Input) : -1;
+						// 🔴 REFUS NOMME. Rabattre sur la prise 0, ou laisser tomber le
+						// lien, rendrait un graphe qui CHARGE et qui calcule autre
+						// chose — precisement le defaut que la version 2 elimine.
+						if (l.fromSocket < 0 || l.toSocket < 0) {
+							NkString q("lien ");
+							detail::PutU32(q, l.id);
+							q.Append(" : prise introuvable — ");
+							if (l.fromSocket < 0) {
+								q.Append("sortie « ");
+								q.Append(nomDe);
+								q.Append(" » du noeud ");
+								detail::PutU32(q, l.fromNode);
+							}
+							if (l.fromSocket < 0 && l.toSocket < 0)
+								q.Append(" ; ");
+							if (l.toSocket < 0) {
+								q.Append("entree « ");
+								q.Append(nomVers);
+								q.Append(" » du noeud ");
+								detail::PutU32(q, l.toNode);
+							}
+							return refuse(q);
+						}
+					} else {
+						// ── VERSION 1 : LA MIGRATION ─────────────────────────
+						// Les prises se designaient par leur rang dans l'ordre des
+						// lignes `sock`. On le lit tel quel : les fichiers ecrits
+						// avant le 2026-08-23 doivent charger a l'identique, et neuf
+						// d'entre eux, dans NkMatGraphCheck, l'exercent a chaque
+						// course du banc.
+						l.fromNode = detail::TokenU32(p);
+						l.fromSocket = (int32)detail::TokenU32(p);
+						l.toNode = detail::TokenU32(p);
+						l.toSocket = (int32)detail::TokenU32(p);
+					}
 					l.alive = true;
 					mLinks.PushBack(l);
 				}
+			}
 			}
 			// Un `mNextNode` absent du fichier laisserait le graphe attribuer 1 au
 			// prochain noeud, donc ecraser un identifiant existant.
