@@ -605,6 +605,87 @@ namespace nkentseu {
 			return NkLinkError::Ok;
 		}
 
+		// ── QUALIFIER UN LIEN ───────────────────────────────────────────────────
+		// ⚠️ AUCUN CODE NEUF DE STOCKAGE DE VALEUR : on reutilise `NkGraphProp`,
+		// celui des noeuds. La specification du § 20.3 supposait qu'il fallait
+		// l'inventer (« il n'existe AUCUNE valeur dans NKGraph, pour rien ») --
+		// il existait deja, et servait les proprietes de noeud et les defauts de
+		// prise depuis le debut. Un second mecanisme aurait diverge du premier au
+		// premier changement de format.
+		inline NkLink *NkNodeGraph::TrouveLien(NkLinkId id) {
+			for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i)
+				if (mLinks[i].alive && mLinks[i].id == id)
+					return &mLinks[i];
+			return nullptr;
+		}
+
+		inline const NkLink *NkNodeGraph::TrouveLien(NkLinkId id) const {
+			for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i)
+				if (mLinks[i].alive && mLinks[i].id == id)
+					return &mLinks[i];
+			return nullptr;
+		}
+
+		inline bool NkNodeGraph::SetLinkProp(NkLinkId id, const char *name, const NkGraphValue &v) {
+			NkLink *l = TrouveLien(id);
+			if (!l || !name || !*name)
+				return false;
+			for (uint32 i = 0; i < (uint32)l->props.Size(); ++i)
+				if (detail::GraphStrEq(l->props[i].name, name)) {
+					l->props[i].value = v; // REMPLACE : deux homonymes rendraient
+					return true;		   // la lecture dependante de l'insertion
+				}
+			NkGraphProp p;
+			p.name = NkString(name);
+			p.value = v;
+			l->props.PushBack(p);
+			return true;
+		}
+
+		inline const NkGraphValue *NkNodeGraph::FindLinkProp(NkLinkId id, const char *name) const {
+			const NkLink *l = TrouveLien(id);
+			if (!l || !name)
+				return nullptr;
+			for (uint32 i = 0; i < (uint32)l->props.Size(); ++i)
+				if (detail::GraphStrEq(l->props[i].name, name))
+					return &l->props[i].value;
+			return nullptr;
+		}
+
+		inline bool NkNodeGraph::RemoveLinkProp(NkLinkId id, const char *name) {
+			NkLink *l = TrouveLien(id);
+			if (!l || !name)
+				return false;
+			for (uint32 i = 0; i < (uint32)l->props.Size(); ++i)
+				if (detail::GraphStrEq(l->props[i].name, name)) {
+					for (uint32 k = i + 1; k < (uint32)l->props.Size(); ++k)
+						l->props[k - 1] = l->props[k];
+					l->props.PopBack();
+					return true;
+				}
+			return false;
+		}
+
+		inline uint32 NkNodeGraph::LinkPropCount(NkLinkId id) const {
+			const NkLink *l = TrouveLien(id);
+			return l ? (uint32)l->props.Size() : 0;
+		}
+
+		inline bool NkNodeGraph::SetLinkSubgraph(NkLinkId id, const char *nomGraphe) {
+			NkLink *l = TrouveLien(id);
+			if (!l)
+				return false;
+			l->subgraph = NkString(nomGraphe ? nomGraphe : "");
+			return true;
+		}
+
+		inline const NkString *NkNodeGraph::LinkSubgraph(NkLinkId id) const {
+			const NkLink *l = TrouveLien(id);
+			// ⚠️ `nullptr` = LE LIEN N'EXISTE PAS ; chaine vide = il existe et n'a
+			// pas de condition. Deux etats, deux reponses -- regle 3.
+			return l ? &l->subgraph : nullptr;
+		}
+
 		inline bool NkNodeGraph::Disconnect(NkLinkId id) {
 			for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i)
 				if (mLinks[i].alive && mLinks[i].id == id) {

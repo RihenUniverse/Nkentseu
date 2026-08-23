@@ -451,6 +451,31 @@ namespace nkentseu {
 				out.Append(' ');
 				out.Append(okT ? nt->sockets[(uint32)l.toSocket].name : NkString("?prise-introuvable"));
 				out.Append('\n');
+				// ⚠️ LA QUALIFICATION S'ECRIT SEULEMENT SI ELLE EXISTE, comme
+				// `sockf` et `typec` : un lien nu produit exactement les memes
+				// octets qu'avant la version 5.
+				if (l.subgraph.Size() > 0) {
+					out.Append("liensg ");
+					detail::PutU32(out, l.id);
+					out.Append(' ');
+					out.Append(l.subgraph);
+					out.Append('\n');
+				}
+				for (uint32 k = 0; k < (uint32)l.props.Size(); ++k) {
+					// Meme regle que pour les proprietes de noeud : on n'ecrit pas
+					// une valeur jamais renseignee -- la relire rendrait une valeur
+					// « renseignee a vide », indiscernable a l'oeil et differente
+					// au sens.
+					if (!l.props[k].value.IsSet())
+						continue;
+					out.Append("lienp ");
+					detail::PutU32(out, l.id);
+					out.Append(' ');
+					out.Append(l.props[k].name);
+					out.Append(' ');
+					detail::PutValue(out, l.props[k].value);
+					out.Append('\n');
+				}
 			}
 		}
 
@@ -515,16 +540,27 @@ namespace nkentseu {
 			// Passe 2 : les REFERENCES (valeurs par defaut, liens) — a ce
 			//           moment, toutes les prises existent, quel que soit
 			//           l'ordre dans lequel le fichier les a ecrites.
-			for (uint32 passe = 0; passe < 2; ++passe) {
+			// ⚠️ TROIS PASSES DEPUIS LA VERSION 5, et la troisieme existe pour la
+			// MEME raison que la deuxieme : `lienp` et `liensg` designent leur lien
+			// par son IDENTIFIANT, et cet identifiant doit exister quand on les
+			// lit. Les mettre dans la passe des references marcherait TANT QUE
+			// l'ecrivain place chaque `lienp` apres son `lien` -- c'est-a-dire
+			// exactement la dependance a l'ORDRE qu'on a retiree du format en
+			// version 2 puis des `def` en version 3. On ne la reintroduit pas par
+			// la porte de derriere.
+			for (uint32 passe = 0; passe < 3; ++passe) {
 			const bool matiere = (passe == 0);
+			const bool qualif = (passe == 2);
 			for (const char *line = text; *line; line = detail::NextLine(line)) {
 				const char *p = line;
 				NkString kw;
 				detail::TokenStr(p, kw);
 
-				if (!matiere && !detail::GraphStrEq(kw, "def") && !detail::GraphStrEq(kw, "lien"))
+				const bool estQualif = detail::GraphStrEq(kw, "lienp") || detail::GraphStrEq(kw, "liensg");
+				const bool estReference = detail::GraphStrEq(kw, "def") || detail::GraphStrEq(kw, "lien");
+				if (qualif != estQualif)
 					continue;
-				if (matiere && (detail::GraphStrEq(kw, "def") || detail::GraphStrEq(kw, "lien")))
+				if (!qualif && (matiere == estReference))
 					continue;
 
 				if (detail::GraphStrEq(kw, "compteurs")) {
@@ -598,6 +634,26 @@ namespace nkentseu {
 					NkNode *n = Find(nid);
 					if (n)
 						n->sockets.PushBack(s);
+				} else if (detail::GraphStrEq(kw, "liensg")) {
+					const uint32 lid = detail::TokenU32(p);
+					NkString nom;
+					detail::RestOfLine(p, nom);
+					NkLink *l = TrouveLien(lid);
+					if (l)
+						l->subgraph = nom;
+				} else if (detail::GraphStrEq(kw, "lienp")) {
+					const uint32 lid = detail::TokenU32(p);
+					NkString nom;
+					detail::TokenStr(p, nom);
+					NkGraphValue v;
+					detail::TakeValue(p, v);
+					NkLink *l = TrouveLien(lid);
+					if (l && nom.Size() > 0) {
+						NkGraphProp pr;
+						pr.name = nom;
+						pr.value = v;
+						l->props.PushBack(pr);
+					}
 				} else if (detail::GraphStrEq(kw, "sockf")) {
 					// La FAMILLE d'une prise deja creee par sa ligne `sock`. Lue en
 					// passe MATIERE : les liens, en passe 2, en dependent pour leur

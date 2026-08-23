@@ -1753,6 +1753,96 @@ static void CasExecLePiegeDuTypeExec() {
 		d);
 }
 
+
+// ── LE LIEN QUALIFIE (§ 20.3) ──────────────────────────────────────────────
+//
+// Une transition d'animation porte `(paramName, NkCondKind, threshold,
+// fadeDur)` et veut en plus un mini-graphe de condition. Un lien nu ne peut
+// rien de tout ca.
+//
+// 📌 ET LA SPECIFICATION SE TROMPE SUR UNE PREMISSE, MESUREE ICI : elle ecrit
+// « il n'existe AUCUNE valeur dans NKGraph, pour rien ». C'est faux --
+// `NkGraphProp`, `SetProp` et `SetSocketDefault` existent depuis le debut et
+// servent les proprietes de noeud et les defauts de prise. Le besoin 2 coute
+// donc BEAUCOUP moins cher que prevu : on REUTILISE le mecanisme au lieu d'en
+// ecrire un second, qui aurait diverge du premier au premier changement de
+// format.
+//
+// ⚠️ CE QU'ON NE FAIT PAS : une union typee dans `NkLink`. Elle grossirait a
+// chaque consommateur -- l'animation aujourd'hui, le sequenceur demain -- et
+// chaque ajout casserait le format. Une indirection ne grossit pas.
+static void CasLienQualifie() {
+	NkNodeGraph g;
+	const NkTypeId r = g.RegisterType("reel");
+	const NkNodeId a = PoseNoeudMixte(g, r, "etat.a");
+	const NkNodeId b = PoseNoeudMixte(g, r, "etat.b");
+	NkLinkId id = 0;
+	const NkLinkError e = g.Connect(a, "apres", b, "avant", &id);
+
+	// ── les REGLAGES de l'arc : le mecanisme de valeur des noeuds ────────
+	const bool poses = g.SetLinkProp(id, "seuil", NkValueReal(r, 0.75f)) &&
+					   g.SetLinkProp(id, "duree_fondu", NkValueReal(r, 0.25f)) &&
+					   g.SetLinkProp(id, "parametre", NkValueText(r, "vitesse"));
+	// poser deux fois la meme cle REMPLACE -- deux homonymes rendraient la
+	// lecture dependante de l'ordre d'insertion.
+	const bool remplace = g.SetLinkProp(id, "seuil", NkValueReal(r, 0.9f)) && g.LinkPropCount(id) == 3;
+	const NkGraphValue *seuil = g.FindLinkProp(id, "seuil");
+	const bool relit = seuil && seuil->IsSet() && seuil->numbers.Size() > 0 && seuil->numbers[0] == 0.9f;
+	// une cle inconnue rend `nullptr`, pas une valeur vide.
+	const bool inconnueNulle = g.FindLinkProp(id, "cle_absente") == nullptr;
+
+	// ── la CONDITION : une reference de sous-graphe ──────────────────────
+	// ⚠️ `nullptr` = LE LIEN N'EXISTE PAS ; chaine vide = il existe et n'a pas
+	// de condition. Deux etats, deux reponses -- regle 3.
+	const NkString *avant = g.LinkSubgraph(id);
+	const bool videAuDepart = avant && avant->Size() == 0;
+	const bool lienInexistantNul = g.LinkSubgraph(9999u) == nullptr;
+	const bool poseSg = g.SetLinkSubgraph(id, "cond.vitesse_haute");
+	const NkString *apres = g.LinkSubgraph(id);
+	const bool sgRelu = apres && *apres == NkString("cond.vitesse_haute");
+
+	// ── ET TOUT CA SURVIT AU FICHIER, OCTET POUR OCTET ───────────────────
+	NkString t1;
+	g.Serialize(t1);
+	NkNodeGraph h;
+	NkString err;
+	const bool relu = h.Deserialize(t1.CStr(), &err);
+	NkString t2;
+	h.Serialize(t2);
+	const bool identique = relu && (t1 == t2);
+	const NkGraphValue *seuilRelu = relu ? h.FindLinkProp(id, "seuil") : nullptr;
+	const NkString *sgApresVoyage = relu ? h.LinkSubgraph(id) : nullptr;
+	const bool voyageOk = seuilRelu && seuilRelu->numbers.Size() > 0 && seuilRelu->numbers[0] == 0.9f &&
+						  sgApresVoyage && *sgApresVoyage == NkString("cond.vitesse_haute") &&
+						  h.LinkPropCount(id) == 3;
+
+	// ── TEMOIN : un lien NU produit les memes octets qu'avant ────────────
+	// Sans lui, on ne saurait pas si la qualification pese sur les documents
+	// qui ne s'en servent pas.
+	NkNodeGraph nu;
+	const NkTypeId rn = nu.RegisterType("reel");
+	const NkNodeId na = PoseNoeudMixte(nu, rn, "etat.a");
+	const NkNodeId nb2 = PoseNoeudMixte(nu, rn, "etat.b");
+	nu.Connect(na, "apres", nb2, "avant");
+	NkString tn;
+	nu.Serialize(tn);
+	const bool lienNuSansLigne = !ContientLigne(tn, "lienp ") && !ContientLigne(tn, "liensg ");
+
+	NkString d;
+	d = NkFormat("lien cree={0} | 3 reglages poses={1} la meme cle REMPLACE={2} relue={3} cle inconnue "
+				 "nullptr={4} | condition : vide au depart={5} lien inexistant nullptr={6} posee={7} relue={8} "
+				 "| ALLER-RETOUR identique={9} ({10} o) et tout a survecu={11} | TEMOIN lien nu : aucune ligne "
+				 "de qualification={12}",
+				 e == NkLinkError::Ok ? 1 : 0, poses ? 1 : 0, remplace ? 1 : 0, relit ? 1 : 0,
+				 inconnueNulle ? 1 : 0, videAuDepart ? 1 : 0, lienInexistantNul ? 1 : 0, poseSg ? 1 : 0,
+				 sgRelu ? 1 : 0, identique ? 1 : 0, (uint32)t1.Size(), voyageOk ? 1 : 0,
+				 lienNuSansLigne ? 1 : 0);
+	Cas("exec/lien-qualifie",
+		e == NkLinkError::Ok && poses && remplace && relit && inconnueNulle && videAuDepart &&
+			lienInexistantNul && poseSg && sgRelu && identique && voyageOk && lienNuSansLigne,
+		d);
+}
+
 static void CasTypesEspaceEtEmpreinte() {
 	// ── 1. LE NOM QUALIFIE : sa forme est verifiee, jamais resolue ───────
 	const bool formesBonnes = NkNodeGraph::NomQualifieValide("Rihen::Difficulte") &&
@@ -7465,6 +7555,7 @@ int main() {
 	CasExecCycleLegitime();
 	CasExecAllerRetourOctetPourOctet();
 	CasExecLePiegeDuTypeExec();
+	CasLienQualifie();
 
 	// ── valeurs : defauts de prise et proprietes de noeud ────────────────
 	CasDefautDePrise();

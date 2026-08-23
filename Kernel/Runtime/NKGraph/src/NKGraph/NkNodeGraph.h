@@ -294,6 +294,8 @@ namespace nkentseu {
 		//     INDEX — l'ordre des lignes `sock`. Encore LU, jamais plus ecrit.
 		// 2 : ils la designent par son NOM. Voir NkNodeGraphIO.inl pour la mesure
 		//     qui a decide, et pour ce que la version 2 garantit.
+		// 5 : les LIENS peuvent etre QUALIFIES -- `liensg` (graphe de condition)
+		//     et `lienp` (reglages de l'arc), ecrits seulement s'ils existent.
 		// 4 : les prises portent leur FAMILLE (donnee / execution), sur une
 		//     ligne `sockf` ecrite SEULEMENT quand la famille n'est pas `Data`.
 		// 3 : les types COMPOSITES portent leur definition -- genre, membres
@@ -304,7 +306,7 @@ namespace nkentseu {
 		// ⚠️ ELLE VIT ICI ET PAS DANS LE .inl : c'est la version du MODELE, pas
 		// un detail de l'ecrivain. Un lecteur qui veut savoir ce qu'il sait lire
 		// ne devrait pas avoir a ouvrir le fichier de serialisation.
-		static const uint32 NK_NKGRAPH_VERSION = 4;
+		static const uint32 NK_NKGRAPH_VERSION = 5;
 
 		struct NkLink {
 				NkLinkId id = 0;
@@ -313,6 +315,36 @@ namespace nkentseu {
 				NkNodeId toNode = NK_NODE_INVALID;
 				int32 toSocket = -1;
 				bool alive = true;
+
+				// ── LE LIEN QUALIFIE (§ 20.3 de la specification design) ─────
+				// Une transition d'animation porte `(paramName, NkCondKind,
+				// threshold, fadeDur)` et veut en plus un mini-graphe de
+				// condition. Un lien nu ne peut rien de tout ca.
+				//
+				// ⚠️ DEUX BESOINS DISTINCTS, ET LES CONFONDRE COUTERAIT CHER :
+				//   la CONDITION est un CALCUL   -> une reference de sous-graphe
+				//   les REGLAGES sont des VALEURS -> un stockage de valeur
+				//
+				// 🔴 ET SURTOUT : PAS D'UNION TYPEE ICI. Elle grossirait a chaque
+				// consommateur -- l'animation aujourd'hui, le sequenceur demain --
+				// et chaque ajout casserait le format de fichier. Une INDIRECTION
+				// ne grossit pas. C'est le meme raisonnement que pour le nom de
+				// prise dans le lien : on stocke une cle, pas une forme.
+				//
+				// 📌 LE MECANISME DE VALEUR EXISTE DEJA : `NkGraphProp`, celui des
+				// noeuds et des defauts de prise. On le REUTILISE tel quel. La
+				// specification supposait qu'il fallait l'inventer ; il etait la.
+				// Le meme sac sert donc le cas choisi d'une enumeration, les
+				// reglages d'une transition, et tout ce qui viendra.
+
+				// Nom du graphe de CONDITION dans le document, vide s'il n'y en a
+				// pas. Meme champ, meme role et meme nom que `NkNode::subgraph` --
+				// deux noms differents pour la meme chose obligeraient a savoir
+				// lequel s'applique ou.
+				NkString subgraph;
+				// Les REGLAGES de l'arc. Le coeur ne lit jamais leur CONTENU ; il
+				// les transporte, exactement comme ceux d'un noeud.
+				NkVector<NkGraphProp> props;
 		};
 
 		// Raison d'un refus de connexion. On REND une raison plutot qu'un simple
@@ -497,7 +529,23 @@ namespace nkentseu {
 				// croiserait les familles n'existe pas, `Connect` le refuse.
 				// Rendue par le lien parce que tout le monde en a besoin :
 				// l'acyclicite, le tri, l'arite, et le fichier.
-				NkSocketFamily LinkFamily(const NkLink &l) const; ///< nullptr si l'entree est libre
+				NkSocketFamily LinkFamily(const NkLink &l) const;
+
+				// ── QUALIFIER UN LIEN ────────────────────────────────────────
+				// Meme grammaire que `SetProp` sur un noeud, et ce n'est pas une
+				// coincidence : c'est le MEME mecanisme de valeur. Poser deux fois
+				// la meme cle REMPLACE.
+				NkLink *TrouveLien(NkLinkId l);
+				const NkLink *TrouveLien(NkLinkId l) const;
+				bool SetLinkProp(NkLinkId l, const char *name, const NkGraphValue &v);
+				const NkGraphValue *FindLinkProp(NkLinkId l, const char *name) const;
+				bool RemoveLinkProp(NkLinkId l, const char *name);
+				uint32 LinkPropCount(NkLinkId l) const;
+				// Le graphe de CONDITION porte par l'arc. Vide = pas de condition,
+				// et c'est distinct d'une condition vide : `nullptr` si le lien
+				// n'existe pas, chaine vide s'il n'a pas de condition.
+				bool SetLinkSubgraph(NkLinkId l, const char *nomGraphe);
+				const NkString *LinkSubgraph(NkLinkId l) const; ///< nullptr si l'entree est libre
 
 				// ── ORDRE D'EVALUATION ───────────────────────────────────────────
 				// Tri topologique : les producteurs avant les consommateurs. Renvoie
