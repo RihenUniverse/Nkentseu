@@ -185,12 +185,10 @@ _MUTE_M22 = """	bool vrai = sp.success;
 
 # ── LA REMONTEE DES ERREURS DE GLSLANG ───────────────────────────────────────
 # M23 : les erreurs de glslang ne sont plus recopiees -- retour a l'echec MUET.
-_ANCRE_M23 = """					for (auto &e : echec.errors) {
-						NkSLCompileError etiquetee = e;
-						etiquetee.file = NkString("glslang (SPIR-V)");"""
-_MUTE_M23 = """					for (uint32 z = 0; z < 0u; ++z) {
-						NkSLCompileError etiquetee = echec.errors[z];
-						etiquetee.file = NkString("glslang (SPIR-V)");"""
+_ANCRE_M23 = """						res.errors.PushBack(etiquetee);
+					}"""
+_MUTE_M23 = """						(void)etiquetee;
+					}"""
 
 # M24 : les erreurs remontent mais SANS etiquette d'etape -- deux journaux
 # concatenes a l'aveugle, ce que Rodolf a explicitement refuse.
