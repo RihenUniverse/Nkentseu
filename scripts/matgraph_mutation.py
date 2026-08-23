@@ -238,8 +238,11 @@ MUTATIONS = {
 	"M22": {
 		"quoi": "le verdict de glslang se lit dans `success` au lieu du MOT MAGIQUE",
 		"cas": "rang4/emis-credible-contre-emis-qui-echoue",
-		"attendu": "ATTRAPEE -- quand glslang refuse, `success` reste a 1. Le banc le documente depuis le 22/08 ; "
-				   "on verifie que le NOUVEAU cas ne retombe pas dedans.",
+		"attendu": "A SURVECU depuis le correctif NKSL du 23/08 au soir, et c est ATTENDU. Tant que le repli "
+				   "preservait `success`, lire `success` mentait et cette mutation etait attrapee. Maintenant "
+				   "que NKSL le rend HONNETE, `success` et le mot magique s accordent : la defense est devenue "
+				   "REDONDANTE, donc invisible a une mutation a un seul defaut (regle 6). C est M25 -- M22 + "
+				   "M23bis -- qui mesure ce qu elle achete encore.",
 		"edits": [(BANC_SRC, _ANCRE_M22, _MUTE_M22)],
 	},
 	"M16": {
