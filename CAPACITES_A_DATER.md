@@ -379,7 +379,7 @@ range pas avec les cinq autres**.
 | **quoi** | « Chaque cible de rendu peut-elle avoir son propre réglage de mélange, ou toutes partagent-elles le même ? » |
 | **où** | `NkIDevice.h:83`. |
 | **qui s'en sert** | **0 lecture. 5 écritures** : DX11 `:1745`, DX12 `:3010`, OpenGL `:1033`, Software `:734` (**`true`**), Vulkan `:2468` (`feats.independentBlend`). |
-| **si on l'abandonne** | ⚠️ **Rien ne casse — et c'est la ligne du groupe où le drapeau est le plus clairement inutile.** DX11 **utilise déjà** la capacité **sans la consulter** : `NkDirectX11Device.cpp:1356` écrit `bsd.IndependentBlendEnable = d.blend.attachments.Size() > 1;` en dur. Vulkan construit de même un tableau de mélange par attachement. La capacité est **exercée**, le drapeau ne sert de garde à personne. |
+| **si on l'abandonne** | ⚠️ **Rien ne casse — et c'est la ligne du groupe où le drapeau est le plus clairement inutile.** DX11 **et** DX12 **utilisent déjà** la capacité **sans la consulter** : `NkDirectX11Device.cpp:1356` et `NkDirectX12Device.cpp:1758` écrivent tous deux `IndependentBlendEnable = d.blend.attachments.Size() > 1;` en dur. Vulkan construit de même un tableau de mélange par attachement. La capacité est **exercée**, le drapeau ne sert de garde à personne. |
 
 > 📌 **Recommandation : `implementee`**, avec en note **la ligne 1356** comme
 > preuve de l'usage réel — c'est exactement ce que la classe `implementee` exige :
