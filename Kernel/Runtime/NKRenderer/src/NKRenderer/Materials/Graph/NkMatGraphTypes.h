@@ -858,6 +858,65 @@ namespace nkentseu {
 			// Declare pour etre REFUSE en se nommant -- il n'a rien a lire.
 			static const char *const NK_MN_OBJECT_INFO = "mat.info_objet";
 
+			// ── SELECTIONNER : LA CONDITION DE VALEUR ────────────────────────
+			//
+			// Demande de Rodolf, validee le 2026-08-23 apres explication.
+			//
+			// ⚠️ CE N'EST PAS UN `Si/Sinon` D'EXECUTION, ET LA DIFFERENCE EST LE
+			// NOEUD ENTIER. Un materiau n'a jamais besoin de decider s'il
+			// EXECUTE quelque chose ; il a besoin de decider QUELLE VALEUR il
+			// prend. Deux entrees, une condition, une sortie. L'execution reste
+			// hors du graphe -- c'est la premiere ligne de ce fichier.
+			//
+			// ═══════════════════════════════════════════════════════════════
+			// 📌 CE QU'UN BRANCHEMENT COUTE, ET POURQUOI IL FAUT L'ECRIRE ICI
+			// ═══════════════════════════════════════════════════════════════
+			// Sans cette note quelqu'un croira le noeud cher, parce que « les
+			// branchements coutent cher sur GPU » se transmet sans sa condition.
+			//
+			//   - Condition UNIFORME (un parametre expose, pilote par le
+			//     gameplay) : BON MARCHE. Tous les pixels du tirage prennent la
+			//     MEME branche, la carte n'en execute qu'une. C'est le cas
+			//     d'usage vise, et c'est celui qui rend le noeud interessant.
+			//   - Condition PAR PIXEL (issue d'une texture, d'un bruit, de la
+			//     geometrie) : les pixels d'un meme groupe divergent, et le
+			//     materiel execute alors LES DEUX branches en masquant. C'est
+			//     LA le cout, et il ne vient pas du branchement en soi.
+			//
+			// ⚠️ ET CE QUE CE NOEUD N'ECONOMISE PAS AUJOURD'HUI — mesure, pas
+			// suppose. Ce compilateur emet chaque noeud comme une locale, dans
+			// l'ordre topologique : les DEUX cotes sont calcules AVANT la
+			// selection, quel que soit le resultat. Poser un `Selectionner`
+			// entre deux chaines de textures couteuses ne fait donc PAS
+			// l'economie de la chaine inutilisee. Il choisit, il ne saute pas.
+			// L'economie viendrait d'un emetteur qui enfoncerait le calcul DANS
+			// la branche ; il n'existe pas, et le pretendre serait vendre une
+			// optimisation qui n'a pas lieu.
+			//
+			// ⚠️ CE QUE `Selectionner` NE FERA JAMAIS : changer de TEXTURE ou de
+			// modele d'eclairage. Cela n'est pas un parametre -- c'est un
+			// changement STRUCTUREL, qui se traite par deux chemins dans un
+			// shader ou par des variantes compilees a l'avance. C'est une
+			// affaire de COMPILATEUR, pas de graphe. On le nomme pour que
+			// personne ne vienne le demander a ce noeud.
+			//
+			// ── DEUX NOEUDS ET NON UN, ET C'EST UNE REGLE DE LA MAISON ───────
+			// `Math` est reel, `Mix Color` est couleur : le depot a deja tranche
+			// que la valeur et la couleur ne se melangent pas dans un seul
+			// noeud. On suit. Un noeud unique a deux sorties aurait oblige
+			// l'auteur qui n'en branche qu'une a lire ZERO sur l'autre -- « rien »
+			// rendu comme « zero », la regle 3, sur un noeud tout neuf.
+			static const char *const NK_MN_SELECT = "mat.selectionner";
+			static const char *const NK_MN_SELECT_COLOR = "mat.selectionner_couleur";
+
+			// ⚠️ LE SEUIL EST 0.5, ET CE N'EST PAS ARBITRAIRE. Il n'existe pas de
+			// type booleen : la condition est un REEL, et le gameplay y ecrira 0
+			// ou 1. Un seuil a `!= 0.0` ferait basculer sur `1e-30` -- le residu
+			// d'un calcul qui a sous-deborde -- et l'auteur lirait une valeur
+			// parfaitement credible. 0.5 est le seul seuil equidistant des deux
+			// valeurs attendues : aucune imprecision de flottant ne le franchit.
+			static const float32 NK_SELECT_SEUIL = 0.5f;
+
 			static const char *const NK_MPROP_CANAL_UV = "canal";
 			static const char *const NK_MPROP_ATTRIBUT = "nom";
 
@@ -1295,6 +1354,22 @@ namespace nkentseu {
 					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
 				};
 
+				// `condition` D'ABORD, comme `fac` chez Mix Color : l'ordre des
+				// prises EST leur index, et les liens s'y referent.
+				static const NkMatSocketDecl kSelect[] = {
+					{"condition", NK_MT_REAL, NkSocketDir::Input, false},
+					{"si_vrai", NK_MT_REAL, NkSocketDir::Input, false},
+					{"si_faux", NK_MT_REAL, NkSocketDir::Input, false},
+					{"valeur", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+
+				static const NkMatSocketDecl kSelectColor[] = {
+					{"condition", NK_MT_REAL, NkSocketDir::Input, false},
+					{"si_vrai", NK_MT_COLOR, NkSocketDir::Input, false},
+					{"si_faux", NK_MT_COLOR, NkSocketDir::Input, false},
+					{"couleur", NK_MT_COLOR, NkSocketDir::Output, false},
+				};
+
 				static const NkMatSocketDecl kMath[] = {
 					{"a", NK_MT_REAL, NkSocketDir::Input, false},
 					{"b", NK_MT_REAL, NkSocketDir::Input, false},
@@ -1368,6 +1443,12 @@ namespace nkentseu {
 					{NK_MN_RGB, "RGB", kRGB, 1, false},
 					{NK_MN_MATH, "Math", kMath, 3, false},
 					{NK_MN_MIX_COLOR, "Mix Color", kMixColor, 4, false},
+					// ⚠️ `false` : une condition de valeur n'est PAS une source par
+					// pixel. Elle ne fabrique aucune coordonnee -- elle propage par
+					// contagion ce que ses entrees portent deja. Le declarer `true`
+					// forcerait par pixel des materiaux entierement uniformes.
+					{NK_MN_SELECT, "Selectionner", kSelect, 4, false},
+					{NK_MN_SELECT_COLOR, "Selectionner (couleur)", kSelectColor, 4, false},
 					{NK_MN_COLOR_RAMP, "ColorRamp", kColorRamp, 2, false},
 					// echantillonne a une coordonnee interpolee
 					{NK_MN_IMAGE_TEXTURE, "Image Texture", kImageTexture, 3, true},

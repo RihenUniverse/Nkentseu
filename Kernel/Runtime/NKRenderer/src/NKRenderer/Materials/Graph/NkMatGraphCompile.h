@@ -1008,9 +1008,58 @@ namespace nkentseu {
 								   "pas par un chiffre)");
 							return r;
 						}
-						if (sk.type == t.shader) {
-							refuse("une prise de type shader ne peut pas etre exposee (ce n'est pas une valeur "
-								   "uniforme)");
+						// ═══════════════════════════════════════════════════════
+						// 🔴 CE QU'UN TAMPON UNIFORME ACCEPTE — LA LISTE EST CLOSE
+						// ═══════════════════════════════════════════════════════
+						//
+						// ⚠️ LA CONTRAINTE VIENT DU CHOIX D'EN DESSOUS, PAS D'ICI.
+						// Un parametre ecrit depuis le gameplay ne doit JAMAIS
+						// faire recompiler le graphe — reconstruire un shader a
+						// chaque image est hors de question tant qu'on n'a pas de
+						// quoi l'accelerer. Il vit donc dans un TAMPON UNIFORME,
+						// et cela DECIDE de ce qui est exposable : seul est
+						// exposable ce dont on connait la disposition en `std140`
+						// ET en HLSL, et dont les deux tombent au meme octet.
+						//
+						// Trois types la remplissent, et ce sont les seuls :
+						//   reel     -> `float`, 4 o
+						//   vecteur  -> `vec3`, aligne 16, occupe 12
+						//   couleur  -> `vec3`, idem
+						//
+						// ⚠️ AVANT, CETTE PASSE NE REFUSAIT QUE `shader`. C'etait
+						// la REGLE 4 en pleine forme — « une condition
+						// implicitement vraie parce qu'il n'existait qu'un cas ».
+						// « tout ce qui n'est pas reel est un vec3 » n'etait vrai
+						// que parce que `rampe` et `courbe` ne figurent
+						// aujourd'hui sur AUCUNE prise d'ENTREE du catalogue :
+						// `ColorRamp` porte sa rampe en PROPRIETE, pas en prise.
+						// Le jour ou une prise de type `rampe` apparait — et la
+						// porte du catalogue est ouverte a l'execution, donc ce
+						// jour peut etre demain — l'emission ecrivait
+						// `vec3 maRampe;` sans un mot, le moteur y versait douze
+						// octets, et la rampe restait celle de la compilation.
+						//
+						// 📌 REGLE 5 : la convention existait deja UN ETAGE PLUS
+						// BAS. Le rang 4 verifie ses canaux contre une liste
+						// CLOSE derivee de ce que le shader LIT, et refuse un nom
+						// absent EN LE NOMMANT. On applique ici la meme forme, et
+						// pour la meme raison : une liste ouverte par defaut
+						// rabat le cas inconnu sur un voisin plausible.
+						//
+						// ⚠️ CE QUE CETTE LISTE NE COUVRE PAS, ET N'A PAS A
+						// COUVRIR : un changement STRUCTUREL — brancher une AUTRE
+						// texture, changer de modele d'eclairage — n'est pas un
+						// parametre. Cela se traite par deux chemins dans un
+						// shader ou par des variantes compilees a l'avance.
+						// C'est une affaire de COMPILATEUR, pas de graphe, et
+						// aucune entree de ce bloc ne le rendra possible.
+						if (!(sk.type == t.real || sk.type == t.vector || sk.type == t.color)) {
+							const NkString *nt = g.TypeName(sk.type);
+							NkString quoi("type non exposable dans un tampon uniforme '");
+							quoi.Append(nt ? *nt : NkString("?"));
+							quoi.Append("' (exposables : reel, vecteur, couleur — un tampon uniforme n'a de "
+										"disposition connue que pour ceux-la)");
+							refuse(quoi.CStr());
 							return r;
 						}
 
@@ -2239,6 +2288,51 @@ namespace nkentseu {
 						s.Append(")), (");
 						ecrisEntree(*n, "max", "float", nullptr);
 						s.Append("));\n");
+					} else if (t == NkString(NK_MN_SELECT) || t == NkString(NK_MN_SELECT_COLOR)) {
+						// ── LA CONDITION DE VALEUR ───────────────────────────
+						// Deux entrees, une condition, une sortie. Voir la note
+						// longue de NkMatGraphTypes.h pour ce qu'un branchement
+						// coute VRAIMENT, et pour ce que ce noeud n'economise pas.
+						//
+						// ⚠️ ON EMET UN VRAI `if/else`, ET PAS `mix(b, a, step(...))`.
+						// Les deux donnent le meme pixel. Le `mix` calcule TOUJOURS
+						// les deux cotes ; l'`if` laisse au pilote la possibilite de
+						// n'en prendre qu'un quand la condition est UNIFORME -- ce
+						// qui est precisement le cas d'usage vise. Ecrire le `mix`
+						// fermerait cette porte pour toujours, et personne ne
+						// reviendrait dessus : ca « marche ».
+						//
+						// ⚠️ ET LA LOCALE EST DECLAREE PUIS AFFECTEE, en deux temps.
+						// Une declaration a l'interieur des accolades ne survivrait
+						// pas a la branche, et les noeuds suivants liraient un nom
+						// qui n'existe plus -- une erreur du backend qui accuserait
+						// le generateur.
+						const bool selCouleur = (t == NkString(NK_MN_SELECT_COLOR));
+						const char *ty = selCouleur ? "vec3" : "float";
+						const char *sortie = selCouleur ? "couleur" : "valeur";
+						s.Append("    ");
+						s.Append(ty);
+						s.Append(" ");
+						detail::PutNom(s, n->id, sortie);
+						s.Append(" = ");
+						s.Append(selCouleur ? "vec3(0.0)" : "0.0");
+						s.Append(";\n");
+						// Le seuil vient de la constante, jamais d'un litteral
+						// recopie : deux seuils qui divergeraient donneraient un
+						// noeud qui bascule ailleurs que ce que sa note annonce.
+						s.Append("    if ((");
+						ecrisEntree(*n, "condition", "float", nullptr);
+						s.Append(") > ");
+						detail::PutLit(s, NK_SELECT_SEUIL);
+						s.Append(") {\n        ");
+						detail::PutNom(s, n->id, sortie);
+						s.Append(" = (");
+						ecrisEntree(*n, "si_vrai", ty, nullptr);
+						s.Append(");\n    } else {\n        ");
+						detail::PutNom(s, n->id, sortie);
+						s.Append(" = (");
+						ecrisEntree(*n, "si_faux", ty, nullptr);
+						s.Append(");\n    }\n");
 					} else if (t == NkString(NK_MN_COMBINE_XYZ)) {
 						s.Append("    vec3 ");
 						detail::PutNom(s, n->id, "vector");

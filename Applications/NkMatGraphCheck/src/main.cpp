@@ -2531,6 +2531,152 @@ static void CasDecalagesStd140() {
 			 remplissageEmis ? 1 : 0, be));
 }
 
+// ── LE HLSL EMIS, RANGE SELON LES REGLES DE HLSL ─────────────────────────────
+//
+// ⚠️ CECI TERMINE LA MESURE INTERROMPUE LE 23/08, et c'est le seul controle du
+// banc qui traverse REELLEMENT les deux conventions.
+//
+// Le cas voisin `variable/decalages-et-remplissage-emis` dit lui-meme sa
+// limite : il compare la table de decalages du compilateur A ELLE-MEME, et il
+// est reste vert trois jours pendant que le moteur ecrivait a 16 et que la
+// carte lisait a 4. Celui-ci prend le HLSL que NkSL vient d'emettre, le range
+// selon HLSL, et exige que chaque parametre tombe a l'octet ou la table
+// PUBLIEE (std140) l'annonce. C'est un ACCORD, plus une convention.
+//
+// La regle de rangement HLSL, la seule qui compte ici : un membre se pose au
+// curseur, SAUF s'il CHEVAUCHAIT alors une frontiere de 16 octets — auquel cas
+// il passe a la suivante. Un `float3` occupe 12 octets : apres un `float` il
+// tient entier dans 4..16, donc HLSL le pose a **4** la ou std140 le pose a
+// **16**. C'est tout le desaccord, et il est muet.
+//
+// ⚠️ CE N'EST PAS LE PIXEL. Le pixel reste le juge — c'est
+// `rendu/parametre-expose-pilote-le-pixel`, dans NkMatGraphDemo. Ce cas-ci ne
+// prouve pas que la carte lit ce que le moteur ecrit ; il prouve que les deux
+// DISPOSITIONS coincident, ce qui est la moitie que le banc pouvait tenir sans
+// GPU et ne tenait pas.
+static uint32 RangeCBufferHLSL(const NkString &hlsl, const char *bloc, NkString *noms, uint32 *offs, uint32 maxN) {
+	NkString motif("cbuffer ");
+	motif.Append(bloc);
+	const int32 d = Apres(hlsl, motif.CStr());
+	if (d < 0)
+		return 0;
+	const char *p = hlsl.CStr() + d;
+	while (*p && *p != '{')
+		++p;
+	if (!*p)
+		return 0;
+	++p;
+	uint32 n = 0;
+	uint32 curseur = 0;
+	while (*p && *p != '}') {
+		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+			++p;
+		if (!*p || *p == '}')
+			break;
+		NkString typ;
+		while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r' && *p != ';') {
+			typ.Append(*p);
+			++p;
+		}
+		while (*p == ' ' || *p == '\t')
+			++p;
+		NkString nom;
+		while (*p && *p != ';' && *p != '\n' && *p != '\r') {
+			if (*p != ' ' && *p != '\t')
+				nom.Append(*p);
+			++p;
+		}
+		if (*p == ';')
+			++p;
+		uint32 taille = 0;
+		if (typ == NkString("float"))
+			taille = 4u;
+		else if (typ == NkString("float2"))
+			taille = 8u;
+		else if (typ == NkString("float3"))
+			taille = 12u;
+		else if (typ == NkString("float4"))
+			taille = 16u;
+		else
+			continue; // un type qu'on ne sait pas ranger : on ne DEVINE pas.
+		// La regle HLSL : ne pas CHEVAUCHER une frontiere de 16.
+		if ((curseur % 16u) + taille > 16u)
+			curseur = NkMatAlignUp(curseur, 16u);
+		if (n < maxN) {
+			noms[n] = nom;
+			offs[n] = curseur;
+			++n;
+		}
+		curseur += taille;
+	}
+	return n;
+}
+
+// Cherche dans la table rangee le membre `<bloc>_<nom>` et rend son decalage,
+// ou 0xFFFFFFFF s'il n'y est pas. Le prefixe est celui que le generateur HLSL
+// colle devant chaque membre de cbuffer.
+static uint32 DecalageHLSLDe(const NkString *noms, const uint32 *offs, uint32 n, const char *bloc,
+							 const NkString &nom) {
+	NkString cible(bloc);
+	cible.Append("_");
+	cible.Append(nom);
+	for (uint32 i = 0; i < n; ++i)
+		if (noms[i] == cible)
+			return offs[i];
+	return 0xFFFFFFFFu;
+}
+
+static void CasAccordStd140HLSLSurLeHLSLEmis() {
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId bsdf = MontePrincipledExposable(g, t);
+	// ⚠️ DEUX PARAMETRES AU MOINS, ET UN VECTEUR APRES UN REEL. C'est la seule
+	// forme qui mesure quelque chose : un montage a UN SEUL vecteur tombe a 0
+	// sous les DEUX conventions, et serait reste vert le jour de la panne.
+	Expose(g, t, bsdf, "metallic", "metal");	// reel
+	Expose(g, t, bsdf, "base_color", "teinte"); // vec3 — celui qui revele le desaccord
+	Expose(g, t, bsdf, "roughness", "usure");	// reel
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
+
+	NkSLCompiler c;
+	NkString hlsl;
+	if (r.ok) {
+		NkSLCompileResult h = c.Compile(r.source, NkSLStage::NK_FRAGMENT, NkSLTarget::NK_HLSL_DX11);
+		hlsl = h.source;
+	}
+	NkString noms[24];
+	uint32 offs[24];
+	const uint32 nm = hlsl.Size() ? RangeCBufferHLSL(hlsl, renderer::NK_MATBIND_GRAPH_PARAMS_BLOCK, noms, offs, 24u) : 0u;
+
+	// Le bloc emis doit porter les trois parametres ET les trois remplissages :
+	// six membres. Un compte plus petit voudrait dire qu'un remplissage n'a pas
+	// traverse jusqu'au HLSL — et c'est LUI qui fait coincider les conventions.
+	const bool sixMembres = (nm == 6u);
+
+	// L'ACCORD, parametre par parametre : le decalage calcule sous HLSL doit
+	// valoir celui que la table publie sous std140.
+	bool accord = r.ok && nm > 0;
+	NkString ligne;
+	for (uint32 i = 0; i < (uint32)r.params.Size(); ++i) {
+		const NkMatParamExpose &p = r.params[i];
+		const uint32 oh = DecalageHLSLDe(noms, offs, nm, renderer::NK_MATBIND_GRAPH_PARAMS_BLOCK, p.nom);
+		if (oh != p.decalage)
+			accord = false;
+		ligne.Append(NkFormat("{0} std140@{1} hlsl@{2}{3} | ", p.nom, p.decalage, oh,
+							  NkString(oh == p.decalage ? "" : " DESACCORD")));
+	}
+	// Le temoin qui empeche le cas de se rassurer tout seul : le montage DOIT
+	// contenir un vecteur qui suit un reel. Sans lui les deux conventions
+	// tombent au meme endroit pour de mauvaises raisons.
+	const NkMatParamExpose *v = r.ok ? r.TrouveParam("teinte") : nullptr;
+	const bool temoinUtile = v && v->decalage == 16u && v->remplissageAvant == 3u;
+
+	Cas("variable/accord-std140-hlsl-sur-le-hlsl-emis", r.ok && accord && sixMembres && temoinUtile,
+		NkFormat("{0}membres du cbuffer={1} (6 attendus : 3 parametres + 3 remplissages) | TEMOIN un vec3 "
+				 "APRES un reel, sans quoi les deux conventions donnent 0 des deux cotes={2}",
+				 ligne, nm, temoinUtile ? 1 : 0));
+}
+
 static void CasPriseConnecteeEtExposeeRefusee() {
 	// 🔴 LE CAS LE PLUS INSIDIEUX DE LA SERIE, et celui que ma proposition avait
 	// oublie. Si une prise recoit un LIEN **et** porte une exposition, le lien
@@ -2613,6 +2759,69 @@ static void CasExposeRefusNommes() {
 	Cas("variable/refus-nommes-et-distincts", distincts,
 		NkFormat("[{0}] [{1}] [{2}] [{3}] | quatre messages distincts={4}", m[0], m[1], m[2], m[3],
 				 distincts ? 1 : 0));
+}
+
+static void CasTypesExposablesListeClose() {
+	// 🔴 CE QUE LE TAMPON UNIFORME DECIDE, ET QUI N'EST PAS UN DETAIL D'API.
+	//
+	// Un parametre ecrit depuis le gameplay ne doit JAMAIS faire recompiler le
+	// graphe. Il vit donc dans un tampon uniforme — et c'est CELA qui contraint
+	// ce qui est exposable : seul l'est ce dont la disposition est connue en
+	// `std140` ET en HLSL, et dont les deux tombent au meme octet.
+	//
+	// ⚠️ CE CAS EXISTE PARCE QUE LA PASSE NE REFUSAIT QUE `shader`. Le reste
+	// tombait dans un `else` — « tout ce qui n'est pas reel est un vec3 » — vrai
+	// UNIQUEMENT parce qu'aucune prise d'ENTREE du catalogue ne porte
+	// aujourd'hui `rampe` ni `courbe` (ColorRamp range sa rampe en PROPRIETE).
+	// C'est la regle 4 mot pour mot : une condition implicitement vraie parce
+	// qu'il n'existait qu'un cas.
+	//
+	// ET LE TROU EST ATTEIGNABLE, ce n'est pas une hypothese d'ecole :
+	// `NkNodeGraph::AddSocket` est publique, et le catalogue est ouvert a
+	// l'execution. Le cas l'emprunte telle quelle.
+	NkString msg;
+	{
+		NkNodeGraph g;
+		const NkMatTypes t = NkMatRegisterTypes(g);
+		const NkNodeId bsdf = MontePrincipledExposable(g, t);
+		g.AddSocket(bsdf, "rampe_pilotee", t.ramp, NkSocketDir::Input);
+		Expose(g, t, bsdf, "rampe_pilotee", "degrade");
+		msg = NkMatCompileToNkSL(gReg, g).error;
+	}
+	// Le refus doit NOMMER le type demande — sinon l'auteur cherche du cote de
+	// son nom public, qui est parfaitement valide.
+	const bool refuse = msg.Size() > 0 && Apres(msg, "mat.rampe") > 0;
+
+	// ⚠️ LE TEMOIN QUI EMPECHE LA LISTE DE SE VIDER. Une liste close qui
+	// refuserait TOUT passerait la moitie ci-dessus sans broncher. Les trois
+	// types exposables doivent donc etre ACCEPTES, et dans le meme montage.
+	NkNodeGraph g2;
+	const NkMatTypes t2 = NkMatRegisterTypes(g2);
+	const NkNodeId b2 = MontePrincipledExposable(g2, t2);
+	g2.AddSocket(b2, "vecteur_pilote", t2.vector, NkSocketDir::Input);
+	Expose(g2, t2, b2, "roughness", "usure");	 // reel
+	Expose(g2, t2, b2, "base_color", "teinte");	 // couleur
+	Expose(g2, t2, b2, "vecteur_pilote", "axe"); // vecteur
+	NkMatCompileResult r2 = NkMatCompileToNkSL(gReg, g2);
+	const bool troisAcceptes = r2.ok && r2.params.Size() == 3;
+
+	// Et une COURBE se refuse aussi : deux types absents de la liste, pas un.
+	// Un seul aurait pu etre attrape par un cas particulier au lieu d'une liste.
+	NkString msgC;
+	{
+		NkNodeGraph g3;
+		const NkMatTypes t3 = NkMatRegisterTypes(g3);
+		const NkNodeId b3 = MontePrincipledExposable(g3, t3);
+		g3.AddSocket(b3, "courbe_pilotee", t3.curve, NkSocketDir::Input);
+		Expose(g3, t3, b3, "courbe_pilotee", "reglage");
+		msgC = NkMatCompileToNkSL(gReg, g3).error;
+	}
+	const bool refuseCourbe = msgC.Size() > 0 && Apres(msgC, "mat.courbe") > 0;
+
+	Cas("variable/types-exposables-liste-close", refuse && refuseCourbe && troisAcceptes,
+		NkFormat("rampe refusee en se nommant={0} [{1}] | courbe refusee en se nommant={2} | TEMOIN les trois "
+				 "exposables (reel, vecteur, couleur) passent ensemble={3} ({4} parametres)",
+				 refuse ? 1 : 0, msg, refuseCourbe ? 1 : 0, troisAcceptes ? 1 : 0, (uint32)r2.params.Size()));
 }
 
 static void CasDefautEstCeluiDeLaPrise() {
@@ -3462,6 +3671,167 @@ static NkMatCompileResult CompileOutil(const char *cle, const char *prise, const
 		g.SetProp(n, propCle, NkValueText(t.real, propVal));
 	g.Connect(n, prise, bsdf, cible);
 	return NkMatCompileToNkSL(gReg, g);
+}
+
+// ── SELECTIONNER : LA CONDITION DE VALEUR ────────────────────────────────────
+
+// Monte les deux variantes dans UN SEUL graphe : le reel pilote `roughness`,
+// la couleur pilote `base_color`. Les deux doivent traverser ensemble — un
+// montage par variante aurait laisse passer une collision de noms de locales.
+static NkNodeId MonteDeuxSelections(NkNodeGraph &g, const NkMatTypes &t, NkNodeId *outSelReel,
+									NkNodeId *outSelCoul) {
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	const NkNodeId sr = NkMatAddNode(gReg, g, NK_MN_SELECT);
+	const NkNodeId sc = NkMatAddNode(gReg, g, NK_MN_SELECT_COLOR);
+	g.SetSocketDefault(sr, "si_vrai", NkSocketDir::Input, NkValueReal(t.real, 0.9f));
+	g.SetSocketDefault(sr, "si_faux", NkSocketDir::Input, NkValueReal(t.real, 0.1f));
+	const float32 chaud[3] = {0.9f, 0.3f, 0.1f};
+	const float32 froid[3] = {0.1f, 0.3f, 0.9f};
+	g.SetSocketDefault(sc, "si_vrai", NkSocketDir::Input, NkValueVec(t.color, chaud, 3));
+	g.SetSocketDefault(sc, "si_faux", NkSocketDir::Input, NkValueVec(t.color, froid, 3));
+	// ⚠️ LES DEUX SORTIES SONT BRANCHEES. Un Selectionner dont personne ne lit
+	// la sortie serait emis puis ignore, et le cas mesurerait l'emission d'un
+	// noeud mort — pas le fait que sa locale ARRIVE quelque part.
+	g.Connect(sr, "valeur", bsdf, "roughness");
+	g.Connect(sc, "couleur", bsdf, "base_color");
+	if (outSelReel)
+		*outSelReel = sr;
+	if (outSelCoul)
+		*outSelCoul = sc;
+	return bsdf;
+}
+
+static void CasSelectionCompileEtBranche() {
+	// 🔴 LE RISQUE PRECIS DE CE NOEUD : c'est le PREMIER du compilateur a emettre
+	// un « if » de STATEMENT. Tout le reste du fichier n'emet que des
+	// expressions. Le dialecte NkSL porte trois contraintes connues (pas de
+	// struct locale, pas de retour de struct, pas de varying dans un helper) et
+	// AUCUNE ne parle des branches — ce qui ne prouve rien. Ce cas le mesure au
+	// lieu de le supposer, et c'est glslang qui tranche : les quatre autres
+	// colonnes n'attestent que la GENERATION.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId sr = NK_NODE_INVALID, sc = NK_NODE_INVALID;
+	MonteDeuxSelections(g, t, &sr, &sc);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+
+	// La forme emise : une branche, pas un melange. Si quelqu'un remplace un
+	// jour le « if » par « mix(b, a, step(...)) », l'image reste identique — et
+	// l'argument « bon marche sur une condition uniforme » disparait sans que
+	// rien ne rougisse. Ce cas est le seul garde-fou de cet argument.
+	const bool branche = r.ok && Apres(r.source, "    if ((") > 0 && Apres(r.source, "} else {") > 0;
+	const bool pasDeMelange = r.ok && Apres(r.source, "step(") < 0;
+
+	// ⚠️ LA LOCALE EST DECLAREE AVANT LA BRANCHE, et c'est ce qui la rend
+	// lisible par les noeuds suivants. Une declaration a l'interieur des
+	// accolades compilerait cote generateur et tomberait chez glslang.
+	NkString decl("float ");
+	{
+		char b[32];
+		snprintf(b, sizeof(b), "n%u_valeur = 0.0;", (unsigned)sr);
+		decl.Append(b);
+	}
+	const bool declareeAvant = r.ok && Apres(r.source, decl.CStr()) > 0;
+
+	// Les deux variantes coexistent : un reel ET une couleur dans le meme shader.
+	const bool lesDeux = r.ok && Apres(r.source, "vec3 n") > 0 && declareeAvant;
+
+	Cas("selection/deux-variantes-compilent-et-branchent", r.ok && ok == 5 && branche && pasDeMelange && lesDeux,
+		NkFormat("{0}| un vrai if/else emis={1} | aucun step (donc pas un melange deguise)={2} | la locale est "
+				 "DECLAREE avant la branche, sinon elle n'y survit pas={3} | reel et couleur dans le meme "
+				 "shader={4} | {5}",
+				 be, branche ? 1 : 0, pasDeMelange ? 1 : 0, declareeAvant ? 1 : 0, lesDeux ? 1 : 0, err));
+}
+
+static void CasSelectionSeuilEtRefusDuZero() {
+	// ⚠️ LE SEUIL EST 0.5, ET IL VIENT DE LA CONSTANTE.
+	//
+	// Il n'existe pas de type booleen : la condition est un REEL, et le gameplay
+	// y ecrira 0 ou 1. Un seuil a « different de 0 » basculerait sur 1e-30 — le
+	// residu d'un calcul qui a sous-deborde — et l'auteur lirait une valeur
+	// credible. 0.5 est le seul seuil equidistant des deux valeurs attendues.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	MonteDeuxSelections(g, t, nullptr, nullptr);
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
+	const bool seuil = r.ok && Apres(r.source, ") > 0.5)") > 0;
+	// Le TEMOIN qui empeche le cas de se contenter du chiffre : aucune
+	// comparaison a zero ne doit subsister. Un « > 0.0 » passerait la ligne
+	// ci-dessus si un seul des deux noeuds portait le bon seuil.
+	const bool pasDeZero = r.ok && Apres(r.source, ") > 0.0)") < 0;
+	// ET LE SEUIL EST LE MEME DES DEUX COTES : deux noeuds, deux occurrences.
+	uint32 n = 0;
+	if (r.ok) {
+		for (const char *q = r.source.CStr(); *q; ++q) {
+			const char *a = q;
+			const char *b = ") > 0.5)";
+			while (*b && *a == *b) {
+				++a;
+				++b;
+			}
+			if (*b == 0)
+				++n;
+		}
+	}
+	Cas("selection/seuil-a-0.5-jamais-a-zero", r.ok && seuil && pasDeZero && n == 2u,
+		NkFormat("seuil 0.5 emis={0} | aucune comparaison a zero={1} | occurrences={2} (2 attendues : les DEUX "
+				 "noeuds portent le meme seuil, tire de NK_SELECT_SEUIL)",
+				 seuil ? 1 : 0, pasDeZero ? 1 : 0, n));
+}
+
+static void CasSelectionUniformeEtCeQuElleNEconomisePas() {
+	// ═══════════════════════════════════════════════════════════════════════
+	// 📌 CE QUE CE CAS DOCUMENTE, ET QUI N'EST PAS UN CONTROLE DE PLUS
+	// ═══════════════════════════════════════════════════════════════════════
+	//
+	// Un branchement sur une valeur UNIFORME est bon marche : tous les pixels du
+	// tirage prennent la meme branche, la carte n'en execute qu'une. C'est un
+	// branchement PAR PIXEL qui coute les deux. Sans cette note ecrite a cote du
+	// noeud, quelqu'un le croira cher — « les branchements coutent cher sur
+	// GPU » se transmet toujours sans sa condition.
+	//
+	// 🔴 ET LA MOITIE QUE PERSONNE N'ECRIT JAMAIS : ce noeud N'ECONOMISE PAS le
+	// calcul de la branche non prise. Le compilateur emet chaque noeud comme une
+	// locale, dans l'ordre topologique — les deux cotes sont calcules AVANT la
+	// branche. Le cas le MESURE au lieu de le supposer : il place un bruit
+	// couteux sur le cote « si_faux » et verifie que son appel apparait AVANT le
+	// « if » dans la source emise. Tant que c'est vrai, promettre l'economie
+	// serait vendre une optimisation qui n'a pas lieu.
+	NkNodeGraph g;
+	const NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId bsdf = NkMatAddNode(gReg, g, NK_MN_PRINCIPLED);
+	g.Connect(bsdf, "bsdf", out, "surface");
+	const NkNodeId sel = NkMatAddNode(gReg, g, NK_MN_SELECT);
+	const NkNodeId bruit = NkMatAddNode(gReg, g, NK_MN_NOISE);
+	g.SetSocketDefault(sel, "si_vrai", NkSocketDir::Input, NkValueReal(t.real, 0.2f));
+	g.Connect(bruit, "fac", sel, "si_faux"); // le cote COUTEUX
+	g.Connect(sel, "valeur", bsdf, "roughness");
+	// La condition est un PARAMETRE EXPOSE : c'est le cas d'usage vise, celui ou
+	// la carte ne prend qu'un chemin.
+	Expose(g, t, sel, "condition", "mode_use");
+	NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
+
+	// 1. La condition lit bien le BLOC UNIFORME, et pas une varying : c'est ce
+	//    qui rend la branche uniforme, et donc bon marche.
+	const bool conditionUniforme = r.ok && Apres(r.source, "if ((nkParams.mode_use)") > 0;
+	// 2. Le bruit — le cote couteux — est calcule AVANT le « if ». C'est la
+	//    limitation, mesuree et non supposee.
+	const int32 posBruit = r.ok ? Apres(r.source, "NkFBM2D((") : -1;
+	const int32 posIf = r.ok ? Apres(r.source, "    if ((") : -1;
+	const bool calculeAvant = posBruit > 0 && posIf > 0 && posBruit < posIf;
+	NkString be, err;
+	const uint32 ok = r.ok ? CompileSurLesBackends(r.source, be, &err) : 0u;
+	Cas("selection/condition-uniforme-mais-les-deux-cotes-sont-calcules",
+		r.ok && ok == 5 && conditionUniforme && calculeAvant,
+		NkFormat("{0}| la condition lit le bloc uniforme (branche BON MARCHE : un seul chemin)={1} | le cote "
+				 "couteux est calcule AVANT le if (le noeud CHOISIT, il ne SAUTE pas)={2} bruit@{3} if@{4}",
+				 be, conditionUniforme ? 1 : 0, calculeAvant ? 1 : 0, (uint32)(posBruit < 0 ? 0 : posBruit),
+				 (uint32)(posIf < 0 ? 0 : posIf)));
 }
 
 static void CasMapRangeEtBornage() {
@@ -5761,8 +6131,10 @@ int main() {
 	// -- les parametres EXPOSES : l'API publique du moteur ---------------
 	CasExposeLitLeBloc();
 	CasDecalagesStd140();
+	CasAccordStd140HLSLSurLeHLSLEmis();
 	CasPriseConnecteeEtExposeeRefusee();
 	CasExposeRefusNommes();
+	CasTypesExposablesListeClose();
 	CasDefautEstCeluiDeLaPrise();
 	CasJetonSuitLaDisposition();
 	CasRechercheParNom();
@@ -5780,6 +6152,9 @@ int main() {
 	CasSortieSourcesEtNoms();
 	CasSortiePlusieursEtGraphesExistants();
 	CasSortieDivisionParZero();
+	CasSelectionCompileEtBranche();
+	CasSelectionSeuilEtRefusDuZero();
+	CasSelectionUniformeEtCeQuElleNEconomisePas();
 	CasMapRangeEtBornage();
 	CasClampBornesInversees();
 	CasCombineXYZ();
