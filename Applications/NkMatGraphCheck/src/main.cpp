@@ -1419,6 +1419,185 @@ static void CasFichierPriseInconnueRefusee() {
 // ⚠️ ET IL MESURE L'AUTRE BOUT : une version inconnue est REFUSEE en se nommant.
 // Lire un fichier futur « au mieux » rendrait un graphe plausible et faux --
 // exactement la meme faute que le repli plausible sur un canal inconnu.
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LES ESPACES DE NOMS ET L'EMPREINTE DE STRUCTURE
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Decision de Rodolf : « on fait comme en C++, et si possible avec des espaces
+// de noms et des portees. » Plus la mesure qui a montre que le nom seul ne
+// suffit pas.
+//
+// ⚠️ LE TEMOIN QUI COMPTE, ET C'EST LUI QUI PAIE TOUT LE RESTE : deux fichiers
+// declarant LE MEME NOM QUALIFIE avec des CONTENUS DIFFERENTS doivent etre
+// refuses EN SE NOMMANT, jamais relies en silence.
+static void CasTypesEspaceEtEmpreinte() {
+	// ── 1. LE NOM QUALIFIE : sa forme est verifiee, jamais resolue ───────
+	const bool formesBonnes = NkNodeGraph::NomQualifieValide("Rihen::Difficulte") &&
+							  NkNodeGraph::NomQualifieValide("reel") &&
+							  NkNodeGraph::NomQualifieValide("A::B::C::d_1");
+	// ⚠️ DISCRIMINE AUSSI SUR CE QUI DOIT ETRE REFUSE : sans ces trois-la, la
+	// fonction pourrait rendre « vrai » toujours et le cas serait vert.
+	const bool formesMauvaises = !NkNodeGraph::NomQualifieValide("Rihen::") &&
+								 !NkNodeGraph::NomQualifieValide("::Difficulte") &&
+								 !NkNodeGraph::NomQualifieValide("Rihen::1er") &&
+								 !NkNodeGraph::NomQualifieValide("a::b::") && !NkNodeGraph::NomQualifieValide("");
+	NkString esp, simple;
+	NkNodeGraph::SepareNomQualifie("Rihen::Jeu::Difficulte", &esp, &simple);
+	const bool separe = esp == NkString("Rihen::Jeu") && simple == NkString("Difficulte");
+
+	// ── 2. UNE FEUILLE N'A PAS D'EMPREINTE, ELLE N'EN A PAS UNE A ZERO ───
+	// Regle 3, a l'etage des types. `TypeFingerprint` rend faux ; un lecteur
+	// qui ignorerait le retour lirait une empreinte non initialisee au lieu
+	// d'une valeur credible.
+	NkNodeGraph g;
+	const NkTypeId reel = g.RegisterType("reel");
+	uint64 bidon = 0xDEADBEEFu;
+	const bool feuilleSansEmpreinte = !g.TypeFingerprint(reel, &bidon) && bidon == 0xDEADBEEFu &&
+									  g.TypeKind(reel) == NkTypeKind::Leaf;
+
+	// ── 3. LE CAS `Rihen::Difficulte` ────────────────────────────────────
+	NkTypeMember troisA[3];
+	troisA[0].name = NkString("Facile");
+	troisA[1].name = NkString("Normal");
+	troisA[2].name = NkString("Difficile");
+	NkTypeMember quatreB[4];
+	quatreB[0].name = NkString("Facile");
+	quatreB[1].name = NkString("Normal");
+	quatreB[2].name = NkString("Difficile");
+	quatreB[3].name = NkString("Expert");
+
+	NkString errA;
+	const NkTypeId ta = g.RegisterCompositeType("Rihen::Difficulte", NkTypeKind::Enum, troisA, 3, &errA);
+	uint64 empA = 0;
+	const bool aEnregistre = ta != NK_TYPE_INVALID && g.TypeFingerprint(ta, &empA) && errA.Size() == 0;
+
+	// re-declarer A L'IDENTIQUE est IDEMPOTENT : deux consommateurs ont le
+	// droit de declarer le meme type, comme pour `RegisterType`.
+	NkString errIdem;
+	const NkTypeId taBis = g.RegisterCompositeType("Rihen::Difficulte", NkTypeKind::Enum, troisA, 3, &errIdem);
+	const bool idempotent = taBis == ta && errIdem.Size() == 0;
+
+	// 🔴 LE MEME NOM AVEC UN CONTENU DIFFERENT EST REFUSE, ET LE REFUS DIT QUOI
+	NkString errB;
+	const NkTypeId tb = g.RegisterCompositeType("Rihen::Difficulte", NkTypeKind::Enum, quatreB, 4, &errB);
+	const bool refuse = tb == NK_TYPE_INVALID;
+	const bool nommeLeType = ContientSansCasse(errB, "Rihen::Difficulte");
+	// ⚠️ « LES DEUX NE CORRESPONDENT PAS » NE SUFFIT PAS : le refus doit porter
+	// CE QUI differe. Sans ca, il faut ouvrir deux fichiers et comparer a la
+	// main, et sur trente enumerateurs personne ne le fait correctement.
+	const bool ditCombien = ContientSansCasse(errB, "manque") || ContientSansCasse(errB, "trop");
+	const bool nommeLeMembre = ContientSansCasse(errB, "Expert");
+
+	// ── 4. L'ORDRE EST DU SENS, PAS DE LA MISE EN FORME ──────────────────
+	// Les valeurs d'une enumeration sont POSITIONNELLES : permuter deux
+	// enumerateurs ne renomme pas, ca change ce que valent les donnees deja
+	// sauvees. Une empreinte insensible a l'ordre laisserait passer exactement
+	// la corruption la plus silencieuse.
+	NkTypeMember permute[3];
+	permute[0].name = NkString("Facile");
+	permute[1].name = NkString("Difficile");
+	permute[2].name = NkString("Normal");
+	NkNodeGraph h;
+	NkString errP;
+	h.RegisterCompositeType("Rihen::Difficulte", NkTypeKind::Enum, troisA, 3, nullptr);
+	const NkTypeId tp = h.RegisterCompositeType("Rihen::Difficulte", NkTypeKind::Enum, permute, 3, &errP);
+	const bool ordreCompte = tp == NK_TYPE_INVALID && ContientSansCasse(errP, "membre");
+
+	// ── 5. LE GENRE FAIT PARTIE DE L'IDENTITE ────────────────────────────
+	NkNodeGraph k;
+	k.RegisterCompositeType("Rihen::Truc", NkTypeKind::Enum, troisA, 3, nullptr);
+	NkString errG;
+	const NkTypeId tg = k.RegisterCompositeType("Rihen::Truc", NkTypeKind::Struct, troisA, 3, &errG);
+	const bool genreCompte = tg == NK_TYPE_INVALID && ContientSansCasse(errG, "genre");
+
+	NkString d;
+	d = NkFormat("noms qualifies : formes bonnes={0} formes mauvaises refusees={1} separation={2} | FEUILLE sans "
+				 "empreinte (pas une empreinte nulle)={3} | enum enregistree={4} idempotente={5} | MEME NOM "
+				 "CONTENU DIFFERENT refuse={6} en nommant le type={7} le compte={8} le membre en trop={9} | "
+				 "l ORDRE compte={10} | le GENRE compte={11} | refus : {12}",
+				 formesBonnes ? 1 : 0, formesMauvaises ? 1 : 0, separe ? 1 : 0, feuilleSansEmpreinte ? 1 : 0,
+				 aEnregistre ? 1 : 0, idempotent ? 1 : 0, refuse ? 1 : 0, nommeLeType ? 1 : 0, ditCombien ? 1 : 0,
+				 nommeLeMembre ? 1 : 0, ordreCompte ? 1 : 0, genreCompte ? 1 : 0, errB);
+	Cas("types/espace-de-noms-et-empreinte",
+		formesBonnes && formesMauvaises && separe && feuilleSansEmpreinte && aEnregistre && idempotent && refuse &&
+			nommeLeType && ditCombien && nommeLeMembre && ordreCompte && genreCompte,
+		d);
+}
+
+// ── LE TEMOIN SUR FICHIER : DEUX FICHIERS, MEME NOM, CONTENUS DIFFERENTS ────
+//
+// 🔴 C'EST LA CONDITION EXACTE POSEE PAR RODOLF, ET ELLE PORTE SUR DES FICHIERS,
+// pas sur deux appels dans le meme processus. C'est la difference qui compte :
+// les graphes sont ecrits SEPAREMENT, sauves, et charges a l'execution par une
+// application qui n'a jamais vu l'autre. Le C++ obtient cette garantie de son
+// EDITEUR DE LIENS ; un graphe de noeuds n'a aucune etape de liaison, donc il
+// faut la construire.
+static void CasTypesDeuxFichiersMemeNom() {
+	NkTypeMember trois[3];
+	trois[0].name = NkString("Facile");
+	trois[1].name = NkString("Normal");
+	trois[2].name = NkString("Difficile");
+	NkTypeMember quatre[4];
+	quatre[0].name = NkString("Facile");
+	quatre[1].name = NkString("Normal");
+	quatre[2].name = NkString("Difficile");
+	quatre[3].name = NkString("Expert");
+
+	NkNodeGraph a;
+	a.RegisterCompositeType("Rihen::Difficulte", NkTypeKind::Enum, trois, 3, nullptr);
+	NkNodeGraph b;
+	b.RegisterCompositeType("Rihen::Difficulte", NkTypeKind::Enum, quatre, 4, nullptr);
+	NkString fa, fb;
+	a.Serialize(fa);
+	b.Serialize(fb);
+
+	// L'empreinte VOYAGE : elle doit etre dans le texte, sinon tout le reste
+	// est un accord de memoire qui ne survit pas a la sauvegarde.
+	const bool empreinteEcrite = ContientLigne(fa, "typec ") && ContientLigne(fa, "typem ");
+	// et les deux fichiers ne portent PAS la meme.
+	NkNodeGraph ra, rb;
+	const bool luA = ra.Deserialize(fa.CStr());
+	const bool luB = rb.Deserialize(fb.CStr());
+	uint64 ea = 0, eb = 0;
+	const NkTypeId ia = ra.FindType("Rihen::Difficulte");
+	const NkTypeId ib = rb.FindType("Rihen::Difficulte");
+	const bool relues = luA && luB && ia != NK_TYPE_INVALID && ib != NK_TYPE_INVALID &&
+						ra.TypeFingerprint(ia, &ea) && rb.TypeFingerprint(ib, &eb);
+	const bool empreintesDifferent = relues && ea != eb;
+	// ⚠️ ET L'ALLER-RETOUR NE DOIT PAS L'AVOIR CHANGEE : une empreinte qui se
+	// recalcule differemment apres relecture refuserait un fichier contre
+	// lui-meme.
+	uint64 eaAvant = 0;
+	a.TypeFingerprint(a.FindType("Rihen::Difficulte"), &eaAvant);
+	const bool survitAuxTexte = relues && ea == eaAvant;
+	const bool membresRelus = relues && ra.TypeMemberCount(ia) == 3 && rb.TypeMemberCount(ib) == 4 &&
+							  rb.TypeMemberAt(ib, 3) && rb.TypeMemberAt(ib, 3)->name == NkString("Expert");
+
+	// 🔴 LA RENCONTRE : le graphe A recoit le type tel que B l'a ecrit.
+	// C'est le moment ou l'application charge le second fichier.
+	NkString erreur;
+	const NkTypeId conflit =
+		ra.RegisterCompositeType("Rihen::Difficulte", NkTypeKind::Enum, quatre, 4, &erreur);
+	const bool refuseALaRencontre = conflit == NK_TYPE_INVALID;
+	const bool refusNomme = ContientSansCasse(erreur, "Rihen::Difficulte") && ContientSansCasse(erreur, "Expert");
+	// et le registre de A n'a PAS bouge -- un refus qui laisse une trace serait
+	// pire qu'une acceptation, parce qu'il aurait l'air d'avoir echoue.
+	const bool aInchange = ra.TypeMemberCount(ia) == 3;
+
+	NkString d;
+	d = NkFormat("l empreinte VOYAGE dans le fichier={0} | relues des deux cotes={1} | empreintes DIFFERENTES={2} "
+				 "(a={3} b={4}) | survit a l aller-retour={5} | membres relus 3/4 + « Expert »={6} | LA "
+				 "RENCONTRE : refusee={7} en se nommant={8} | le registre d arrivee est INCHANGE={9} | {10}",
+				 empreinteEcrite ? 1 : 0, relues ? 1 : 0, empreintesDifferent ? 1 : 0, (uint32)(ea & 0xFFFFFFFFu),
+				 (uint32)(eb & 0xFFFFFFFFu), survitAuxTexte ? 1 : 0, membresRelus ? 1 : 0,
+				 refuseALaRencontre ? 1 : 0, refusNomme ? 1 : 0, aInchange ? 1 : 0, erreur);
+	Cas("types/deux-fichiers-meme-nom-refuses-en-se-nommant",
+		empreinteEcrite && relues && empreintesDifferent && survitAuxTexte && membresRelus && refuseALaRencontre &&
+			refusNomme && aInchange,
+		d);
+}
+
 static void CasFichierMigrationVersion1() {
 	// `def 2 0 1 1 3.5` : noeud 2, prise d'INDEX 0, valeur (type 1, 1 nombre).
 	static const char *kV1 = "nkgraph 1\n"
@@ -6889,6 +7068,8 @@ int main() {
 	CasFichierOrdreDesSock();
 	CasFichierPriseInconnueRefusee();
 	CasFichierMigrationVersion1();
+	CasTypesEspaceEtEmpreinte();
+	CasTypesDeuxFichiersMemeNom();
 
 	// ── valeurs : defauts de prise et proprietes de noeud ────────────────
 	CasDefautDePrise();
