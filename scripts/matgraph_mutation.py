@@ -154,11 +154,13 @@ _MUTE_M18 = """			const bool parNom = true;"""
 
 # M19 : retour a UNE seule passe. C'est le defaut que le temoin a trouve tout
 # seul ; on verifie qu'il le retrouverait.
-_ANCRE_M19 = """				if (!matiere && !detail::GraphStrEq(kw, "def") && !detail::GraphStrEq(kw, "lien"))
-					continue;
-				if (matiere && (detail::GraphStrEq(kw, "def") || detail::GraphStrEq(kw, "lien")))
+# ATTENTION -- ANCRE REECRITE LE 2026-08-24. La forme d'origine visait la boucle
+# a DEUX passes ; la version 5 du format l'a passee a TROIS, et l'ancre a POURRI.
+# La garde 2 l'a dit (« ancrage x0 ») au lieu de muter dans le vide et de rendre
+# un vert pour rien -- c'est la seconde fois de ce chantier qu'elle paie.
+_ANCRE_M19 = """				if (!qualif && (matiere == estReference))
 					continue;"""
-_MUTE_M19 = """				if (!matiere)
+_MUTE_M19 = """				if (!qualif && !matiere)
 					continue;"""
 
 # M20 : le graphe n'est PLUS vide apres un refus. Le `false` est toujours rendu,
