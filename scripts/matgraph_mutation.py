@@ -310,7 +310,31 @@ _ANCRE_M37 = """					if (s.family != NkSocketFamily::Data) {
 _MUTE_M37 = """					if (false) {
 						out.Append("sockf ");"""
 
+
+# M38 : LE COUPLE. M36 (Connect rappelle WouldCreateCycle sur l'exec) PLUS
+# le parcours de WouldCreateCycle qui revoit tous les liens. M36 seule survit
+# parce que le parcours, lui, ne suit deja que la donnee : deux defenses pour
+# le meme comportement, donc invisibles a une mutation a un seul defaut.
+_ANCRE_M38 = """					if (mLinks[i].alive && mLinks[i].fromNode == cur && LinkFamily(mLinks[i]) == NkSocketFamily::Data)
+						stack.PushBack(mLinks[i].toNode);"""
+_MUTE_M38 = """					if (mLinks[i].alive && mLinks[i].fromNode == cur)
+						stack.PushBack(mLinks[i].toNode);"""
+
 MUTATIONS = {
+	"M38": {
+		"quoi": "LE COUPLE : M36 + le parcours de WouldCreateCycle revoit les liens d execution",
+		"cas": "exec/cycle-execution-legitime-cycle-donnee-refuse",
+		"attendu": "ATTRAPEE -- M36 SEULE survit, parce que le parcours ne suit deja que la donnee. Regle 6 : "
+				   "deux defenses pour le meme comportement ne se mesurent qu en couple.",
+		"edits": [(GRAPH_INL, _ANCRE_M36, _MUTE_M36), (GRAPH_INL, _ANCRE_M38, _MUTE_M38)],
+	},
+	"M38seul": {
+		"quoi": "le PARCOURS seul revoit les liens d execution (Connect garde sa garde)",
+		"cas": "exec/cycle-execution-legitime-cycle-donnee-refuse",
+		"attendu": "A SURVECU attendu -- l autre moitie du couple. Connect n appelle pas le parcours pour "
+				   "l exec, donc le parcours peut se tromper sans consequence visible.",
+		"edits": [(GRAPH_INL, _ANCRE_M38, _MUTE_M38)],
+	},
 	"M33": {
 		"quoi": "la FAMILLE n est plus comparee dans Connect",
 		"cas": "exec/refus-croise-nomme",
@@ -332,7 +356,9 @@ MUTATIONS = {
 	"M36": {
 		"quoi": "l acyclicite revoit les liens d execution -- la boucle redevient un cycle",
 		"cas": "exec/cycle-execution-legitime-cycle-donnee-refuse",
-		"attendu": "ATTRAPEE -- un graphe d execution reel deviendrait inexprimable.",
+		"attendu": "A SURVECU, et c est MESURE : `WouldCreateCycle` ne parcourt DEJA que la donnee, donc "
+				   "rappeler la garde ne change rien. Deux defenses pour le meme comportement -- regle 6. "
+				   "C est M38 (le couple) qui mesure ce que chacune achete.",
 		"edits": [(GRAPH_INL, _ANCRE_M36, _MUTE_M36)],
 	},
 	"M37": {
