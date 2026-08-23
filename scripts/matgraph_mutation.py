@@ -157,7 +157,41 @@ _ANCRE_M20 = """				// ⚠️ ON VIDE. Un graphe a moitie charge est la pire des
 				return false;"""
 _MUTE_M20 = """				return false;"""
 
+
+# ── LE CAS « EMIS CREDIBLE CONTRE EMIS QUI ECHOUE » ──────────────────────────
+# M21 : la substitution du jeton porte AUSSI sur la declaration -- le jeton
+# devient declare, glslang l'accepte, et le cas ne mesure plus qu'un renommage.
+# C'est LA faute que j'ai faite en l'ecrivant.
+_ANCRE_M21 = """	const NkString casse =
+		r.ok ? RemplaceTout(r.source, "vec3(vUV, 0.0)", "vec3(nkCANAL_UV_NON_VALIDE, 0.0)") : NkString("");"""
+_MUTE_M21 = """	const NkString casse = r.ok ? RemplaceTout(r.source, "vUV", "nkCANAL_UV_NON_VALIDE") : NkString("");"""
+
+# M22 : on lit le verdict de glslang dans `success` au lieu du MOT MAGIQUE --
+# le piege que le banc documente depuis le 22/08, applique au nouveau cas.
+_ANCRE_M22 = """	bool vrai = false;
+	if (sp.bytecode.Size() >= 4) {
+		const uint8 *o = sp.bytecode.Data();
+		vrai = (o[0] == 0x03 && o[1] == 0x02 && o[2] == 0x23 && o[3] == 0x07);
+	}
+	if (outMsg) {"""
+_MUTE_M22 = """	bool vrai = sp.success;
+	if (outMsg) {"""
+
 MUTATIONS = {
+	"M21": {
+		"quoi": "la substitution du jeton porte AUSSI sur la declaration -- le jeton devient DECLARE",
+		"cas": "rang4/emis-credible-contre-emis-qui-echoue",
+		"attendu": "ATTRAPEE -- c est la faute que j ai faite en ecrivant le cas : une mutation qui renomme "
+				   "la declaration ne modele pas le defaut, elle renomme une variable.",
+		"edits": [(BANC_SRC, _ANCRE_M21, _MUTE_M21)],
+	},
+	"M22": {
+		"quoi": "le verdict de glslang se lit dans `success` au lieu du MOT MAGIQUE",
+		"cas": "rang4/emis-credible-contre-emis-qui-echoue",
+		"attendu": "ATTRAPEE -- quand glslang refuse, `success` reste a 1. Le banc le documente depuis le 22/08 ; "
+				   "on verifie que le NOUVEAU cas ne retombe pas dedans.",
+		"edits": [(BANC_SRC, _ANCRE_M22, _MUTE_M22)],
+	},
 	"M16": {
 		"quoi": "l ecrivain remet l INDEX dans la ligne `lien` -- retour au defaut v1 sous une version qui annonce 2",
 		"cas": "fichier/ordre-des-sock",
