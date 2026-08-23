@@ -6475,38 +6475,34 @@ static void CasEmisCredibleContreEmisQuiEchoue() {
 	const bool aBienSubstitue = r.ok && !(casse == r.source) && ContientSansCasse(casse, "nkCANAL_UV_NON_VALIDE");
 	NkString msgCasse;
 	const bool casseCompile = r.ok && GlslangAccepte(casse, &msgCasse);
-	// ⚠️ « ECHOUER » NE SUFFIT PAS : le message devrait PORTER LE MOT. Un echec
+	// ⚠️ « ECHOUER » NE SUFFIT PAS : LE MESSAGE DOIT PORTER LE MOT. Un echec
 	// muet envoie l'auteur chercher dans son graphe. C'est toute la difference
 	// entre « echoue » et « echoue EN SE NOMMANT », et c'est elle que
 	// l'argument du 23/08 revendiquait.
 	//
-	// 🔴 MESURE DU 2026-08-23 : LE MOT N'ARRIVE PAS. `NkSLCompileResult::errors`
-	// est VIDE quand glslang refuse, et la cause est exacte et localisee --
-	// `Kernel/Runtime/NKSL/src/NKSL/Compiler/NkSLCompiler.cpp`, cas NK_SPIRV :
+	// ── CE CAS A CHANGE DE VERDICT LE JOUR MEME, ET C'EST VOULU ──────────
+	// Ecrit le 2026-08-23 apres-midi, il EPINGLAIT l'etat mesure : le mot
+	// n'arrivait PAS. `NkSLCompiler.cpp`, cas NK_SPIRV, remplacait le resultat
+	// de glslang par celui du generateur GLSL -- les erreurs mouraient la et
+	// `errors` ressortait VIDE. Le cas exigeait donc l'ABSENCE du mot, pour
+	// qu'un correctif ne puisse pas passer inapercu.
 	//
-	//     res = CompileToSPIRV(glslRes.source, stage, opts);
-	//     if (!res.success) {
-	//         NKSL_ERR("GLSL-Vulkan->SPIR-V failed, returning GLSL-Vulkan text");
-	//         res = glslRes;              // <-- les erreurs de glslang meurent ICI
-	//         res.target = NkSLTarget::NK_GLSL_VULKAN;
-	//     }
+	// Il a rougi le soir meme, quand le correctif est arrive. C'est exactement
+	// ce qu'on lui demandait de faire.
 	//
-	// Le resultat de glslang est REMPLACE en entier par celui du generateur GLSL,
-	// qui a reussi et dont `errors` est vide. La trace `NKSL_ERR` ne porte pas
-	// le message non plus.
+	// 📌 UNE LIMITATION EPINGLEE PAR UN CAS SE CORRIGE EN LE FAISANT ROUGIR.
+	// Ecrite dans un commentaire, elle aurait survecu au correctif et serait
+	// devenue fausse en silence -- c'est la forme la plus courante de la
+	// regle 5, et celle qu'on a payee deux fois cette semaine.
 	//
-	// DONC L'ARGUMENT DU 23/08 EST VRAI A MOITIE, et cette moitie-la est ecrite
-	// ici plutot que suggeree :
-	//   ✅ le shader ECHOUE -- mesure, `casseCompile` est faux ;
-	//   ❌ il n'echoue PAS « en portant le mot » : l'auteur recoit un echec MUET.
-	//
-	// ⚠️ ON EPINGLE L'ETAT MESURE, PAS L'ETAT SOUHAITE. Le cas exige que le mot
-	// soit ABSENT. Le jour ou quelqu'un fera remonter les erreurs de glslang --
-	// c'est trois lignes, et NKSL n'est pas mon module -- CE CAS ROUGIRA et
-	// obligera a mettre a jour l'argument au lieu de le laisser vieillir faux.
-	// Une limitation qu'aucun cas ne tient se transmet en s'effacant.
+	// Ce qu'on exige maintenant, et pourquoi les deux :
+	//   LE MOT, parce que c'est lui qui envoie l'auteur au bon endroit ;
+	//   L'ETIQUETTE D'ETAPE, parce que deux journaux se rencontrent dans ce
+	//   resultat -- celui du generateur GLSL-Vulkan, qui a REUSSI, et celui de
+	//   glslang, qui a refuse. Concatenes sans etiquette, l'auteur lirait
+	//   « erreur ligne 42 » sans savoir QUI se plaint.
 	const bool leMessagePorteLeMot = ContientSansCasse(msgCasse, "nkCANAL_UV_NON_VALIDE");
-	const bool motPerduCommeMesure = !leMessagePorteLeMot;
+	const bool leMessageDitSonEtape = ContientSansCasse(msgCasse, "glslang");
 
 	// ── ET L'INSTRUMENT AVEUGLE, NOMME ───────────────────────────────────
 	// Les quatre colonnes de backends attestent la GENERATION, pas la
@@ -6522,14 +6518,14 @@ static void CasEmisCredibleContreEmisQuiEchoue() {
 	d = NkFormat("LEGITIME : glslang={0} backends={1}/5 | CREDIBLE : IDENTIQUE au legitime octet pour octet={2} "
 				 "(rien a comparer, rien ne peut les separer) glslang={3} | ECHOUE : substitue={4} "
 				 "glslang REFUSE={5} | les 4 colonnes de generation sont AVEUGLES ({6}/5 contre {7}/5)={8} | "
-				 "⚠️ MAIS le message NE PORTE PAS le mot={9} (NkSLCompiler.cpp remplace le resultat de glslang "
-				 "par celui du generateur : msg={10}) -- « echoue » oui, « echoue en se nommant » NON",
+				 "et le message PORTE le mot={9} en disant DE QUELLE ETAPE il vient={10} : {11}",
 				 legitimeCompile ? 1 : 0, backLeg, credibleIdentique ? 1 : 0, credibleCompile ? 1 : 0,
 				 aBienSubstitue ? 1 : 0, casseCompile ? 0 : 1, backLeg, backCasse, backendsAveugles ? 1 : 0,
-				 motPerduCommeMesure ? 1 : 0, msgCasse.Size() ? msgCasse : NkString("(vide)"));
+				 leMessagePorteLeMot ? 1 : 0, leMessageDitSonEtape ? 1 : 0,
+				 msgCasse.Size() ? msgCasse : NkString("(vide)"));
 	Cas("rang4/emis-credible-contre-emis-qui-echoue",
 		legitimeCompile && credibleIdentique && credibleCompile && aBienSubstitue && !casseCompile &&
-			backendsAveugles && motPerduCommeMesure,
+			backendsAveugles && leMessagePorteLeMot && leMessageDitSonEtape,
 		d);
 }
 

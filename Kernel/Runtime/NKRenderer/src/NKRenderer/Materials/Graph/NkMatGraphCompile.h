@@ -3111,17 +3111,24 @@ namespace nkentseu {
 						//       « gen » sur les deux : elles attestent la generation,
 						//       jamais la compilation.
 						//
-						//    ❌ CE QUI EST FAUX : « en PORTANT le mot ». Le mot
-						//       n'atteint PAS l'appelant. `NkSLCompiler.cpp`, cas
-						//       NK_SPIRV, remplace le resultat de glslang par celui du
-						//       generateur GLSL quand la compilation echoue — les
-						//       erreurs de glslang meurent la, et `errors` ressort
-						//       VIDE. L'auteur recoit un echec MUET.
+						//    ✅ ET « EN PORTANT LE MOT » EST VRAI DEPUIS LE 2026-08-23 AU
+						//       SOIR. Ca ne l'etait pas l'apres-midi meme : `NkSLCompiler.cpp`
+						//       remplacait le resultat de glslang par celui du generateur GLSL,
+						//       les erreurs mouraient la, et l'auteur recevait un echec MUET.
+						//       Le cas EPINGLAIT cette absence ; il a rougi quand le correctif
+						//       est arrive, et il exige maintenant le contraire :
 						//
-						//    Le cas EPINGLE cet etat au lieu de souhaiter l'autre : il
-						//    exige que le mot soit absent. Le jour ou NKSL fera
-						//    remonter ses erreurs, il rougira et forcera la mise a jour
-						//    de ce commentaire.
+						//         [glslang/SPIR-V] ERROR: 0:31: 'nkCANAL_UV_NON_VALIDE'
+						//                                     : undeclared identifier
+						//
+						//       Le mot Y EST, et l'ETAPE aussi — deux journaux se rencontrent
+						//       dans ce resultat (le generateur, qui a REUSSI, et glslang, qui
+						//       a refuse), et sans etiquette l'auteur ne saurait pas lequel se
+						//       plaint.
+						//
+						//    📌 UNE LIMITATION EPINGLEE PAR UN CAS SE CORRIGE EN LE FAISANT
+						//       ROUGIR. Ecrite dans un commentaire, elle aurait survecu au
+						//       correctif et serait devenue fausse en silence.
 						if (!c) {
 							r.error = NkString("canal UV non valide a l emission (le filet du rang 4 a repris "
 											   "la main : la passe de refus ne l a pas attrape)");
