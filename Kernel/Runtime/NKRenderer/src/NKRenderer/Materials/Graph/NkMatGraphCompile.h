@@ -719,6 +719,39 @@ namespace nkentseu {
 							out.v[i] = v.v[i] * sc.v[i] + lo.v[i];
 						return true;
 					}
+					if (ty == NkString(NK_MN_SELECT) || ty == NkString(NK_MN_SELECT_COLOR)) {
+						// Reproduit EXACTEMENT la ligne du shader :
+						//     if ((condition) > NK_SELECT_SEUIL) { r = a; } else { r = b; }
+						//
+						// ⚠️ LE SEUIL VIENT DE LA MEME CONSTANTE DES DEUX COTES, et
+						// ce n'est pas de la coquetterie : deux seuils qui
+						// divergeraient donneraient une sortie d'etage (a) qui
+						// bascule a un endroit et un pixel qui bascule a un autre.
+						// Aucune erreur, aucun journal, et l'ecart n'apparait que
+						// dans la bande etroite entre les deux seuils.
+						//
+						// ⚠️ ET IL FALLAIT L'ECRIRE, sinon le repli generique
+						// (« noeud non evaluable sur le processeur ») aurait REFUSE
+						// toute sortie nommee passant par un `Selectionner`. Le
+						// refus etait sur, il n'etait pas juste : une condition
+						// pilotee par un parametre expose est precisement ce qu'une
+						// sortie d'etage (a) a vocation a suivre.
+						const uint32 comp = (ty == NkString(NK_MN_SELECT_COLOR)) ? 3u : 1u;
+						NkMatValeurCPU c, a, b;
+						if (!Entree(*n, "condition", 1, c) || !Entree(*n, "si_vrai", comp, a) ||
+							!Entree(*n, "si_faux", comp, b))
+							return false;
+						// ⚠️ LES DEUX ENTREES SONT LUES DANS TOUS LES CAS, et c'est
+						// VOLONTAIRE : `Entree` note les dependances de parametre au
+						// passage. N'en lire qu'une figerait `dependDe` sur la
+						// branche du jour de la compilation, et la sortie cesserait
+						// d'etre reevaluee des que la condition bascule.
+						out.n = comp;
+						const NkMatValeurCPU &pris = (c.v[0] > NK_SELECT_SEUIL) ? a : b;
+						for (uint32 i = 0; i < comp; ++i)
+							out.v[i] = pris.v[i];
+						return true;
+					}
 					if (ty == NkString(NK_MN_SEPARATE_XYZ)) {
 						NkMatValeurCPU v;
 						if (!Entree(*n, "vector", 3, v))

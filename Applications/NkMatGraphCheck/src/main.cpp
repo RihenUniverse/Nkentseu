@@ -3556,6 +3556,84 @@ static void CasSortieExposeNeContaminePas() {
 				 (so && so->dependDe.Size() > 0) ? so->dependDe[0] : NkString("-"), r.error));
 }
 
+static void CasSelectionEvalueeSurLeProcesseur() {
+	// ⚠️ CE CAS EXISTE PARCE QUE LE REPLI ETAIT SUR MAIS PAS JUSTE.
+	//
+	// L'evaluateur processeur refuse tout noeud qu'il ne connait pas — « noeud
+	// non evaluable sur le processeur ». C'est le bon defaut : jamais un zero
+	// plausible. Mais il aurait REFUSE toute sortie nommee passant par un
+	// `Selectionner`, alors qu'une condition pilotee par un parametre expose
+	// est exactement ce qu'une sortie d'etage (a) a vocation a suivre.
+	//
+	// DISCRIMINE, et c'est le coeur : on mesure LES DEUX BRANCHES depuis le
+	// MEME montage, en ne changeant QUE la condition. Un evaluateur qui
+	// rendrait toujours `si_vrai` — ou toujours zero — passerait un controle
+	// qui n'en regarderait qu'une.
+	struct Essai {
+			float32 condition;
+			float32 attendu;
+			const char *quoi;
+	};
+	const Essai essais[4] = {
+		{1.0f, 0.9f, "1 -> si_vrai"},
+		{0.0f, 0.1f, "0 -> si_faux"},
+		// Les deux qui encadrent le seuil. Sans elles, « > 0.5 » et
+		// « >= 0.5 » seraient indiscernables, et un seuil pose a 0.0 aussi.
+		{0.51f, 0.9f, "0.51 -> si_vrai"},
+		{0.49f, 0.1f, "0.49 -> si_faux"},
+	};
+	uint32 bons = 0;
+	NkString detail;
+	for (uint32 i = 0; i < 4; ++i) {
+		NkNodeGraph g;
+		NkMatTypes t = NkMatRegisterTypes(g);
+		NkNodeId out;
+		MonteUnPrincipled(g, t, &out);
+		const NkNodeId sel = NkMatAddNode(gReg, g, NK_MN_SELECT);
+		g.SetSocketDefault(sel, "condition", NkSocketDir::Input, NkValueReal(t.real, essais[i].condition));
+		g.SetSocketDefault(sel, "si_vrai", NkSocketDir::Input, NkValueReal(t.real, 0.9f));
+		g.SetSocketDefault(sel, "si_faux", NkSocketDir::Input, NkValueReal(t.real, 0.1f));
+		const NkNodeId so = PoseSortie(g, t, "choisi", "par_materiau");
+		g.Connect(sel, "valeur", so, "value");
+		NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
+		const NkMatSortieMateriau *s = r.ok ? r.TrouveSortie("choisi") : nullptr;
+		const bool ok = s && Proche(s->valeur[0], essais[i].attendu);
+		if (ok)
+			++bons;
+		detail.Append(NkFormat("{0}={1}{2} | ", NkString(essais[i].quoi), s ? s->valeur[0] : -1.f,
+							   NkString(ok ? "" : " FAUX")));
+	}
+
+	// ⚠️ ET LA DEPENDANCE SUR LES DEUX BRANCHES, PAS SEULEMENT SUR LA PRISE.
+	//
+	// Un evaluateur qui n'aurait lu que la branche retenue aurait fige
+	// `dependDe` sur celle du jour de la compilation : le jour ou la condition
+	// bascule, la sortie cesserait d'etre reevaluee et se figerait sur une
+	// valeur PLAUSIBLE. On expose donc les deux branches ET la condition, et
+	// l'on exige les TROIS noms.
+	NkNodeGraph g2;
+	NkMatTypes t2 = NkMatRegisterTypes(g2);
+	NkNodeId out2;
+	MonteUnPrincipled(g2, t2, &out2);
+	const NkNodeId sel2 = NkMatAddNode(gReg, g2, NK_MN_SELECT);
+	g2.SetSocketDefault(sel2, "condition", NkSocketDir::Input, NkValueReal(t2.real, 1.0f));
+	g2.SetSocketDefault(sel2, "si_vrai", NkSocketDir::Input, NkValueReal(t2.real, 0.9f));
+	g2.SetSocketDefault(sel2, "si_faux", NkSocketDir::Input, NkValueReal(t2.real, 0.1f));
+	Expose(g2, t2, sel2, "condition", "mode");
+	Expose(g2, t2, sel2, "si_vrai", "chaud");
+	Expose(g2, t2, sel2, "si_faux", "froid");
+	const NkNodeId so2 = PoseSortie(g2, t2, "choisi", "par_materiau");
+	g2.Connect(sel2, "valeur", so2, "value");
+	NkMatCompileResult r2 = NkMatCompileToNkSL(gReg, g2);
+	const NkMatSortieMateriau *s2 = r2.ok ? r2.TrouveSortie("choisi") : nullptr;
+	const bool troisDeps = s2 && s2->dependDe.Size() == 3u;
+
+	Cas("selection/evaluee-sur-le-processeur-et-les-deux-branches-comptent", bons == 4u && troisDeps,
+		NkFormat("{0}{1}/4 justes | dependances={2} (3 attendues : la condition ET LES DEUX branches, sinon la "
+				 "sortie se fige le jour ou la condition bascule) | erreur={3}",
+				 detail, bons, s2 ? (uint32)s2->dependDe.Size() : 999u, r2.error));
+}
+
 static void CasSortieEtagesRefuses() {
 	// Les deux etages non construits refusent EN SE NOMMANT, et l'absence
 	// d'etage refuse aussi : il n'y a pas de defaut. Se replier sur (a) quand
@@ -3840,11 +3918,29 @@ static void CasSelectionCompileEtBranche() {
 	// Les deux variantes coexistent : un reel ET une couleur dans le meme shader.
 	const bool lesDeux = r.ok && Apres(r.source, "vec3 n") > 0 && declareeAvant;
 
-	Cas("selection/deux-variantes-compilent-et-branchent", r.ok && ok == 5 && branche && pasDeMelange && lesDeux,
+	// 🔴 ET LES DEUX COTES SONT DU BON COTE. Sans ceci, echanger `si_vrai` et
+	// `si_faux` a l'emission passerait TOUS les controles ci-dessus : la branche
+	// existe, elle compile, la locale survit — et le materiau rend l'inverse de
+	// ce que son auteur a cable. Un defaut qui produit une image parfaitement
+	// credible, donc le plus cher a debusquer.
+	//
+	// On mesure par les POSITIONS : 0.9 (si_vrai) doit apparaitre APRES le `if`
+	// et AVANT le `else`, et 0.1 (si_faux) APRES le `else`.
+	const int32 pIf = r.ok ? Apres(r.source, "    if ((") : -1;
+	const int32 pElse = r.ok ? Apres(r.source, "} else {") : -1;
+	const int32 pVrai = r.ok ? Apres(r.source, "0.899999976") : -1;
+	const int32 pFaux = r.ok ? Apres(r.source, "0.100000001") : -1;
+	const bool bonCote = pIf > 0 && pElse > pIf && pVrai > pIf && pVrai < pElse && pFaux > pElse;
+
+	Cas("selection/deux-variantes-compilent-et-branchent",
+		r.ok && ok == 5 && branche && pasDeMelange && lesDeux && bonCote,
 		NkFormat("{0}| un vrai if/else emis={1} | aucun step (donc pas un melange deguise)={2} | la locale est "
 				 "DECLAREE avant la branche, sinon elle n'y survit pas={3} | reel et couleur dans le meme "
-				 "shader={4} | {5}",
-				 be, branche ? 1 : 0, pasDeMelange ? 1 : 0, declareeAvant ? 1 : 0, lesDeux ? 1 : 0, err));
+				 "shader={4} | si_vrai DANS le if et si_faux DANS le else (un echange rendrait l'inverse, "
+				 "credible)={5} if@{6} else@{7} 0.9@{8} 0.1@{9} | {10}",
+				 be, branche ? 1 : 0, pasDeMelange ? 1 : 0, declareeAvant ? 1 : 0, lesDeux ? 1 : 0,
+				 bonCote ? 1 : 0, (uint32)(pIf < 0 ? 0 : pIf), (uint32)(pElse < 0 ? 0 : pElse),
+				 (uint32)(pVrai < 0 ? 0 : pVrai), (uint32)(pFaux < 0 ? 0 : pFaux), err));
 }
 
 static void CasSelectionSeuilEtRefusDuZero() {
@@ -6248,6 +6344,7 @@ int main() {
 	CasSortieRefusParPixel();
 	CasSortieMappageNEstPasParPixel();
 	CasSortieExposeNeContaminePas();
+	CasSelectionEvalueeSurLeProcesseur();
 	CasSortieEtagesRefuses();
 	CasSortieSourcesEtNoms();
 	CasSortiePlusieursEtGraphesExistants();
