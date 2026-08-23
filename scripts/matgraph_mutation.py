@@ -202,6 +202,13 @@ _ANCRE_M23BIS = """					res.success = false;
 _MUTE_M23BIS = """					res.bytecode.Clear(); // rien ne doit ressembler a du SPIR-V"""
 
 MUTATIONS = {
+	"M25": {
+		"quoi": "M22 + M23bis : on lit `success` ET le repli remet success=true -- LE COUPLE de la regle 6",
+		"cas": "rang4/emis-credible-contre-emis-qui-echoue",
+		"attendu": "ATTRAPEE -- M22 seule survit depuis que NKSL rend `success` honnete. C est le couple qui "
+				   "mesure ce que le controle du MOT MAGIQUE achete encore.",
+		"edits": [(BANC_SRC, _ANCRE_M22, _MUTE_M22), (NKSL_CC, _ANCRE_M23BIS, _MUTE_M23BIS)],
+	},
 	"M23": {
 		"quoi": "les erreurs de glslang ne remontent plus -- retour a l echec MUET",
 		"cas": "rang4/emis-credible-contre-emis-qui-echoue",
