@@ -268,7 +268,80 @@ _ANCRE_M32 = """							r.error.Append(" : NkMaterial n'a aucune forme pour ce ty
 										   "porte float, vec2/3/4, couleur, entier, booleen, texture.");"""
 _MUTE_M32 = """							r.error.Append(" : type non supporte.");"""
 
+
+# ── LA FAMILLE DE PRISE : UNE MUTATION PAR COMPORTEMENT (§ 20.2) ─────────────
+# M33 : la famille n'est plus comparee -- le croisement passe, ou se refuse par
+# le type. C'est le retour exact a l'etat d'avant.
+_ANCRE_M33 = """			if (fa != fb)
+				return NkLinkError::FamilyMismatch;"""
+_MUTE_M33 = """			if (false)
+				return NkLinkError::FamilyMismatch;"""
+
+# M34 : l'arite d'ENTREE redevient celle de la donnee -- la 2e source d'exec
+# remplace la premiere, et neuf chemins sur dix disparaissent sans un mot.
+_ANCRE_M34 = """			if (fb == NkSocketFamily::Data)
+				for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i)
+					if (mLinks[i].alive && mLinks[i].toNode == to && mLinks[i].toSocket == di)
+						mLinks[i].alive = false;"""
+_MUTE_M34 = """			for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i)
+				if (mLinks[i].alive && mLinks[i].toNode == to && mLinks[i].toSocket == di)
+					mLinks[i].alive = false;"""
+
+# M35 : l'arite de SORTIE redevient celle de la donnee -- une instruction peut
+# avoir deux suites, et l'ordre depend de l'ordre d'insertion des liens.
+_ANCRE_M35 = """			if (fa == NkSocketFamily::Exec)
+				for (uint32 i = 0; i < (uint32)mLinks.Size(); ++i)
+					if (mLinks[i].alive && mLinks[i].fromNode == from && mLinks[i].fromSocket == si)
+						return NkLinkError::ExecOutputAlreadyBound;"""
+_MUTE_M35 = """			if (false)
+				return NkLinkError::ExecOutputAlreadyBound;"""
+
+# M36 : l'acyclicite revoit les liens d'execution -- la boucle redevient un
+# cycle, et un graphe d'execution reel devient inexprimable.
+_ANCRE_M36 = """			if (fa == NkSocketFamily::Data && WouldCreateCycle(from, to))
+				return NkLinkError::WouldCycle;"""
+_MUTE_M36 = """			if (WouldCreateCycle(from, to))
+				return NkLinkError::WouldCycle;"""
+
+# M37 : la famille n'est plus ECRITE dans le fichier -- l'accord redevient un
+# accord de memoire, et l'aller-retour perd l'axe entier.
+_ANCRE_M37 = """					if (s.family != NkSocketFamily::Data) {
+						out.Append("sockf ");"""
+_MUTE_M37 = """					if (false) {
+						out.Append("sockf ");"""
+
 MUTATIONS = {
+	"M33": {
+		"quoi": "la FAMILLE n est plus comparee dans Connect",
+		"cas": "exec/refus-croise-nomme",
+		"attendu": "ATTRAPEE -- c est l etat d avant : le croisement passe, ou se refuse par le TYPE.",
+		"edits": [(GRAPH_INL, _ANCRE_M33, _MUTE_M33)],
+	},
+	"M34": {
+		"quoi": "l arite d ENTREE redevient celle de la donnee -- la 2e source d exec REMPLACE",
+		"cas": "exec/arite-croisee",
+		"attendu": "ATTRAPEE -- neuf chemins sur dix disparaitraient sans un mot.",
+		"edits": [(GRAPH_INL, _ANCRE_M34, _MUTE_M34)],
+	},
+	"M35": {
+		"quoi": "l arite de SORTIE redevient celle de la donnee -- une instruction peut avoir DEUX suites",
+		"cas": "exec/arite-croisee",
+		"attendu": "ATTRAPEE -- l ordre d execution dependrait de l ordre d insertion des liens.",
+		"edits": [(GRAPH_INL, _ANCRE_M35, _MUTE_M35)],
+	},
+	"M36": {
+		"quoi": "l acyclicite revoit les liens d execution -- la boucle redevient un cycle",
+		"cas": "exec/cycle-execution-legitime-cycle-donnee-refuse",
+		"attendu": "ATTRAPEE -- un graphe d execution reel deviendrait inexprimable.",
+		"edits": [(GRAPH_INL, _ANCRE_M36, _MUTE_M36)],
+	},
+	"M37": {
+		"quoi": "la FAMILLE n est plus ecrite dans le fichier",
+		"cas": "exec/aller-retour-octet-pour-octet",
+		"attendu": "ATTRAPEE -- l axe entier serait perdu a la sauvegarde ; c est le meme defaut que "
+				   "l empreinte non ecrite (M30).",
+		"edits": [(GRAPH_IO, _ANCRE_M37, _MUTE_M37)],
+	},
 	"M31": {
 		"quoi": "la garde du modele non nodal laisse passer les types composes",
 		"cas": "nonnodal/type-compose-refuse-car-non-exprimable",
