@@ -470,17 +470,17 @@ MUTATIONS = {
 		"edits": [(GRAPH_IO, _ANCRE_M42, _MUTE_M42)],
 	},
 	"M38": {
-		"quoi": "LE COUPLE : M36 + le parcours de WouldCreateCycle revoit les liens d execution",
-		"cas": "exec/cycle-execution-legitime-cycle-donnee-refuse",
-		"attendu": "ATTRAPEE -- M36 SEULE survit, parce que le parcours ne suit deja que la donnee. Regle 6 : "
-				   "deux defenses pour le meme comportement ne se mesurent qu en couple.",
+		"quoi": "LE COUPLE : Connect ET le parcours exemptent a nouveau l execution du controle de cycle",
+		"cas": "exec/acyclicite-universelle-la-boucle-est-un-noeud",
+		"attendu": "ATTRAPEE -- et le couple n a plus de raison d etre : depuis le 24/08 chacune de ses deux "
+				   "moities rougit SEULE. Il reste ecrit comme temoin de ce que la redondance masquait.",
 		"edits": [(GRAPH_INL, _ANCRE_M36, _MUTE_M36), (GRAPH_INL, _ANCRE_M38, _MUTE_M38)],
 	},
 	"M38seul": {
-		"quoi": "le PARCOURS seul revoit les liens d execution (Connect garde sa garde)",
-		"cas": "exec/cycle-execution-legitime-cycle-donnee-refuse",
-		"attendu": "A SURVECU attendu -- l autre moitie du couple. Connect n appelle pas le parcours pour "
-				   "l exec, donc le parcours peut se tromper sans consequence visible.",
+		"quoi": "le PARCOURS seul exempte l execution (Connect garde sa garde universelle)",
+		"cas": "exec/acyclicite-universelle-la-boucle-est-un-noeud",
+		"attendu": "ATTRAPEE depuis le 24/08. Elle SURVIVAIT tant que Connect portait la meme exemption : "
+				   "le parcours pouvait se tromper sans consequence visible. Mesure le 24/08 : elle rougit.",
 		"edits": [(GRAPH_INL, _ANCRE_M38, _MUTE_M38)],
 	},
 	"M33": {
@@ -502,11 +502,11 @@ MUTATIONS = {
 		"edits": [(GRAPH_INL, _ANCRE_M35, _MUTE_M35)],
 	},
 	"M36": {
-		"quoi": "l acyclicite revoit les liens d execution -- la boucle redevient un cycle",
-		"cas": "exec/cycle-execution-legitime-cycle-donnee-refuse",
-		"attendu": "A SURVECU, et c est MESURE : `WouldCreateCycle` ne parcourt DEJA que la donnee, donc "
-				   "rappeler la garde ne change rien. Deux defenses pour le meme comportement -- regle 6. "
-				   "C est M38 (le couple) qui mesure ce que chacune achete.",
+		"quoi": "Connect exempte a nouveau les liens d execution du controle de cycle",
+		"cas": "exec/acyclicite-universelle-la-boucle-est-un-noeud",
+		"attendu": "ATTRAPEE depuis le 24/08 -- et c est le resultat qui compte : elle SURVIVAIT tant que "
+				   "l exemption s ecrivait AUSSI dans le parcours. Une defense redondante est invisible a "
+				   "une mutation a un seul defaut ; retirer l exception a retire la redondance avec elle.",
 		"edits": [(GRAPH_INL, _ANCRE_M36, _MUTE_M36)],
 	},
 	"M37": {
