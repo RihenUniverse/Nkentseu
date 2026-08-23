@@ -1991,6 +1991,107 @@ static void CasLienQualifie() {
 		d);
 }
 
+
+// ── LA MACHINE A ETATS EST UN NOEUD (§ 19.9) ───────────────────────────────
+//
+// ✅ TRANCHE PAR RODOLF LE 23/08 : la voie d'Unreal (la machine a etats est un
+// noeud du graphe d'animation) contre celle d'Unity (un editeur separe,
+// l'Animator). Et l'argument decisif est TECHNIQUE, pas esthetique :
+//
+//   ses cycles vivent A L'INTERIEUR du noeud, dans la liste de transitions que
+//   le runtime porte deja -- `AddTransition(from, to, paramName, kind,
+//   threshold, fadeDur)`. LE GRAPHE EXTERIEUR NE VOIT JAMAIS DE CYCLE, donc
+//   `WouldCycle` n'est pas touche.
+//
+// 🔴 CE QUE CE CAS MESURE, ET C'EST UNE MESURE DE COUT, PAS DE FONCTION : que
+// le coeur n'a besoin DE RIEN DE NOUVEAU pour porter une machine a etats. Le
+// § 19.3 concluait « le mode etats est IMPOSSIBLE sur le coeur d'aujourd'hui » ;
+// la conclusion etait fausse, et ce sont ces quelques lignes qui le disent --
+// aucune API neuve n'y apparait.
+//
+// ⚠️ LA REFERENCE VA DANS UNE PROPRIETE, PAS DANS `NkNode::subgraph`. La
+// tentation est forte, parce que le champ existe et qu'il porte deja une
+// reference par nom. Mais `subgraph` veut dire « un NkNodeGraph de ce
+// document », et UNE MACHINE A ETATS N'EN EST PAS UN : c'est une liste d'etats
+// et de transitions, avec son propre format. Deux sens pour un champ obligerait
+// tout lecteur a savoir lequel s'applique -- exactement le defaut que la famille
+// de prise vient de corriger ailleurs. On verifie donc que `subgraph` reste
+// VIDE sur ce noeud : « rien » et « zero » sont deux etats.
+//
+// 📌 LE NODAL VIENT PAR-DESSUS LE NON NODAL. Le noeud ne CONTIENT pas la
+// machine, il la DESIGNE -- et la machine, elle, existe deja sous forme non
+// nodale (`NkAnimStateMachine`, livre chez NkAnima). C'est le meme principe qui
+// a fait refuser les types composes cote materiau : le graphe ne peut pas
+// porter ce vers quoi il compile ne sait pas ecrire.
+static void CasMachineAEtatsEstUnNoeud() {
+	// ── 1. LE GRAPHE D'ANIMATION, avec la machine comme UN NOEUD parmi ────
+	NkNodeGraph g;
+	const NkTypeId tPose = g.RegisterType("pose");
+	const NkTypeId tTexte = g.RegisterType("texte");
+	const NkNodeId msm = g.AddNode("anim.machine_a_etats", "Machine a etats");
+	g.AddSocket(msm, "pose", tPose, NkSocketDir::Output, NkSocketFamily::Data);
+	const NkNodeId melange = g.AddNode("anim.melange_par_booleen", "Melanger par booleen");
+	g.AddSocket(melange, "a", tPose, NkSocketDir::Input, NkSocketFamily::Data);
+	g.AddSocket(melange, "resultat", tPose, NkSocketDir::Output, NkSocketFamily::Data);
+	const NkNodeId sortie = g.AddNode("anim.sortie_pose", "Sortie de pose");
+	g.AddSocket(sortie, "pose", tPose, NkSocketDir::Input, NkSocketFamily::Data);
+	const bool cable = g.Connect(msm, "pose", melange, "a") == NkLinkError::Ok &&
+					   g.Connect(melange, "resultat", sortie, "pose") == NkLinkError::Ok;
+
+	// ── 2. LA REFERENCE au modele NON NODAL -- une PROPRIETE, rien de neuf ─
+	const bool designe = g.SetProp(msm, "machine", NkValueText(tTexte, "Locomotion"));
+	const NkGraphValue *ref = g.FindProp(msm, "machine");
+	const bool refLue = ref && ref->IsSet() && ref->text == NkString("Locomotion");
+	// et `subgraph` reste VIDE : une machine a etats n'est PAS un NkNodeGraph.
+	const NkNode *n = g.Find(msm);
+	const bool sousGrapheVide = n && n->subgraph.Size() == 0;
+
+	// ── 3. LE GRAPHE EXTERIEUR NE VOIT AUCUN CYCLE ────────────────────────
+	// C'est l'argument decisif, mesure : la machine peut contenir
+	// Marche -> Saut -> Marche, le coeur n'en sait rien et n'a rien a en savoir.
+	NkVector<NkNodeId> ordre;
+	const bool acyclique = !g.HasCycle() && g.TopoSort(ordre) && ordre.Size() == 3;
+
+	// ── 4. CONTRE-EPREUVE : LA MEME MACHINE CABLEE DEHORS EST REFUSEE ─────
+	// 🔴 SANS CE VOLET, LE CAS NE PROUVERAIT RIEN. « Un graphe sans cycle n'a
+	// pas de cycle » est une tautologie ; ce qui a du contenu, c'est que la
+	// forme CONCURRENTE -- les etats en noeuds, les transitions en fils --
+	// tombe sur `WouldCycle` des la transition de retour. Marche -> Saut passe,
+	// Saut -> Marche non. C'est LA raison pour laquelle la machine doit etre un
+	// noeud, et non un gout d'architecture.
+	NkNodeGraph h;
+	const NkTypeId hr = h.RegisterType("reel");
+	const NkNodeId marche = PoseNoeudMixte(h, hr, "etat.marche");
+	const NkNodeId saut = PoseNoeudMixte(h, hr, "etat.saut");
+	const NkLinkError aller = h.Connect(marche, "apres", saut, "avant");
+	const NkLinkError retour = h.Connect(saut, "apres", marche, "avant");
+	const bool dehorsRefuse = aller == NkLinkError::Ok && retour == NkLinkError::WouldCycle;
+
+	// ── 5. LA REFERENCE SURVIT AU FICHIER, OCTET POUR OCTET ───────────────
+	NkString t1;
+	g.Serialize(t1);
+	NkNodeGraph relu;
+	NkString err;
+	const bool relit = relu.Deserialize(t1.CStr(), &err);
+	NkString t2;
+	relu.Serialize(t2);
+	const NkGraphValue *refApres = relit ? relu.FindProp(msm, "machine") : nullptr;
+	const NkNode *nApres = relit ? relu.Find(msm) : nullptr;
+	const bool voyage = relit && t1 == t2 && refApres && refApres->text == NkString("Locomotion") && nApres &&
+						nApres->subgraph.Size() == 0;
+
+	NkString d;
+	d = NkFormat("le graphe d anim se cable={0} | la machine est DESIGNEE par une propriete={1} relue={2} | "
+				 "`subgraph` reste VIDE (ce n est pas un NkNodeGraph)={3} | le graphe EXTERIEUR est acyclique="
+				 "{4} ({5} noeuds tries) | CONTRE-EPREUVE : les memes etats cables DEHORS -> aller={6} "
+				 "retour={7} donc refuse={8} | aller-retour identique et reference survit={9} ({10} o) {11}",
+				 cable ? 1 : 0, designe ? 1 : 0, refLue ? 1 : 0, sousGrapheVide ? 1 : 0, acyclique ? 1 : 0,
+				 (uint32)ordre.Size(), NkString(NkLinkErrorName(aller)), NkString(NkLinkErrorName(retour)),
+				 dehorsRefuse ? 1 : 0, voyage ? 1 : 0, (uint32)t1.Size(), err);
+	Cas("etats/la-machine-a-etats-est-un-noeud",
+		cable && designe && refLue && sousGrapheVide && acyclique && dehorsRefuse && voyage, d);
+}
+
 static void CasTypesEspaceEtEmpreinte() {
 	// ── 1. LE NOM QUALIFIE : sa forme est verifiee, jamais resolue ───────
 	const bool formesBonnes = NkNodeGraph::NomQualifieValide("Rihen::Difficulte") &&
@@ -7704,6 +7805,7 @@ int main() {
 	CasExecAllerRetourOctetPourOctet();
 	CasExecLePiegeDuTypeExec();
 	CasLienQualifie();
+	CasMachineAEtatsEstUnNoeud();
 
 	// ── valeurs : defauts de prise et proprietes de noeud ────────────────
 	CasDefautDePrise();

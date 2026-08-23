@@ -584,14 +584,20 @@ namespace nkentseu {
 			// revenir, c'est voir revenir l'exception. Pourquoi elle est partie :
 			// voir le pave devant `LinkFamily`, plus haut dans ce fichier.
 			//
-			// ⚠️ LA REDONDANCE AVEC `WouldCreateCycle` RESTE VOULUE -- la
-			// fonction est publique, un appelant peut l'interroger seul, donc
-			// elle doit etre juste toute seule. Mais elle N'EST PLUS INVISIBLE :
-			// tant que le parcours ne suivait que la donnee, retirer cette garde
-			// ne changeait rien pour un lien d'execution et M36 SURVIVAIT. Les
-			// deux defenses portent desormais la MEME regle sur les MEMES liens,
-			// donc chacune se mesure seule. Le couple M38 reste ecrit : il dit ce
-			// que la redondance achetait quand elle masquait un defaut.
+			// 📌 ET LA DEFENSE REDONDANTE A DISPARU AVEC L'EXCEPTION -- c'est
+			// le gain qu'on n'attendait pas, et il vaut d'etre ecrit.
+			//
+			// L'exemption s'ecrivait a DEUX endroits : ce `fa == Data &&`, et le
+			// filtre de famille dans le parcours de `WouldCreateCycle`. DEUX
+			// encodages de la MEME regle, donc chacun invisible a une mutation a
+			// un seul defaut : M36 retirait le premier et SURVIVAIT, parce que le
+			// second refusait toujours de voir les liens d'execution. Il avait
+			// fallu un COUPLE (M38) pour mesurer ce que chacun achetait.
+			//
+			// Les deux sont partis ensemble. Il reste UNE garde et UNE
+			// implementation -- pas deux defenses -- et M36 comme M38 rougissent
+			// desormais SEULES. Une regle sans exception se mesure aussi plus
+			// simplement que la meme regle avec une exception ecrite deux fois.
 			if (WouldCreateCycle(from, to))
 				return NkLinkError::WouldCycle;
 
