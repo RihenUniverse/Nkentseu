@@ -54,6 +54,7 @@ RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COMPILE_H = "Kernel/Runtime/NKRenderer/src/NKRenderer/Materials/Graph/NkMatGraphCompile.h"
 BANC_SRC = "Applications/NkMatGraphCheck/src/main.cpp"
 GRAPH_IO = "Kernel/Runtime/NKGraph/src/NKGraph/NkNodeGraphIO.inl"
+GRAPH_INL = "Kernel/Runtime/NKGraph/src/NKGraph/NkNodeGraph.inl"
 NKSL_CC = "Kernel/Runtime/NKSL/src/NKSL/Compiler/NkSLCompiler.cpp"
 BANC = "Build/Bin/Debug-Windows/NkMatGraphCheck/NkMatGraphCheck.exe"
 
@@ -201,7 +202,87 @@ _ANCRE_M23BIS = """					res.success = false;
 					res.bytecode.Clear(); // rien ne doit ressembler a du SPIR-V"""
 _MUTE_M23BIS = """					res.bytecode.Clear(); // rien ne doit ressembler a du SPIR-V"""
 
+
+# ── LES TYPES : NOM QUALIFIE ET EMPREINTE ────────────────────────────────────
+# M26 : l'empreinte ignore l'ORDRE des membres. Permuter deux enumerateurs
+# cesserait d'etre vu -- la corruption la plus silencieuse qui soit.
+_ANCRE_M26 = """				for (uint32 i = 0; i < n; ++i) {
+					EmpreinteAvale(h, m[i].name.CStr());
+					EmpreinteAvale(h, ":");
+					EmpreinteAvale(h, m[i].type.CStr());
+					EmpreinteAvale(h, ";");
+				}"""
+_MUTE_M26 = """				uint64 somme = 0;
+				for (uint32 i = 0; i < n; ++i) {
+					uint64 t = 14695981039346656037ULL;
+					EmpreinteAvale(t, m[i].name.CStr());
+					EmpreinteAvale(t, m[i].type.CStr());
+					somme += t;
+				}
+				h ^= somme;"""
+
+# M27 : le conflit ECRASE au lieu de refuser -- le dernier enregistre gagne,
+# en silence. C'est la pente naturelle d'un registre idempotent.
+_ANCRE_M27 = """				if (d.aEmpreinte && d.empreinte == emp)
+					return existant;"""
+_MUTE_M27 = """				if (d.aEmpreinte)
+					return existant;"""
+
+# M28 : une FEUILLE se met a rendre une empreinte (nulle) au lieu de « rien ».
+_ANCRE_M28 = """			if (t >= (NkTypeId)mTypeDefs.Size() || !mTypeDefs[t].aEmpreinte)
+				return false; // FEUILLE : pas d'empreinte. Pas une empreinte nulle."""
+_MUTE_M28 = """			if (t >= (NkTypeId)mTypeDefs.Size() || !mTypeDefs[t].aEmpreinte) {
+				if (out)
+					*out = 0;
+				return true;
+			}"""
+
+# M29 : le refus ne nomme plus CE QUI differe -- il dit seulement que ca differe.
+_ANCRE_M29 = """				q.Append(" » est deja declare avec une AUTRE definition -- ");
+				q.Append(detail::DecrisDivergence(d.members, d.kind, members, count, kind));"""
+_MUTE_M29 = """				q.Append(" » est deja declare avec une AUTRE definition");"""
+
+# M30 : l'empreinte n'est plus ECRITE dans le fichier -- l'accord redevient un
+# accord de memoire, qui ne survit pas a la sauvegarde.
+_ANCRE_M30 = """				out.Append("typec ");"""
+_MUTE_M30 = """				if (true)
+					continue;
+				out.Append("typec ");"""
+
 MUTATIONS = {
+	"M26": {
+		"quoi": "l empreinte ignore l ORDRE des membres (somme commutative)",
+		"cas": "types/espace-de-noms-et-empreinte",
+		"attendu": "ATTRAPEE -- les valeurs d une enumeration sont POSITIONNELLES ; permuter change le sens "
+				   "des donnees deja sauvees.",
+		"edits": [(GRAPH_INL, _ANCRE_M26, _MUTE_M26)],
+	},
+	"M27": {
+		"quoi": "le conflit de definition ECRASE au lieu de refuser -- le dernier enregistre gagne",
+		"cas": "types/espace-de-noms-et-empreinte",
+		"attendu": "ATTRAPEE -- c est la pente naturelle d un registre idempotent, et elle rend le sens du "
+				   "graphe dependant de l ORDRE d enregistrement.",
+		"edits": [(GRAPH_INL, _ANCRE_M27, _MUTE_M27)],
+	},
+	"M28": {
+		"quoi": "une FEUILLE rend une empreinte NULLE au lieu de « rien »",
+		"cas": "types/espace-de-noms-et-empreinte",
+		"attendu": "ATTRAPEE -- regle 3 a l etage des types ; le cas emploie une sentinelle qui doit survivre.",
+		"edits": [(GRAPH_INL, _ANCRE_M28, _MUTE_M28)],
+	},
+	"M29": {
+		"quoi": "le refus ne nomme plus CE QUI differe, seulement QUE ca differe",
+		"cas": "types/espace-de-noms-et-empreinte",
+		"attendu": "ATTRAPEE -- un refus muet force a comparer deux fichiers a la main.",
+		"edits": [(GRAPH_INL, _ANCRE_M29, _MUTE_M29)],
+	},
+	"M30": {
+		"quoi": "l empreinte n est plus ECRITE dans le fichier",
+		"cas": "types/deux-fichiers-meme-nom-refuses-en-se-nommant",
+		"attendu": "ATTRAPEE -- sans elle l accord redevient un accord de MEMOIRE, qui ne survit pas a la "
+				   "sauvegarde ; c est tout l objet de la decision.",
+		"edits": [(GRAPH_IO, _ANCRE_M30, _MUTE_M30)],
+	},
 	"M25": {
 		"quoi": "M22 + M23bis : on lit `success` ET le repli remet success=true -- LE COUPLE de la regle 6",
 		"cas": "rang4/emis-credible-contre-emis-qui-echoue",
