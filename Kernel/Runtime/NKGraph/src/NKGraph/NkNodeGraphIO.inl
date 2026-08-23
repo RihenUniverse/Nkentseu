@@ -78,6 +78,22 @@ namespace nkentseu {
 				s.Append(b);
 			}
 
+			// L'empreinte s'ecrit en HEXADECIMAL SUR 16 CHIFFRES, largeur fixe.
+			// En decimal elle depasserait ce qu'un `TokenU32` sait relire, et une
+			// largeur variable rendrait deux fichiers identiques differents a
+			// l'oeil selon la valeur.
+			inline void PutU64Hex(NkString &s, uint64 v) {
+				const char *chiffres = "0123456789abcdef";
+				char b[17];
+				for (int32 i = 15; i >= 0; --i) {
+					b[i] = chiffres[v & 0xF];
+					v >>= 4;
+				}
+				b[16] = 0;
+				s.Append(b);
+			}
+
+
 			inline void PutF32(NkString &s, float32 v) {
 				char b[32];
 				snprintf(b, sizeof(b), "%.6f", (double)v);
@@ -141,6 +157,26 @@ namespace nkentseu {
 					if (t[i] < '0' || t[i] > '9')
 						break;
 					v = v * 10u + (uint32)(t[i] - '0');
+				}
+				p = t + len;
+				return v;
+			}
+
+			inline uint64 TokenU64Hex(const char *&p) {
+				uint32 len = 0;
+				const char *t = NextToken(p, len);
+				uint64 v = 0;
+				for (uint32 i = 0; i < len; ++i) {
+					const char c = t[i];
+					uint64 d = 16;
+					if (c >= '0' && c <= '9')
+						d = (uint64)(c - '0');
+					else if (c >= 'a' && c <= 'f')
+						d = (uint64)(c - 'a') + 10;
+					else if (c >= 'A' && c <= 'F')
+						d = (uint64)(c - 'A') + 10;
+					if (d < 16)
+						v = v * 16 + d;
 				}
 				p = t + len;
 				return v;
@@ -231,11 +267,43 @@ namespace nkentseu {
 			out.Append('\n');
 
 			for (uint32 i = 1; i < (uint32)mTypeNames.Size(); ++i) {
+				// ⚠️ LA LIGNE `type` NE CHANGE PAS POUR UNE FEUILLE. Son nom EST sa
+				// definition : lui ajouter une empreinte vide obligerait a ecrire
+				// « rien » sous la forme d'un zero, et un lecteur de version 1 ou 2
+				// cesserait de la comprendre sans raison.
 				out.Append("type ");
 				detail::PutU32(out, i);
 				out.Append(' ');
 				out.Append(mTypeNames[i]);
 				out.Append('\n');
+				uint64 emp = 0;
+				if (!TypeFingerprint((NkTypeId)i, &emp))
+					continue; // feuille : rien de plus a ecrire
+				// `typec` porte le GENRE, l'EMPREINTE et le NOMBRE de membres ; les
+				// `typem` qui suivent portent les membres DANS L'ORDRE. L'ordre est
+				// du sens, pas de la mise en forme : voir EmpreinteDeStructure.
+				out.Append("typec ");
+				detail::PutU32(out, i);
+				out.Append(' ');
+				detail::PutU32(out, (uint32)TypeKind((NkTypeId)i));
+				out.Append(' ');
+				detail::PutU64Hex(out, emp);
+				out.Append(' ');
+				detail::PutU32(out, TypeMemberCount((NkTypeId)i));
+				out.Append('\n');
+				for (uint32 k = 0; k < TypeMemberCount((NkTypeId)i); ++k) {
+					const NkTypeMember *m = TypeMemberAt((NkTypeId)i, k);
+					out.Append("typem ");
+					detail::PutU32(out, i);
+					out.Append(' ');
+					out.Append(m->name);
+					out.Append(' ');
+					// ⚠️ UN TIRET, PAS UN VIDE. Un champ vide en fin de ligne se
+					// relit comme un jeton absent, et « enumerateur (sans type) »
+					// deviendrait indiscernable d'une ligne tronquee.
+					out.Append(m->type.Size() ? m->type : NkString("-"));
+					out.Append('\n');
+				}
 			}
 
 			for (uint32 i = 0; i < (uint32)mConversions.Size(); ++i) {
@@ -452,7 +520,38 @@ namespace nkentseu {
 					// nouveau : les sockets s'y referent par numero.
 					while ((uint32)mTypeNames.Size() <= id)
 						mTypeNames.PushBack(NkString(""));
+					while ((uint32)mTypeDefs.Size() <= id)
+						mTypeDefs.PushBack(TypeDef());
 					mTypeNames[id] = name;
+				} else if (detail::GraphStrEq(kw, "typec")) {
+					// La DEFINITION d'un type composite. Elle suit toujours la ligne
+					// `type` qui a cree le nom, donc l'entree existe deja.
+					const uint32 tid = detail::TokenU32(p);
+					const uint32 genre = detail::TokenU32(p);
+					const uint64 emp = detail::TokenU64Hex(p);
+					const uint32 nbm = detail::TokenU32(p);
+					while ((uint32)mTypeDefs.Size() <= tid)
+						mTypeDefs.PushBack(TypeDef());
+					TypeDef &d = mTypeDefs[tid];
+					d.kind = (NkTypeKind)genre;
+					d.empreinte = emp;
+					d.aEmpreinte = true;
+					d.members.Clear();
+					(void)nbm; // les `typem` qui suivent font foi ; le compte est un controle
+				} else if (detail::GraphStrEq(kw, "typem")) {
+					const uint32 tid = detail::TokenU32(p);
+					NkTypeMember m;
+					detail::TokenStr(p, m.name);
+					NkString ty;
+					detail::TokenStr(p, ty);
+					// « - » signifie « sans objet » (enumerateur). On le retraduit en
+					// vide ICI, une seule fois, pour que le reste du code n'ait jamais
+					// a connaitre la convention du fichier.
+					if (!(ty == NkString("-")))
+						m.type = ty;
+					while ((uint32)mTypeDefs.Size() <= tid)
+						mTypeDefs.PushBack(TypeDef());
+					mTypeDefs[tid].members.PushBack(m);
 				} else if (detail::GraphStrEq(kw, "conv")) {
 					const uint32 a = detail::TokenU32(p);
 					const uint32 b = detail::TokenU32(p);

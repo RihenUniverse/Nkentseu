@@ -256,11 +256,15 @@ namespace nkentseu {
 		//     INDEX — l'ordre des lignes `sock`. Encore LU, jamais plus ecrit.
 		// 2 : ils la designent par son NOM. Voir NkNodeGraphIO.inl pour la mesure
 		//     qui a decide, et pour ce que la version 2 garantit.
+		// 3 : les types COMPOSITES portent leur definition -- genre, membres
+		//     ordonnes, et une EMPREINTE DE STRUCTURE. Un fichier sans type
+		//     composite est identique a un fichier de version 2 : la ligne `type`
+		//     n'a pas bouge, seules s'ajoutent `typec` et `typem`.
 		//
 		// ⚠️ ELLE VIT ICI ET PAS DANS LE .inl : c'est la version du MODELE, pas
 		// un detail de l'ecrivain. Un lecteur qui veut savoir ce qu'il sait lire
 		// ne devrait pas avoir a ouvrir le fichier de serialisation.
-		static const uint32 NK_NKGRAPH_VERSION = 2;
+		static const uint32 NK_NKGRAPH_VERSION = 3;
 
 		struct NkLink {
 				NkLinkId id = 0;
