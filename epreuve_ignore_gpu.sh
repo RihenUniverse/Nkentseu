@@ -104,8 +104,15 @@ essai() {
   exiger "code de la passe (un IGNORE ne rougit pas)" "0" "$rc"
 
   # Le banc lui-meme a-t-il rendu 77 et dit pourquoi ?
+  # ⚠️ ANCRER SUR LA FORME DE LA LIGNE, PAS SUR LE NOM. Le nom du banc apparait
+  # TROIS fois dans la sortie : la ligne de progression (« ... IGNORE (1s) »,
+  # sans code), la ligne du TABLEAU (« oui  77  1s  IGNORE ») et la ligne de la
+  # section IGNORES. Le premier jet prenait `head -1` sur le nom, donc la ligne
+  # de progression — et concluait « code 77 absent » alors qu'il etait la, dans
+  # le tableau. Meme faute que citer « [OK] ... aucune erreur » comme cause d'un
+  # echec : chercher un MOT la ou il faut chercher une STRUCTURE.
   local ligne_tab
-  ligne_tab=$(grep -aE '^  NkMsaaDeviceCheck ' /tmp/epr_ignore_passe.log | head -1)
+  ligne_tab=$(grep -aE '^  NkMsaaDeviceCheck +(oui|non|saute) ' /tmp/epr_ignore_passe.log | head -1)
   printf '  tableau : %s\n' "$ligne_tab"
   case "$ligne_tab" in
     *IGNORE*) exiger "verdict du banc" "IGNORE" "IGNORE" ;;

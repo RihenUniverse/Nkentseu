@@ -1069,6 +1069,25 @@ verdict, la section `IGNORES`, l'avertissement sous le verdict.
 section suivante, qui existe parce que l'ordre inverse a détruit du travail dans
 ce dépôt le 22/08.
 
+**Résultat (2026-08-23) : 14 exigences sur 14, code 0.** Les deux défauts rendent
+bien `77`, sont classés `IGNORE`, comptés, nommés, et donnent des raisons
+distinctes. L'arbre revient à l'identique.
+
+⚠️ **Et le premier passage a été rouge — sur MON assertion, pas sur la mesure.**
+J'ai lu le code de sortie avec `grep '^  NkMsaaDeviceCheck ' | head -1`, qui
+attrape la ligne de **progression** (`... IGNORE (1s)`, sans colonne code) au
+lieu de la ligne du **tableau** (`oui  77  1s  IGNORE`). L'épreuve annonçait donc
+« code 77 absent » alors qu'il était là.
+
+> **Le nom d'un banc apparaît dans plusieurs rôles de la même sortie. S'ancrer
+> sur le nom, c'est laisser le hasard de l'ordre choisir la ligne qu'on lit.**
+
+C'est la même faute que citer `[OK] … aucune erreur` comme cause d'un échec :
+**chercher un mot là où il faut chercher une structure.** Corrigé en exigeant la
+forme de la ligne de tableau (`+(oui|non|saute) `). Et j'ai vérifié la sortie
+réelle **avant** de toucher à l'assertion — un contrôle qu'on « répare » sans
+avoir prouvé qu'il avait tort est un contrôle qu'on vient d'aveugler.
+
 ---
 
 ## ⚠️ Un filet armé avant son contrôle détruit ce que le contrôle protège
