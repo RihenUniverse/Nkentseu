@@ -1519,9 +1519,101 @@ fait **pas depuis une branche** pendant que plusieurs agents travaillent.
 pas. Mesurer le chemin réel demande un périphérique GPU — un banc en mode
 `complet`, pas celui-ci.
 
-### 🟡 Les 117 lignes `non-examine` de `config/capacites.list`
+### 🟡 Les lignes `non-examine` de `config/capacites.list` — 117 → 102
 
 Classées pour que la garde soit totale dès le premier jour, **pas examinées une
 par une**. Politique tranchée : **chaque agent qui passe sur un de ces symboles
 corrige sa ligne au passage** — même règle que les 111 `non-examine` de
 `config/bancs.list`. Une grande revue en une fois n'arrive jamais.
+
+**Appliquée le 23/08 : les 24 lignes `A-DATER` ont été examinées une par une**
+et leurs notes réécrites (compte d'appelants avec `fichier:ligne`, ce qui casse
+à l'abandon, recommandation). `non-examine` **passe de 117 à 102**. Aucune
+classe, aucune date, aucun plafond n'a bougé. Voir `CAPACITES_A_DATER.md`.
+
+### 🔴 `NkGpuProbe` est classé `code`, et devrait être `code+ignore:<n>`
+
+Sa dette est déjà écrite plus haut (*IGNORÉ est un troisième état*) : il rend
+**1** quand aucun périphérique n'existe, donc il **confond « pas de carte » et
+« la carte est cassée »**. `NkMsaaDeviceCheck` a été écrit avec le troisième
+état ; `NkGpuProbe` ne l'a pas encore.
+
+⚠️ **Et la passe du 23/08 montre pourquoi ça n'a pas encore mordu** : sur cette
+machine, **les deux périphériques se sont ouverts**. Son ÉCHEC n'est donc **pas**
+le faux ÉCHEC redouté — c'en est un vrai (voir ci-dessous). Le défaut de dessin
+reste entier, il ne s'est simplement pas manifesté ici. **Un chemin d'erreur que
+rien n'a jamais emprunté est du code dont on ne sait pas s'il est juste.**
+
+---
+
+## Passe `complet` du 23/08 — 12 bancs, 10 OK, 2 ÉCHEC, **0 IGNORÉ**
+
+Première passe `complet` mesurée après fusion de `main` à jour (`9b31cc8f`),
+retard **0 commit**. **19 min 43 s** (le gros du temps est le défaut de cache de
+Jenga documenté plus haut, aggravé ici par la fusion qui a invalidé NKRHI).
+
+| banc | verdict | ce que ça dit |
+|---|---|---|
+| les 10 autres | **OK** | — |
+| `NkGpuProbe` | **ÉCHEC** | un **vrai** échec, pas un manque de matériel |
+| `NkMsaaDeviceCheck` | **ÉCHEC** | **4 OK / 5 FAIL**, et il a raison |
+
+### `IGNORÉ` = 0, et c'est une information, pas un silence
+
+Le troisième état est **implémenté, compté et annoncé** — la ligne de verdict
+porte `0 ignore(s)` même à zéro, exactement pour que « aucun ignoré » et « la
+section n'existe pas » ne se ressemblent pas.
+
+⚠️ **Mais zéro ne veut pas dire « prouvé aujourd'hui ».** Aucun banc n'a pris ce
+chemin cette fois **parce que la machine avait une carte**. Ce qui prouve le
+troisième état reste `./epreuve_ignore_gpu.sh`, qui injecte deux défauts réels
+sur deux chemins distincts et exige deux raisons **différentes**. La passe le
+**compte** ; elle ne le **prouve** pas.
+
+### `NkGpuProbe` — ÉCHEC réel, et une branche à regarder avant de diagnostiquer
+
+Les deux périphériques se sont **ouverts** et ont annoncé `compute shaders :
+oui`. Le calcul a rendu `C = [0 0 0 0]` au lieu de `58 64 139 154`, sur **DX11
+et DX12**. La ligne de cause :
+
+```
+[NkRHI_DX11][ERR] DX11 shader: manque le source HLSL (stage 0)
+[NkRHI_DX12][ERR] Shader stage missing/empty for stage 32
+[NkML] Erreur compilation shader: MatMul
+```
+
+Ce n'est donc **pas** le chemin « pas de carte » : c'est le noyau compute de
+`NkML` qui ne trouve pas la source de son shader `MatMul`.
+
+⚠️ **Et l'outil a fait exactement ce pour quoi il a été outillé** : il nomme
+**`feat/rendu-temps-reel` (55 commits inédits)** comme branche non fusionnée qui
+touche `NkDirectX11Device.cpp`/`.h`. **Je n'ai donc rien diagnostiqué** —
+*fusionner d'abord, remesurer ensuite, ne diagnostiquer qu'après*. C'est la
+règle de lecture de ce document, appliquée au premier rouge qu'elle rencontre.
+
+*(Fait mesuré qui délimite : le même échec figurait déjà dans le journal de
+10 h 52, **avant** la fusion de `main`. Ce n'est pas une régression de la
+fusion.)*
+
+### `NkMsaaDeviceCheck` — rouge, et il a raison de l'être
+
+**4 OK / 5 FAIL**, sur DX11 — **le chiffre exact de la mesure du 23/08 au
+matin**. Le correctif MSAA du chantier rendu **n'a rien changé ici**, et c'est
+attendu : il **plafonne** 3 et 7 au lieu de les **refuser**.
+
+```
+[FAIL]  3 echantillons : le contrat REFUSE, la carte ACCEPTE.
+[FAIL]  7 echantillons : le contrat REFUSE, la carte ACCEPTE.
+[FAIL] 16 / 32 / 64 : idem.
+```
+
+`caps.SupportsSamples(3)` répond **non**, et `CreateTexture(samples=3)`
+**réussit** — DX11 ramène `SampleDesc.Count` à 1 en silence
+(`NkDirectX11Device.cpp:969-977`). **La ressource existe, et rien ne dit combien
+d'échantillons elle porte réellement.** C'est le mensonge visé, mot pour mot.
+
+⚠️ Et l'outil dit l'**absence** aussi fort que la présence : *« branches non
+fusionnées touchant les fichiers accusés : AUCUNE (15 branches examinées) — le
+défaut est bien sur CETTE référence. »* **Ce rouge-là ne se règle pas par une
+fusion.** Il se règle par un type qui n'accepte que les comptes valides — voir
+`NkRendererConfig::msaaSamples` (E1) dans `CAPACITES_A_DATER.md`, **même sujet**.
