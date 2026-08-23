@@ -49,6 +49,7 @@ import sys
 RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COMPILE_H = "Kernel/Runtime/NKRenderer/src/NKRenderer/Materials/Graph/NkMatGraphCompile.h"
 BANC_SRC = "Applications/NkMatGraphCheck/src/main.cpp"
+GRAPH_IO = "Kernel/Runtime/NKGraph/src/NKGraph/NkNodeGraphIO.inl"
 BANC = "Build/Bin/Debug-Windows/NkMatGraphCheck/NkMatGraphCheck.exe"
 
 # --------------------------------------------------------------------------
@@ -116,7 +117,77 @@ _MUTE_M15 = """				if (debute) {
 					pose = true;
 				}"""
 
+
+# ── LE FORMAT v2 : LE NOM DE LA PRISE ────────────────────────────────────────
+# M16 : l'ecrivain remet l'INDEX dans la ligne `lien`. C'est le retour exact au
+# defaut de la version 1, sous une version qui annonce 2.
+_ANCRE_M16 = """				out.Append(okF ? nf->sockets[(uint32)l.fromSocket].name : NkString("?prise-introuvable"));"""
+_MUTE_M16 = """				detail::PutU32(out, (uint32)l.fromSocket); (void)okF; (void)nf;"""
+
+# M17 : le refus devient un repli sur la prise 0 -- « rien » charge comme « la
+# premiere ». C'est LA pente naturelle, et elle rend un graphe qui CHARGE.
+_ANCRE_M17 = """						if (l.fromSocket < 0 || l.toSocket < 0) {
+							NkString q("lien ");"""
+_MUTE_M17 = """						if (l.fromSocket < 0)
+							l.fromSocket = 0;
+						if (l.toSocket < 0)
+							l.toSocket = 0;
+						if (false) {
+							NkString q("lien ");"""
+
+# M18 : la migration disparait -- la v1 se lit comme de la v2.
+_ANCRE_M18 = """			const bool parNom = versionFichier >= 2;"""
+_MUTE_M18 = """			const bool parNom = true;"""
+
+# M19 : retour a UNE seule passe. C'est le defaut que le temoin a trouve tout
+# seul ; on verifie qu'il le retrouverait.
+_ANCRE_M19 = """				if (!matiere && !detail::GraphStrEq(kw, "def") && !detail::GraphStrEq(kw, "lien"))
+					continue;
+				if (matiere && (detail::GraphStrEq(kw, "def") || detail::GraphStrEq(kw, "lien")))
+					continue;"""
+_MUTE_M19 = """				if (!matiere)
+					continue;"""
+
+# M20 : le graphe n'est PLUS vide apres un refus. Le `false` est toujours rendu,
+# donc seul un cas qui REGARDE la matiere restante peut le voir.
+_ANCRE_M20 = """				// ⚠️ ON VIDE. Un graphe a moitie charge est la pire des reponses :
+				// il porte des noeuds justes et des liens faux, et l'appelant qui
+				// ignore le `false` compile un materiau qui a l'air complet.
+				Clear();
+				return false;"""
+_MUTE_M20 = """				return false;"""
+
 MUTATIONS = {
+	"M16": {
+		"quoi": "l ecrivain remet l INDEX dans la ligne `lien` -- retour au defaut v1 sous une version qui annonce 2",
+		"cas": "fichier/ordre-des-sock",
+		"attendu": "ATTRAPEE -- sinon le temoin ne mesure pas ce qu il annonce.",
+		"edits": [(GRAPH_IO, _ANCRE_M16, _MUTE_M16)],
+	},
+	"M17": {
+		"quoi": "le refus devient un repli sur la prise 0 -- « rien » charge comme « la premiere »",
+		"cas": "fichier/prise-inconnue-refusee-en-se-nommant",
+		"attendu": "ATTRAPEE -- c est LA pente naturelle, et elle rend un graphe qui CHARGE.",
+		"edits": [(GRAPH_IO, _ANCRE_M17, _MUTE_M17)],
+	},
+	"M18": {
+		"quoi": "la migration disparait : un fichier v1 est lu comme de la v2",
+		"cas": "fichier/migration-version-1",
+		"attendu": "ATTRAPEE -- une migration que rien ne mesure se fait retirer par le premier qui la croit morte.",
+		"edits": [(GRAPH_IO, _ANCRE_M18, _MUTE_M18)],
+	},
+	"M19": {
+		"quoi": "retour a UNE seule passe de lecture -- la resolution redevient dependante de l ORDRE",
+		"cas": "fichier/ordre-des-sock",
+		"attendu": "ATTRAPEE -- c est le defaut que le temoin a trouve tout seul ; on verifie qu il le retrouverait.",
+		"edits": [(GRAPH_IO, _ANCRE_M19, _MUTE_M19)],
+	},
+	"M20": {
+		"quoi": "le graphe n est plus vide apres un refus (le `false` est toujours rendu)",
+		"cas": "fichier/prise-inconnue-refusee-en-se-nommant",
+		"attendu": "ATTRAPEE -- seul un cas qui REGARDE la matiere restante peut voir ce defaut-la.",
+		"edits": [(GRAPH_IO, _ANCRE_M20, _MUTE_M20)],
+	},
 	"M11": {
 		"quoi": "le second filet (site d emission) REMET le repli plausible : vUV / vColor pour n importe quel nom",
 		"cas": "rang4/canal-nomme-refuse-en-se-nommant",
