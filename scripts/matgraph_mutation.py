@@ -121,17 +121,22 @@ def arbre_propre():
 
 def construis():
 	"""Rend (ok, nb_erreurs_lues, sortie)."""
+	# ⚠️ jenga imprime des cadres UTF-8 ; la console Windows decode en cp1252 et
+	# LEVE. Un decodage qui echoue ici tuerait la campagne APRES la mutation --
+	# c est exactement comme ca que la session precedente s est arretee.
 	r = subprocess.run(["jenga", "build", "--target", "NkMatGraphCheck"],
-					   cwd=RACINE, capture_output=True, text=True, shell=(os.name == "nt"))
-	txt = r.stdout + r.stderr
+					   cwd=RACINE, capture_output=True, text=True,
+					   encoding="utf-8", errors="replace", shell=(os.name == "nt"))
+	txt = (r.stdout or "") + (r.stderr or "")
 	nb = txt.lower().count("error:") + txt.lower().count(" error ")
 	return (r.returncode == 0 and "BUILD COMPLETED" in txt and "SUCCESS" in txt), nb, txt
 
 
 def joue_le_banc():
 	r = subprocess.run([os.path.join(RACINE, BANC.replace("/", os.sep))],
-					   cwd=RACINE, capture_output=True, text=True, errors="replace")
-	return r.returncode, r.stdout + r.stderr
+					   cwd=RACINE, capture_output=True, text=True,
+					   encoding="utf-8", errors="replace")
+	return r.returncode, (r.stdout or "") + (r.stderr or "")
 
 
 # ⚠️ « ECHEC » apparait AUSSI dans le detail des cas (« GLSLANG=ECHEC »), ou il
