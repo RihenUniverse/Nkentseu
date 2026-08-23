@@ -320,7 +320,67 @@ _ANCRE_M38 = """					if (mLinks[i].alive && mLinks[i].fromNode == cur && LinkFam
 _MUTE_M38 = """					if (mLinks[i].alive && mLinks[i].fromNode == cur)
 						stack.PushBack(mLinks[i].toNode);"""
 
+
+# ── LE LIEN QUALIFIE ─────────────────────────────────────────────────────────
+# M39 : la qualification n'est plus ECRITE dans le fichier.
+_ANCRE_M39 = """				if (l.subgraph.Size() > 0) {
+					out.Append("liensg ");"""
+_MUTE_M39 = """				if (false) {
+					out.Append("liensg ");"""
+
+# M40 : `LinkSubgraph` rend une chaine vide pour un lien INEXISTANT -- « rien »
+# rendu comme « pas de condition ».
+_ANCRE_M40 = """			const NkLink *l = TrouveLien(id);
+			// ⚠️ `nullptr` = LE LIEN N'EXISTE PAS ; chaine vide = il existe et n'a
+			// pas de condition. Deux etats, deux reponses -- regle 3.
+			return l ? &l->subgraph : nullptr;"""
+_MUTE_M40 = """			static NkString vide;
+			const NkLink *l = TrouveLien(id);
+			return l ? &l->subgraph : &vide;"""
+
+# M41 : poser deux fois la meme cle AJOUTE au lieu de remplacer -- la lecture
+# redevient dependante de l'ordre d'insertion.
+_ANCRE_M41 = """			for (uint32 i = 0; i < (uint32)l->props.Size(); ++i)
+				if (detail::GraphStrEq(l->props[i].name, name)) {
+					l->props[i].value = v; // REMPLACE : deux homonymes rendraient
+					return true;		   // la lecture dependante de l'insertion
+				}"""
+_MUTE_M41 = """			if (false)
+				return true;"""
+
+# M42 : la lecture de la qualification retombe en passe 2 -- elle remarche TANT
+# QUE l'ecrivain place chaque `lienp` apres son `lien`. Dependance a l'ORDRE.
+_ANCRE_M42 = """			for (uint32 passe = 0; passe < 3; ++passe) {"""
+_MUTE_M42 = """			for (uint32 passe = 0; passe < 2; ++passe) {"""
+
 MUTATIONS = {
+	"M39": {
+		"quoi": "la qualification du lien n est plus ecrite dans le fichier",
+		"cas": "exec/lien-qualifie",
+		"attendu": "ATTRAPEE -- meme defaut que l empreinte non ecrite (M30) et la famille non ecrite (M37).",
+		"edits": [(GRAPH_IO, _ANCRE_M39, _MUTE_M39)],
+	},
+	"M40": {
+		"quoi": "LinkSubgraph rend une chaine vide pour un lien INEXISTANT",
+		"cas": "exec/lien-qualifie",
+		"attendu": "ATTRAPEE -- regle 3 : « ce lien n existe pas » et « ce lien n a pas de condition » sont "
+				   "deux etats.",
+		"edits": [(GRAPH_INL, _ANCRE_M40, _MUTE_M40)],
+	},
+	"M41": {
+		"quoi": "poser deux fois la meme cle AJOUTE au lieu de remplacer",
+		"cas": "exec/lien-qualifie",
+		"attendu": "ATTRAPEE -- deux homonymes rendent la lecture dependante de l ordre d insertion.",
+		"edits": [(GRAPH_INL, _ANCRE_M41, _MUTE_M41)],
+	},
+	"M42": {
+		"quoi": "la qualification retombe en passe 2 -- la lecture redevient dependante de l ORDRE",
+		"cas": "exec/lien-qualifie",
+		"attendu": "ATTRAPEE ou SURVIVANTE : si elle SURVIT, c est que l ecrivain place deja chaque `lienp` "
+				   "apres son `lien` -- la dependance existe alors sans se voir, et il faut un cas qui "
+				   "REORDONNE le fichier pour l attraper. A lire, pas a supposer.",
+		"edits": [(GRAPH_IO, _ANCRE_M42, _MUTE_M42)],
+	},
 	"M38": {
 		"quoi": "LE COUPLE : M36 + le parcours de WouldCreateCycle revoit les liens d execution",
 		"cas": "exec/cycle-execution-legitime-cycle-donnee-refuse",
