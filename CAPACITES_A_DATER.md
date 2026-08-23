@@ -25,8 +25,18 @@
 
 ⚠️ **Je n'ai daté aucune ligne et je n'ai pas touché au plafond du cliquet**
 (`# PLAFOND-A-DATER = 24`). *Un contrôle qui modifie sa propre donnée sans que
-personne ne le voie a cessé d'être un contrôle.* `config/capacites.list` est
-inchangé par ce document.
+personne ne le voie a cessé d'être un contrôle.*
+
+**Ce que j'ai changé dans `config/capacites.list`, et rien d'autre : les notes
+des 24 lignes.** Elles portaient `non-examine` — la mention qui existe
+précisément pour qu'on ne prenne pas un remplissage de premier jour pour un
+jugement. Je les ai examinées : **laisser le mot serait une fausse déclaration
+dans le fichier dont le métier est de ne pas en porter**, et la politique du
+fichier demande explicitement à l'agent qui passe de corriger sa ligne. Chaque
+note dit maintenant le compte d'appelants, ce qui casse, et la recommandation.
+**Aucune classe, aucune date, aucun plafond n'a bougé** : les 24 restent
+`dette-datee | A-DATER`, `verif_capacites.sh` rend toujours `0`, et le cliquet
+lit toujours 24. *(Mesure : `non-examine` passe de 117 à 102 lignes.)*
 
 ### La référence de la mesure, et son retard
 
@@ -279,11 +289,22 @@ obtenir quelque chose.** Rien ne casse à l'abandon, mais quelqu'un sera détrom
 **⚠️ Lire ce paragraphe avant les six lignes — il change ce que « abandonner »
 veut dire.**
 
-`NkDeviceCaps` **n'est pas une structure morte** : `GetCaps()` est appelé
-**45 fois** dans l'arbre, et plusieurs de ses champs **décident réellement** —
-`computeShaders` (`NkComputeContext.cpp:19`, `NkML.cpp:22`, `NkGpuProbe`,
-`NkComputeNkSL`), `maxComputeGroupSizeX/Y/Z`, `maxComputeSharedMemory`,
-`indirectDispatch` (`NkComputeContext.cpp:402`), `vramBytes`.
+`NkDeviceCaps` **n'est pas une structure morte** : `GetCaps()` compte
+**29 sites d'appel réels, dans 15 fichiers**, dont **17 décident** d'un chemin
+de code et 12 ne font que journaliser la VRAM. Les champs qui décident :
+`computeShaders` (`NkComputeContext.cpp:19`, `NkML.cpp:22`, `NkTensorGpu.cpp:293`,
+`NkGpuProbe:33`, `NkComputeNkSL:55`), `maxComputeGroupSizeX/Y/Z` et
+`maxComputeSharedMemory` (`NkComputeContext.cpp:406-427`), `indirectDispatch`
+(`NkComputeContext.cpp:402`), `vramBytes` et `maxTextureDim2D`
+(`NkIDevice::GetContextInfo`, `NkIDevice.h:208`).
+
+⚠️ **Correction de mon propre chiffre, faite avant publication.** J'avais écrit
+« 45 fois ». **45 est le résultat brut d'un `grep GetCaps()`** — il comptait
+`NkMeshSystem::GetCapsule`, le `FnGetCaps` XInput de `NkWin32Gamepad.h`, et des
+fichiers `* copy` qu'aucun build ne compile. **Un compte brut présenté comme une
+mesure est exactement ce que ce chantier traque**, et il était sur le point de
+sortir sous ma signature. Le nombre juste est **29**, et il reste plus que
+suffisant pour l'argument.
 
 C'est **un rapport de capacités vivant**, dont ces six champs sont la portion que
 **personne n'a encore eu besoin de consulter**. La conséquence est directe :
@@ -295,7 +316,7 @@ C'est **un rapport de capacités vivant**, dont ces six champs sont la portion q
 **La vraie question, pour les six, est une seule : `NkDeviceCaps` est-il une API
 publique que les applications ont le droit de lire ?**
 
-- **Si OUI** — et les 45 appels le suggèrent — alors ces six champs sont
+- **Si OUI** — et les 29 appels le suggèrent — alors ces six champs sont
   **`implementee`** : ils rapportent honnêtement, le moteur ne les consulte pas
   parce qu'il n'en a pas besoin, et il n'y a **aucune dette**. **Une seule
   réponse « oui » retire six lignes du stock : 24 → 18.**

@@ -661,11 +661,17 @@ d'être un contrôle.*
   `auto &a = d.blend.attachments[i]` — le **type n'apparaît pas dans la ligne**.
   **Quatrième fois de ce chantier qu'un instrument accuse le sujet à la place de
   son propre montage.**
-- **`NkDeviceCaps` n'est pas une structure morte** : `GetCaps()` est appelé
-  **45 fois**, et `computeShaders`, `maxComputeGroupSize*`, `indirectDispatch`
-  **décident réellement**. Passer six des drapeaux à `false` ferait donc mentir
-  le rapport **dans l'autre sens** — ce n'est pas une sortie honnête, c'en est
-  une deuxième.
+- **`NkDeviceCaps` n'est pas une structure morte** : `GetCaps()` compte
+  **29 sites d'appel réels** (15 fichiers), dont **17 décident** d'un chemin —
+  `computeShaders`, `maxComputeGroupSize*`, `maxComputeSharedMemory`,
+  `indirectDispatch`. Passer six des drapeaux à `false` ferait donc mentir le
+  rapport **dans l'autre sens** — ce n'est pas une sortie honnête, c'en est une
+  deuxième.
+  ⚠️ **Et ce 29 a d'abord été un 45.** 45 était le résultat brut d'un
+  `grep GetCaps()` : il comptait `GetCapsule`, le `FnGetCaps` XInput de
+  `NkWin32Gamepad.h` et des fichiers `* copy` morts. **Un compte brut présenté
+  comme une mesure** — la faute même que ce chantier traque, rattrapée en
+  recomptant avant publication, pas en relisant.
 - **`NkRendererConfig::voxelAOEnabled`** : le commentaire du champ promet
   *« false = sous-système NON alloué (gratuit) »*. `NkRendererImpl.cpp:226`
   alloue **inconditionnellement**. **NkAnimaEditor demande explicitement cette
