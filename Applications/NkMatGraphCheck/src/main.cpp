@@ -5159,6 +5159,219 @@ static NkMatCompileResult CompileAvecSortie(const char *etage, const char *nomDe
 	return NkMatCompileToNkSL(gReg, g, opt);
 }
 
+// ── RANG 4 : CE QUE LE PIXEL SAIT DE LUI-MEME ───────────────────────────────
+
+// Monte un materiau minimal ou `noeud`.`prise` alimente l'emission, pour que le
+// noeud teste soit REELLEMENT consomme -- un noeud dont la sortie ne va nulle
+// part serait emis puis ignore, et l'on ne mesurerait que sa declaration.
+static NkMatCompileResult CompileAvecNoeudRang4(const char *cleProto, const char *priseSortie, const char *propCle,
+												const char *propVal, NkNodeId *outId) {
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	const NkNodeId out = NkMatAddNode(gReg, g, NK_MN_OUTPUT);
+	const NkNodeId emi = NkMatAddNode(gReg, g, NK_MN_EMISSION);
+	const NkNodeId n = NkMatAddNode(gReg, g, cleProto);
+	if (outId)
+		*outId = n;
+	if (n != NK_NODE_INVALID && propCle)
+		g.SetProp(n, propCle, NkValueText(t.real, propVal));
+	if (n != NK_NODE_INVALID)
+		g.Connect(n, priseSortie, emi, "color");
+	g.Connect(emi, "emission", out, "surface");
+	return NkMatCompileToNkSL(gReg, g);
+}
+
+static void CasRang4GeometrieEtVue() {
+	// Les quatre noeuds CALCULABLES : ils lisent la vue, la normale et la
+	// position, et tout cela existe deja dans le shader.
+	//
+	// DISCRIMINE SUR LA CONVENTION, qui est le seul endroit ou l'on peut se
+	// tromper sans que rien ne le dise : `nkViewV` doit pointer du PIXEL VERS
+	// L'OEIL, comme `Incoming` chez Blender et comme le `V` que le puits calcule
+	// deja trois lignes plus bas. La convention opposee donnerait un Fresnel qui
+	// s'allume AU CENTRE au lieu des bords -- une image parfaitement credible,
+	// et fausse. On exige donc l'expression exacte.
+	NkNodeId idF = NK_NODE_INVALID, idL = NK_NODE_INVALID, idG = NK_NODE_INVALID;
+	const NkMatCompileResult fr = CompileAvecNoeudRang4(NK_MN_FRESNEL, "fac", nullptr, nullptr, &idF);
+	const NkMatCompileResult lw = CompileAvecNoeudRang4(NK_MN_LAYER_WEIGHT, "fresnel", nullptr, nullptr, &idL);
+	const NkMatCompileResult ge = CompileAvecNoeudRang4(NK_MN_GEOMETRY, "position", nullptr, nullptr, &idG);
+
+	const char *kVue = "vec3 nkViewV = normalize(uCam.camPos.xyz - vWorldPos);";
+	const bool vueF = fr.ok && ContientSansCasse(fr.source, kVue);
+	const bool vueL = lw.ok && ContientSansCasse(lw.source, kVue);
+	const bool vueG = ge.ok && ContientSansCasse(ge.source, kVue);
+	// et le calcul du Fresnel doit REELLEMENT employer la vue, pas seulement la
+	// declarer : c'est la difference entre « la ligne est la » et « elle sert ».
+	const bool fresnelEmploieLaVue = fr.ok && ContientSansCasse(fr.source, "), nkViewV), 0.0, 1.0), 5.0)");
+	// Layer Weight rend DEUX sorties distinctes, pas deux fois la meme.
+	NkString nomFresnel = NkFormat("n{0}_fresnel", idL);
+	NkString nomFacing = NkFormat("n{0}_facing", idL);
+	const bool deuxSorties =
+		lw.ok && ContientSansCasse(lw.source, nomFresnel.CStr()) && ContientSansCasse(lw.source, nomFacing.CStr());
+
+	NkString be;
+	NkString err;
+	const uint32 nb = fr.ok ? CompileSurLesBackends(fr.source, be, &err) : 0u;
+	// Diagnostic PERMANENT, sur le modele du cas du masque : quand ce cas
+	// tombe, la question est toujours « le shader est-il mal forme, ou mon
+	// motif de recherche est-il faux ? ». Sans le code sous les yeux on
+	// tranche au hasard. Il ne se declenche QUE sur echec -- un dump
+	// systematique noierait la sortie du banc.
+	if (getenv("NK_DUMP") && fr.ok && nb != 5)
+		logger.Info("\n--- source Fresnel (le cas est rouge) ---\n{0}\n--- fin ---", fr.source.CStr());
+
+	NkString d;
+	d = NkFormat("vue declaree : Fresnel={0} LayerWeight={1} Geometry={2} | Fresnel l EMPLOIE={3} | LayerWeight rend "
+				 "fresnel ET facing={4} | {5}| {6}",
+				 vueF ? 1 : 0, vueL ? 1 : 0, vueG ? 1 : 0, fresnelEmploieLaVue ? 1 : 0, deuxSorties ? 1 : 0, be, err);
+	Cas("rang4/geometrie-et-convention-de-vue",
+		fr.ok && lw.ok && ge.ok && vueF && vueL && vueG && fresnelEmploieLaVue && deuxSorties && nb == 5, d);
+}
+
+static void CasRang4VueSeulementSiUtile() {
+	// ⚠️ LA LIGNE NE DOIT PAS APPARAITRE CHEZ CEUX QUI N'EN ONT PAS BESOIN.
+	//
+	// Ce n'est pas de l'economie de calcul : declarer `nkViewV` partout
+	// changerait la SOURCE, donc le jeton, donc la signature de materiaux qui
+	// n'ont pas bouge d'un octet. Le banc temoin d'un autre chantier tomberait
+	// sur une difference qui n'a rien a voir avec lui, et l'heure passee a la
+	// diagnostiquer serait perdue pour tout le monde.
+	//
+	// DISCRIMINE DANS LES DEUX SENS : absente sans, presente avec.
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	MonteUnPrincipled(g, t, &out);
+	const NkMatCompileResult sans = NkMatCompileToNkSL(gReg, g);
+	const NkMatCompileResult avec = CompileAvecNoeudRang4(NK_MN_GEOMETRY, "position", nullptr, nullptr, nullptr);
+
+	const char *kVue = "nkViewV";
+	const bool absente = sans.ok && !ContientSansCasse(sans.source, kVue);
+	const bool presente = avec.ok && ContientSansCasse(avec.source, kVue);
+	NkString d;
+	d = NkFormat("sans noeud de vue : ligne absente={0} | avec : presente={1}", absente ? 1 : 0, presente ? 1 : 0);
+	Cas("rang4/vue-declaree-seulement-si-utile", absente && presente, d);
+}
+
+static void CasRang4CanalNommeRefuseEnSeNommant() {
+	// ⚠️ LE CAS QUI PORTE LA DECISION DU RANG, ET C'EST LA REGLE 3 A L'ETAGE DE
+	// LA GEOMETRIE. Un `UV Map` qui nomme un canal inexistant NE DOIT PAS rendre
+	// (0,0) : ce serait « rien » rendu comme « zero ». L'auteur brancherait le
+	// noeud, obtiendrait du noir, et chercherait du cote de son materiau.
+	//
+	// Le nom est verifiable A LA COMPILATION -- la liste est close, derivee des
+	// varyings que le shader porte reellement -- donc on refuse, en nommant le
+	// canal demande ET ce qui existe.
+	//
+	// DISCRIMINE SUR TROIS ETATS QU'ON POURRAIT CONFONDRE :
+	//   le canal valide passe ; le canal inconnu est REFUSE ; et la propriete
+	//   ABSENTE est refusee aussi -- se rabattre sur « uv » ferait marcher le
+	//   noeud sans que personne ait choisi, et le graphe changerait de sens tout
+	//   seul le jour ou un second canal existera.
+	const NkMatCompileResult bon = CompileAvecNoeudRang4(NK_MN_UV_MAP, "vector", NK_MPROP_CANAL_UV, "uv", nullptr);
+	const NkMatCompileResult faux =
+		CompileAvecNoeudRang4(NK_MN_UV_MAP, "vector", NK_MPROP_CANAL_UV, "uv_de_lightmap", nullptr);
+	const NkMatCompileResult sansProp = CompileAvecNoeudRang4(NK_MN_UV_MAP, "vector", nullptr, nullptr, nullptr);
+	const NkMatCompileResult attrBon =
+		CompileAvecNoeudRang4(NK_MN_ATTRIBUTE, "color", NK_MPROP_ATTRIBUT, "color", nullptr);
+	const NkMatCompileResult attrFaux =
+		CompileAvecNoeudRang4(NK_MN_ATTRIBUTE, "color", NK_MPROP_ATTRIBUT, "usure", nullptr);
+
+	// le refus NOMME le canal demande, et dit ce qui existe
+	const bool nommeLeCanal = !faux.ok && ContientSansCasse(faux.error, "uv_de_lightmap") &&
+							  ContientSansCasse(faux.error, "disponibles");
+	const bool nommeLAttribut = !attrFaux.ok && ContientSansCasse(attrFaux.error, "usure") &&
+								ContientSansCasse(attrFaux.error, "disponibles");
+	// ⚠️ et RIEN n'est emis : un refus qui rendrait quand meme une source
+	// laisserait un appelant distrait compiler un shader a moitie forme.
+	const bool rienEmis = faux.source.Size() == 0 && attrFaux.source.Size() == 0 && sansProp.source.Size() == 0;
+	// le bon canal lit le VRAI varying
+	const bool lisUV = bon.ok && ContientSansCasse(bon.source, "= vec3(vUV, 0.0)");
+	const bool lisColor = attrBon.ok && ContientSansCasse(attrBon.source, "= vColor.rgb");
+
+	NkString d;
+	d = NkFormat("canal valide compile={0} et lit vUV={1} | canal inconnu refuse en se nommant={2} | attribut valide "
+				 "lit vColor={3} | attribut inconnu refuse={4} | propriete absente refusee={5} | rien emis={6}",
+				 bon.ok ? 1 : 0, lisUV ? 1 : 0, nommeLeCanal ? 1 : 0, lisColor ? 1 : 0, nommeLAttribut ? 1 : 0,
+				 sansProp.ok ? 0 : 1, rienEmis ? 1 : 0);
+	Cas("rang4/canal-nomme-refuse-en-se-nommant",
+		bon.ok && lisUV && nommeLeCanal && attrBon.ok && lisColor && nommeLAttribut && !sansProp.ok && rienEmis, d);
+}
+
+static void CasRang4ObjectInfoIndisponibleAvecSaRaison() {
+	// ⚠️ `Object Info` N'EST PAS DANS LE CATALOGUE, ET C'EST MESURE, PAS SUPPOSE.
+	//
+	// Le shader engendre ne dispose que du bloc camera et des parametres
+	// exposes : ni matrice de modele, ni index, ni couleur, ni graine d'objet.
+	// Rien a lire. Le livrer en rendant des zeros serait « rien » rendu comme
+	// « zero », a l'echelle d'un noeud entier.
+	//
+	// DISCRIMINE SUR LA DIFFERENCE ENTRE INCONNU ET INDISPONIBLE : un refus sec
+	// (« type inconnu ») enverrait l'auteur chercher une faute de frappe. Ici on
+	// exige que le message porte CE QUI MANQUE -- le bloc uniforme par objet --
+	// et qu'il dise que le noeud n'est pas refuse par principe.
+	const char *pq = NkMatPourquoiIndisponible(NK_MN_OBJECT_INFO);
+	// il n'est pas instanciable
+	NkNodeGraph g;
+	NkMatRegisterTypes(g);
+	const NkNodeId n = NkMatAddNode(gReg, g, NK_MN_OBJECT_INFO);
+
+	// et un graphe qui le porte quand meme (venu d'un fichier) est refuse EN
+	// EXPLIQUANT
+	NkNodeGraph h;
+	NkMatTypes t = NkMatRegisterTypes(h);
+	NkNodeId out;
+	MonteUnPrincipled(h, t, &out);
+	const NkNodeId fantome = h.AddNode(NK_MN_OBJECT_INFO, "Object Info");
+	h.AddSocket(fantome, "color", t.color, NkSocketDir::Output);
+	const NkMatCompileResult r = NkMatCompileToNkSL(gReg, h);
+	const bool expliqueEnCompilant = !r.ok && ContientSansCasse(r.error, "mat.info_objet") &&
+									 ContientSansCasse(r.error, "par objet") &&
+									 ContientSansCasse(r.error, "pas refuse par principe");
+
+	NkString d;
+	d = NkFormat("raison declaree={0} | non instanciable={1} | la compilation explique ce qui manque={2}",
+				 pq ? 1 : 0, n == NK_NODE_INVALID ? 1 : 0, expliqueEnCompilant ? 1 : 0);
+	Cas("rang4/object-info-indisponible-avec-sa-raison",
+		pq != nullptr && n == NK_NODE_INVALID && expliqueEnCompilant, d);
+}
+
+static void CasRang4ParPixelContagieux() {
+	// Les cinq noeuds du rang 4 sont des SOURCES par pixel : ils lisent une
+	// donnee interpolee, donc leur valeur change d'un pixel a l'autre meme sans
+	// aucune entree connectee.
+	//
+	// DISCRIMINE PAR LA CONSEQUENCE, pas par le drapeau : une sortie nommee
+	// « par_materiau » alimentee par l'un d'eux doit etre REFUSEE, et le refus
+	// doit NOMMER le noeud coupable. Lire `proto->parPixel` directement ne
+	// prouverait que la table ; ici on prouve que la table SERT.
+	uint32 bons = 0;
+	NkString detail;
+	const char *cles[5] = {NK_MN_FRESNEL, NK_MN_LAYER_WEIGHT, NK_MN_GEOMETRY, NK_MN_UV_MAP, NK_MN_ATTRIBUTE};
+	const char *prises[5] = {"fac", "fresnel", "position", "vector", "color"};
+	const char *props[5] = {nullptr, nullptr, nullptr, NK_MPROP_CANAL_UV, NK_MPROP_ATTRIBUT};
+	const char *vals[5] = {nullptr, nullptr, nullptr, "uv", "color"};
+	for (uint32 i = 0; i < 5; ++i) {
+		NkNodeGraph g;
+		NkMatTypes t = NkMatRegisterTypes(g);
+		NkNodeId out;
+		MonteUnPrincipled(g, t, &out);
+		const NkNodeId n = NkMatAddNode(gReg, g, cles[i]);
+		if (props[i])
+			g.SetProp(n, props[i], NkValueText(t.real, vals[i]));
+		const NkNodeId so = PoseSortie(g, t, "essai", "par_materiau");
+		// la prise « value » est un reel : on passe par le canal qui convient
+		const bool estCouleur = (i == 4);
+		g.Connect(n, prises[i], so, estCouleur ? "color" : (i == 2 || i == 3 ? "color" : "value"));
+		const NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
+		const bool ok = !r.ok && ContientSansCasse(r.error, "depend du pixel") && ContientSansCasse(r.error, cles[i]);
+		if (ok)
+			++bons;
+		detail.Append(NkFormat("[{0}={1}] ", NkString(cles[i]), ok ? 1 : 0));
+	}
+	Cas("rang4/tous-par-pixel-et-le-refus-les-nomme", bons == 5, NkFormat("{0}(5 attendus)", detail));
+}
+
 static void CasB1ToutMateriauDeclareEtEcritLaSecondeCible() {
 	// ⚠️ LE CAS QUE RODOLF A DEMANDE EN PREMIER, et le fait materiel qui le
 	// justifie : UNE SORTIE MRT NON ECRITE SUR UN PIXEL COUVERT EST INDEFINIE --
@@ -5458,6 +5671,13 @@ int main() {
 	CasSortieParPixelDeuxCiblesCouleur();
 
 	// -- (b1) : la seconde cible, ecrite par TOUS les materiaux
+	// -- rang 4 : la geometrie, et les deux noeuds qui NOMMENT une donnee
+	CasRang4GeometrieEtVue();
+	CasRang4VueSeulementSiUtile();
+	CasRang4CanalNommeRefuseEnSeNommant();
+	CasRang4ObjectInfoIndisponibleAvecSaRaison();
+	CasRang4ParPixelContagieux();
+
 	CasB1ToutMateriauDeclareEtEcritLaSecondeCible();
 	CasB1ValiditeDistingueZeroDeAbsent();
 	CasB1LaValeurVientDuGraphe();

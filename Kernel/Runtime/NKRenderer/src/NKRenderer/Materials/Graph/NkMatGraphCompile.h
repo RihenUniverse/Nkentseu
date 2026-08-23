@@ -902,6 +902,17 @@ namespace nkentseu {
 					if (quoi.Size() > 0) {
 						r.error.Append(" : ");
 						r.error.Append(quoi);
+						// ⚠️ ET S'IL EST INDISPONIBLE PLUTOT QU'INCONNU, ON LE DIT.
+						// « type-de-noeud-inconnu : mat.info_objet » laisserait
+						// croire a une faute de frappe ou a un oubli du
+						// catalogue, alors que le noeud est parfaitement connu et
+						// qu'il lui manque une donnee precise. Meme dispositif que
+						// `pourquoiPas` sur les etages de sortie : un refus sec
+						// envoie chercher au mauvais endroit.
+						if (const char *pq = NkMatPourquoiIndisponible(quoi.CStr())) {
+							r.error.Append(" -- ");
+							r.error.Append(pq);
+						}
 					}
 					return r;
 				}
@@ -1111,10 +1122,19 @@ namespace nkentseu {
 				bool besoinBruit = false;
 				bool besoinVoronoi = false;
 				bool besoinTBN = false;
+				// ⚠️ CONDITIONNEL, ET PAS PAR ECONOMIE DE CALCUL. Declarer
+				// `nkViewV` dans TOUS les shaders changerait la source -- donc le
+				// jeton, donc la signature -- de materiaux qui n'ont pas bouge.
+				// Le banc temoin d'un autre chantier tomberait alors sur une
+				// difference qui n'a rien a voir avec lui.
+				bool besoinVue = false;
 				for (uint32 i = 0; i < (uint32)ordre.Size(); ++i) {
 					const NkNode *n = g.Find(ordre[i]);
 					if (n && n->type == NkString(NK_MN_NORMAL_MAP))
 						besoinTBN = true;
+					if (n && (n->type == NkString(NK_MN_FRESNEL) || n->type == NkString(NK_MN_LAYER_WEIGHT) ||
+							  n->type == NkString(NK_MN_GEOMETRY)))
+						besoinVue = true;
 					// ⚠️ Voronoi et Brick emploient les HACHAGES du meme fichier :
 					// oublier l'un des trois donnerait un shader qui appelle une
 					// fonction non declaree, et l'erreur accuserait le backend.
@@ -1146,6 +1166,118 @@ namespace nkentseu {
 				// l'identique de `layeredv1.frag.nksl` : un materiau genere doit
 				// entrer dans le meme pipeline que les archetypes ecrits a la
 				// main, sinon il faudrait un second chemin de rendu.
+				// ⚠️ LES DEUX PASSES DE REFUS SONT ICI, ET PAS PLUS BAS.
+				//
+				// `s` est une REFERENCE sur `r.source` : tout refus pose apres son
+				// premier `Append` rend une erreur ACCOMPAGNEE D'UNE SOURCE PARTIELLE.
+				// Un appelant qui ne lit que `error` s'en apercevrait ; un appelant
+				// distrait compilerait un shader a moitie forme et chercherait la
+				// cause dans le backend.
+				//
+				// Le banc l'a attrape sur la passe des canaux (« rien emis=0 »), et le
+				// meme defaut etait deja present sur celle de (b1) sans que personne
+				// le voie : son cas verifiait le message, jamais l'absence de source.
+				// ── (b1) : QUELLE sortie par pixel cette passe ecrit-elle ? ──
+				// Choisi AVANT d'emettre : un refus doit sortir avant qu'une
+				// seule ligne de shader soit ecrite, sinon on rend une source
+				// partielle accompagnee d'une erreur.
+				NkNodeId sortiePixel = NK_NODE_INVALID;
+				{
+					NkNodeId premiere = NK_NODE_INVALID;
+					uint32 combien = 0;
+					for (uint32 i = 0; i < g.RawNodeCount(); ++i) {
+						const graph::NkNode *n = g.RawNodeAt(i);
+						if (!n || !n->alive || !(n->type == NkString(NK_MN_OUTPUT_VALUE)))
+							continue;
+						const NkGraphValue *pe = g.FindProp(n->id, NK_MPROP_SORTIE_ETAGE);
+						if (!pe || !pe->IsSet() || !(pe->text == NkString("par_pixel_cible")))
+							continue;
+						++combien;
+						if (premiere == NK_NODE_INVALID)
+							premiere = n->id;
+						if (opt.sortieParPixel) {
+							const NkGraphValue *pn = g.FindProp(n->id, NK_MPROP_SORTIE_NOM);
+							if (pn && pn->IsSet() && pn->text == NkString(opt.sortieParPixel))
+								sortiePixel = n->id;
+						}
+					}
+					if (opt.sortieParPixel && sortiePixel == NK_NODE_INVALID) {
+						// Demander une sortie qui n'existe pas est une ERREUR, pas
+						// un tampon vide. Un tampon vide se lirait comme « ce
+						// materiau ne porte pas cette valeur » -- indiscernable du
+						// cas legitime, et donc jamais corrige.
+						r.error = NkString("sortie par pixel demandee mais absente du graphe : ");
+						r.error.Append(opt.sortieParPixel);
+						return r;
+					}
+					if (!opt.sortieParPixel) {
+						if (combien > 1) {
+							// ⚠️ ON REFUSE, ON NE CHOISIT PAS. Prendre « la
+							// premiere » rendrait une valeur parfaitement
+							// plausible, issue d'une sortie que personne n'a
+							// demandee -- et l'auteur n'aurait aucun moyen de
+							// savoir laquelle il lit.
+							r.error = NkString("plusieurs sorties « par_pixel_cible » et aucune demandee : "
+											   "la passe n'en ecrit qu'une, il faut dire laquelle");
+							return r;
+						}
+						sortiePixel = premiere;
+					}
+				}
+
+				// ── RANG 4 : LES NOMS DE CANAUX, VERIFIES AVANT D'EMETTRE ────
+				//
+				// ⚠️ C'EST ICI QUE « RIEN » NE DOIT PAS DEVENIR « ZERO ». Un
+				// `UV Map` qui nomme un canal inexistant, un `Attribute` qui
+				// nomme une donnee absente : la pente naturelle est de rendre
+				// (0,0) et de laisser l'auteur devant une image noire. Il
+				// chercherait une heure du cote de son materiau.
+				//
+				// Le nom est verifiable A LA COMPILATION -- la liste des canaux
+				// est CLOSE, derivee des varyings que le shader porte reellement
+				// -- donc on REFUSE, et on nomme a la fois le canal demande et ce
+				// qui existe. Aucun pixel n'est jamais faux.
+				{
+					for (uint32 i = 0; i < g.RawNodeCount(); ++i) {
+						const graph::NkNode *n = g.RawNodeAt(i);
+						if (!n || !n->alive)
+							continue;
+						const bool estUV = n->type == NkString(NK_MN_UV_MAP);
+						const bool estAttr = n->type == NkString(NK_MN_ATTRIBUTE);
+						if (!estUV && !estAttr)
+							continue;
+						const char *cleProp = estUV ? NK_MPROP_CANAL_UV : NK_MPROP_ATTRIBUT;
+						const NkGraphValue *pv = g.FindProp(n->id, cleProp);
+						// ⚠️ AUCUN DEFAUT. Se rabattre sur « uv » quand la
+						// propriete manque ferait marcher le noeud sans que
+						// personne ait choisi -- et le jour ou un second canal
+						// existera, le graphe changerait de sens tout seul.
+						if (!pv || !pv->IsSet() || pv->text.Size() == 0) {
+							r.error = NkString(estUV ? "UV Map sans canal : la propriete « canal » n'est pas "
+													   "renseignee, et il n'y a pas de defaut"
+													 : "Attribute sans nom : la propriete « nom » n'est pas "
+													   "renseignee, et il n'y a pas de defaut");
+							return r;
+						}
+						const NkMatCanal *c =
+							estUV ? NkMatTrouveCanalUV(pv->text.CStr()) : NkMatTrouveAttribut(pv->text.CStr());
+						if (!c) {
+							r.error = NkString(estUV ? "canal UV inconnu « " : "attribut inconnu « ");
+							r.error.Append(pv->text);
+							r.error.Append(" » -- disponibles : ");
+							const uint32 nn = estUV ? NkMatCanalUVCount() : NkMatAttributCount();
+							for (uint32 k = 0; k < nn; ++k) {
+								const NkMatCanal *d = estUV ? NkMatCanalUVAt(k) : NkMatAttributAt(k);
+								if (k)
+									r.error.Append(", ");
+								r.error.Append(d->cle);
+							}
+							return r;
+						}
+					}
+				}
+
+
 				NkString &s = r.source;
 				s.Append("// ENGENDRE par NkMatCompileToNkSL -- ne pas editer a la main.\n");
 				s.Append("// Le graphe est la source ; ce fichier en est la trace lisible.\n");
@@ -1234,58 +1366,18 @@ namespace nkentseu {
 				if (besoinVoronoi)
 					detail::PutBriqueVoronoi(s);
 
-				// ── (b1) : QUELLE sortie par pixel cette passe ecrit-elle ? ──
-				// Choisi AVANT d'emettre : un refus doit sortir avant qu'une
-				// seule ligne de shader soit ecrite, sinon on rend une source
-				// partielle accompagnee d'une erreur.
-				NkNodeId sortiePixel = NK_NODE_INVALID;
-				{
-					NkNodeId premiere = NK_NODE_INVALID;
-					uint32 combien = 0;
-					for (uint32 i = 0; i < g.RawNodeCount(); ++i) {
-						const graph::NkNode *n = g.RawNodeAt(i);
-						if (!n || !n->alive || !(n->type == NkString(NK_MN_OUTPUT_VALUE)))
-							continue;
-						const NkGraphValue *pe = g.FindProp(n->id, NK_MPROP_SORTIE_ETAGE);
-						if (!pe || !pe->IsSet() || !(pe->text == NkString("par_pixel_cible")))
-							continue;
-						++combien;
-						if (premiere == NK_NODE_INVALID)
-							premiere = n->id;
-						if (opt.sortieParPixel) {
-							const NkGraphValue *pn = g.FindProp(n->id, NK_MPROP_SORTIE_NOM);
-							if (pn && pn->IsSet() && pn->text == NkString(opt.sortieParPixel))
-								sortiePixel = n->id;
-						}
-					}
-					if (opt.sortieParPixel && sortiePixel == NK_NODE_INVALID) {
-						// Demander une sortie qui n'existe pas est une ERREUR, pas
-						// un tampon vide. Un tampon vide se lirait comme « ce
-						// materiau ne porte pas cette valeur » -- indiscernable du
-						// cas legitime, et donc jamais corrige.
-						r.error = NkString("sortie par pixel demandee mais absente du graphe : ");
-						r.error.Append(opt.sortieParPixel);
-						return r;
-					}
-					if (!opt.sortieParPixel) {
-						if (combien > 1) {
-							// ⚠️ ON REFUSE, ON NE CHOISIT PAS. Prendre « la
-							// premiere » rendrait une valeur parfaitement
-							// plausible, issue d'une sortie que personne n'a
-							// demandee -- et l'auteur n'aurait aucun moyen de
-							// savoir laquelle il lit.
-							r.error = NkString("plusieurs sorties « par_pixel_cible » et aucune demandee : "
-											   "la passe n'en ecrit qu'une, il faut dire laquelle");
-							return r;
-						}
-						sortiePixel = premiere;
-					}
-				}
-
 				s.Append("@stage(fragment)\n@entry\nvoid main() {\n");
 				// La normale geometrique sert de defaut a toute prise `normal` non
 				// cablee, et de base au relief. On la nomme une fois.
 				s.Append("    vec3 nkGeomN = normalize(vNormal);\n");
+				if (besoinVue) {
+					// La direction PIXEL -> OEIL. C'est la convention de Blender
+					// (`Incoming` pointe vers l'observateur) et celle du puits,
+					// qui calcule deja son `V` de la meme facon. Deux conventions
+					// opposees dans un meme shader donneraient un Fresnel qui
+					// s'allume au centre au lieu des bords -- credible, et faux.
+					s.Append("    vec3 nkViewV = normalize(uCam.camPos.xyz - vWorldPos);\n");
+				}
 				// Suit si la seconde cible a recu sa valeur. Voir plus bas : si
 				// elle ne l'a pas recue, elle est ecrite a zero AVANT la fin de
 				// main -- jamais laissee indefinie.
@@ -1338,10 +1430,35 @@ namespace nkentseu {
 							} else {
 								const NkNode *src = g.Find(l->fromNode);
 								const char *nomPrise = "val";
+								NkTypeId typeSource = graph::NK_TYPE_INVALID;
 								if (src && l->fromSocket >= 0 &&
-									(uint32)l->fromSocket < (uint32)src->sockets.Size())
+									(uint32)l->fromSocket < (uint32)src->sockets.Size()) {
 									nomPrise = src->sockets[(uint32)l->fromSocket].name.CStr();
+									typeSource = src->sockets[(uint32)l->fromSocket].type;
+								}
+								// ⚠️ ELARGISSEMENT reel -> vecteur, ET IL MANQUAIT.
+								//
+								// Le graphe AUTORISE reel -> couleur (conversion
+								// dirigee), mais l'emetteur ecrivait la locale
+								// telle quelle : `vec3 x = unFloat;` -- que GLSL
+								// REFUSE. Le defaut est reste invisible parce que
+								// les quatre GENERATEURS l'acceptent : ils
+								// produisent du texte, ils ne verifient pas les
+								// types. Seul glslang l'a dit, et il a fallu qu'un
+								// cas branche pour de vrai une sortie REELLE sur
+								// une entree COULEUR pour l'atteindre.
+								//
+								// C'est le garde-fou du depot pris en flagrant
+								// delit : « ca compile sur les 4 backends » etait
+								// vrai, et le shader ne compilait pas.
+								const bool elargit =
+									typeAttendu && typeAttendu[0] == 'v' && typeSource != graph::NK_TYPE_INVALID &&
+									typeSource == t.real;
+								if (elargit)
+									s.Append("vec3(");
 								detail::PutNom(s, l->fromNode, nomPrise);
+								if (elargit)
+									s.Append(")");
 							}
 							return;
 						}
@@ -2739,6 +2856,98 @@ namespace nkentseu {
 						s.Append(" = ");
 						detail::PutNom(s, n->id, "brique");
 						s.Append(";\n");
+					} else if (t == NkString(NK_MN_FRESNEL)) {
+						// Schlick. La normale vient de la prise si elle est
+						// cablee -- sinon de la geometrie : un Fresnel pose sur un
+						// materiau a relief doit suivre le relief, sinon il
+						// contredit visiblement la lumiere du meme pixel.
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "N");
+						s.Append(" = ");
+						{
+							const int32 iv = n->FindSocket("normal", NkSocketDir::Input);
+							if (iv >= 0 && g.IncomingOf(n->id, iv))
+								ecrisEntree(*n, "normal", "vec3", nullptr);
+							else
+								s.Append("nkGeomN");
+						}
+						s.Append(";\n    float ");
+						detail::PutNom(s, n->id, "f0");
+						s.Append(" = pow((1.0 - ");
+						ecrisEntree(*n, "ior", "float", nullptr);
+						s.Append(") / max(1.0 + ");
+						ecrisEntree(*n, "ior", "float", nullptr);
+						s.Append(", 1e-4), 2.0);\n    float ");
+						detail::PutNom(s, n->id, "fac");
+						s.Append(" = ");
+						detail::PutNom(s, n->id, "f0");
+						s.Append(" + (1.0 - ");
+						detail::PutNom(s, n->id, "f0");
+						s.Append(") * pow(1.0 - clamp(dot(normalize(");
+						detail::PutNom(s, n->id, "N");
+						s.Append("), nkViewV), 0.0, 1.0), 5.0);\n");
+					} else if (t == NkString(NK_MN_LAYER_WEIGHT)) {
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "N");
+						s.Append(" = ");
+						{
+							const int32 iv = n->FindSocket("normal", NkSocketDir::Input);
+							if (iv >= 0 && g.IncomingOf(n->id, iv))
+								ecrisEntree(*n, "normal", "vec3", nullptr);
+							else
+								s.Append("nkGeomN");
+						}
+						s.Append(";\n    float ");
+						detail::PutNom(s, n->id, "ndv");
+						s.Append(" = clamp(dot(normalize(");
+						detail::PutNom(s, n->id, "N");
+						s.Append("), nkViewV), 0.0, 1.0);\n    float ");
+						detail::PutNom(s, n->id, "b");
+						s.Append(" = clamp(");
+						ecrisEntree(*n, "blend", "float", nullptr);
+						// ⚠️ BORNE A 0.9999, PAS A 1. A 1 exactement le rapport
+						// 1/(1-b) diverge : le shader compilerait et rendrait un
+						// inf qui se propagerait en NaN a travers tout l'aval.
+						// Blender exclut la meme borne, et pour la meme raison.
+						s.Append(", 0.0, 0.9999);\n    float ");
+						detail::PutNom(s, n->id, "fresnel");
+						s.Append(" = clamp(1.0 - pow(");
+						detail::PutNom(s, n->id, "ndv");
+						s.Append(", max(1.0 / max(1.0 - ");
+						detail::PutNom(s, n->id, "b");
+						s.Append(", 1e-4), 1e-4)), 0.0, 1.0);\n    float ");
+						detail::PutNom(s, n->id, "facing");
+						s.Append(" = clamp(1.0 - ");
+						detail::PutNom(s, n->id, "ndv");
+						s.Append(", 0.0, 1.0);\n");
+					} else if (t == NkString(NK_MN_GEOMETRY)) {
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "position");
+						s.Append(" = vWorldPos;\n    vec3 ");
+						detail::PutNom(s, n->id, "normal");
+						s.Append(" = nkGeomN;\n    vec3 ");
+						detail::PutNom(s, n->id, "incoming");
+						s.Append(" = nkViewV;\n");
+					} else if (t == NkString(NK_MN_UV_MAP)) {
+						// Le canal a DEJA ete valide par la passe de refus. Ici on
+						// ne fait qu'ecrire le varying qu'il designe : deux
+						// endroits qui decideraient du meme nom finiraient par ne
+						// plus s'accorder.
+						const NkGraphValue *pc = g.FindProp(n->id, NK_MPROP_CANAL_UV);
+						const NkMatCanal *c = pc && pc->IsSet() ? NkMatTrouveCanalUV(pc->text.CStr()) : nullptr;
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "vector");
+						s.Append(" = vec3(");
+						s.Append(c ? c->varying : "vUV");
+						s.Append(", 0.0);\n");
+					} else if (t == NkString(NK_MN_ATTRIBUTE)) {
+						const NkGraphValue *pa = g.FindProp(n->id, NK_MPROP_ATTRIBUT);
+						const NkMatCanal *c = pa && pa->IsSet() ? NkMatTrouveAttribut(pa->text.CStr()) : nullptr;
+						s.Append("    vec3 ");
+						detail::PutNom(s, n->id, "color");
+						s.Append(" = ");
+						s.Append(c ? c->varying : "vColor");
+						s.Append(".rgb;\n");
 					} else if (t == NkString(NK_MN_OUTPUT)) {
 						// ── LE PUITS : ombrage puis ecriture ────────────────
 						// Le modele d'eclairage est celui de LayeredV1, a

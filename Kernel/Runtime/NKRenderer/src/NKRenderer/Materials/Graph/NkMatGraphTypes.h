@@ -833,6 +833,137 @@ namespace nkentseu {
 			// Ce qui coute n'est donc pas le calcul par pixel, c'est le RETOUR
 			// vers le processeur.
 			static const char *const NK_MN_OUTPUT_VALUE = "mat.sortie_valeur";
+
+			// Comparaison de cles, definie ICI parce que le rang 4 en a besoin
+			// plus haut que le registre, qui l'employait seul jusque-la.
+			inline bool NkMatCleEgale(const char *a, const char *b) {
+				if (!a || !b)
+					return false;
+				while (*a && *a == *b) {
+					++a;
+					++b;
+				}
+				return *a == 0 && *b == 0;
+			}
+
+			// ── RANG 4 : CE QUE LE PIXEL SAIT DE LUI-MEME ────────────────────
+			// Quatre noeuds qui lisent la geometrie, et deux qui nomment une
+			// donnee du maillage. La difference entre les deux familles n'est pas
+			// cosmetique -- voir la note sur les canaux plus bas.
+			static const char *const NK_MN_FRESNEL = "mat.fresnel";
+			static const char *const NK_MN_LAYER_WEIGHT = "mat.poids_couche";
+			static const char *const NK_MN_GEOMETRY = "mat.geometrie";
+			static const char *const NK_MN_UV_MAP = "mat.carte_uv";
+			static const char *const NK_MN_ATTRIBUTE = "mat.attribut";
+			// Declare pour etre REFUSE en se nommant -- il n'a rien a lire.
+			static const char *const NK_MN_OBJECT_INFO = "mat.info_objet";
+
+			static const char *const NK_MPROP_CANAL_UV = "canal";
+			static const char *const NK_MPROP_ATTRIBUT = "nom";
+
+			// ═════════════════════════════════════════════════════════════════
+			// ⚠️ « RIEN » CONTRE « ZERO », A L'ETAGE DE LA GEOMETRIE
+			//
+			// `UV Map` et `Attribute` nomment une donnee qui peut ne pas exister.
+			// La pente naturelle est de rendre (0,0) quand le nom ne correspond a
+			// rien -- et c'est EXACTEMENT « rien » rendu comme « zero ». Un
+			// auteur brancherait le noeud, obtiendrait une image noire, et
+			// chercherait une heure du cote de son materiau.
+			//
+			// DECISION, prise AVANT d'implanter et apres avoir mesure ce qui
+			// existe REELLEMENT en dessous :
+			//
+			//   Le shader engendre ne dispose que de QUATRE varyings :
+			//   `vWorldPos`, `vNormal`, `vUV`, `vColor`. C'est tout. Le nom d'un
+			//   canal est donc verifiable A LA COMPILATION, contre une liste
+			//   CLOSE derivee de ces varyings -- et un nom absent est REFUSE EN
+			//   SE NOMMANT, jamais rabattu sur zero.
+			//
+			// ⚠️ ET LE PIEGE QUE LA MESURE A ATTRAPE : `NkVertex3D` porte bien
+			// `uv2`, et `NkVertexLayout::Default3D()` declare `NK_TEXCOORD1`. La
+			// tentation etait donc d'ouvrir un canal « uv1 ». MAIS AUCUN VARYING
+			// NE LE TRANSPORTE jusqu'au fragment : le declarer aurait ete une
+			// promesse que le compilateur ne peut pas tenir. La liste se derive
+			// de CE QUE LE SHADER LIT, jamais de ce que le sommet contient --
+			// c'est la meme faute que « le nom est la, l'usage non », prise du
+			// bon cote pour une fois.
+			//
+			// Le jour ou un second canal traverse, il s'ajoute ICI et nulle part
+			// ailleurs.
+			struct NkMatCanal {
+					const char *cle;
+					const char *varying; ///< l'expression NkSL qui le lit
+					const char *libelle;
+			};
+
+			namespace detail {
+				static const NkMatCanal kCanauxUV[] = {
+					{"uv", "vUV", "UV du maillage"},
+				};
+				static const uint32 kCanauxUVCount = 1;
+
+				// `Attribute` ne rend QU'UNE couleur, et c'est deliberé. Blender
+				// lui donne aussi un `Fac`, moyenne des composantes -- mais ce
+				// module REFUSE deja la conversion couleur -> reel, parce que
+				// « luminance ? moyenne ? canal rouge ? » sont trois reponses
+				// plausibles et qu'aucune ne s'impose. Offrir un `Fac` ici
+				// reintroduirait par la porte de derriere la conversion qu'on
+				// refuse par la porte principale.
+				static const NkMatCanal kAttributs[] = {
+					{"color", "vColor", "couleur de sommet"},
+				};
+				static const uint32 kAttributsCount = 1;
+
+				// Un noeud DECLARE mais INDISPONIBLE, avec sa raison. Meme
+				// dispositif que `NkMatEtageSortie::pourquoiPas` : un refus sec
+				// laisserait croire a un oubli ; ici l'auteur apprend ce qui
+				// manque et pourquoi.
+				struct NkMatNoeudIndisponible {
+						const char *cle;
+						const char *pourquoiPas;
+				};
+				static const NkMatNoeudIndisponible kIndisponibles[] = {
+					{"mat.info_objet",
+					 "aucune donnee PAR OBJET n'atteint le fragment : le shader engendre ne dispose que du bloc "
+					 "camera et des parametres exposes -- ni matrice de modele, ni index, ni couleur, ni graine "
+					 "d'objet. Le noeud attend un bloc uniforme par objet ; il n'est pas refuse par principe"},
+				};
+				static const uint32 kIndisponiblesCount = 1;
+			} // namespace detail
+
+			inline uint32 NkMatCanalUVCount() {
+				return detail::kCanauxUVCount;
+			}
+			inline const NkMatCanal *NkMatCanalUVAt(uint32 i) {
+				return i < detail::kCanauxUVCount ? &detail::kCanauxUV[i] : nullptr;
+			}
+			inline const NkMatCanal *NkMatTrouveCanalUV(const char *cle) {
+				for (uint32 i = 0; i < detail::kCanauxUVCount; ++i)
+					if (NkMatCleEgale(detail::kCanauxUV[i].cle, cle))
+						return &detail::kCanauxUV[i];
+				return nullptr;
+			}
+			inline uint32 NkMatAttributCount() {
+				return detail::kAttributsCount;
+			}
+			inline const NkMatCanal *NkMatAttributAt(uint32 i) {
+				return i < detail::kAttributsCount ? &detail::kAttributs[i] : nullptr;
+			}
+			inline const NkMatCanal *NkMatTrouveAttribut(const char *cle) {
+				for (uint32 i = 0; i < detail::kAttributsCount; ++i)
+					if (NkMatCleEgale(detail::kAttributs[i].cle, cle))
+						return &detail::kAttributs[i];
+				return nullptr;
+			}
+			// Rend la RAISON de l'indisponibilite, ou nullptr si la cle n'est pas
+			// dans la liste. Sert a distinguer « je ne connais pas ce noeud » de
+			// « je le connais et voici ce qui manque ».
+			inline const char *NkMatPourquoiIndisponible(const char *cle) {
+				for (uint32 i = 0; i < detail::kIndisponiblesCount; ++i)
+					if (NkMatCleEgale(detail::kIndisponibles[i].cle, cle))
+						return detail::kIndisponibles[i].pourquoiPas;
+				return nullptr;
+			}
 			// Le nom public de la sortie : meme grammaire qu'un parametre expose,
 			// et pour la meme raison — c'est une cle que du code de jeu ecrira.
 			static const char *const NK_MPROP_SORTIE_NOM = "nom";
@@ -1180,6 +1311,50 @@ namespace nkentseu {
 					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
 				};
 
+				// ── RANG 4 ───────────────────────────────────────────────
+				// Fresnel : le reflet rasant. Une seule entree, l'indice de
+				// refraction ; la vue et la normale viennent du pixel.
+				static const NkMatSocketDecl kFresnel[] = {
+					{"ior", NK_MT_REAL, NkSocketDir::Input, false},
+					{"normal", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"fac", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+
+				// Layer Weight : DEUX sorties, et elles ne disent pas la meme
+				// chose. `fresnel` suit l'angle rasant, `facing` mesure
+				// simplement a quel point la surface fait face. Les confondre
+				// donne un resultat credible et faux -- c'est pour ca qu'elles
+				// sont separees chez Blender aussi.
+				static const NkMatSocketDecl kLayerWeight[] = {
+					{"blend", NK_MT_REAL, NkSocketDir::Input, false},
+					{"normal", NK_MT_VECTOR, NkSocketDir::Input, false},
+					{"fresnel", NK_MT_REAL, NkSocketDir::Output, false},
+					{"facing", NK_MT_REAL, NkSocketDir::Output, false},
+				};
+
+				// Geometry : ce que le pixel sait de sa place. On ne declare QUE
+				// ce que les varyings portent -- `backfacing` et `pointiness`
+				// demanderaient respectivement gl_FrontFacing et une analyse de
+				// courbure, et les declarer sans pouvoir les calculer serait une
+				// promesse non tenue.
+				static const NkMatSocketDecl kGeometry[] = {
+					{"position", NK_MT_VECTOR, NkSocketDir::Output, false},
+					{"normal", NK_MT_VECTOR, NkSocketDir::Output, false},
+					{"incoming", NK_MT_VECTOR, NkSocketDir::Output, false},
+				};
+
+				// UV Map : le canal se NOMME (propriete), il ne se branche pas.
+				static const NkMatSocketDecl kUVMap[] = {
+					{"vector", NK_MT_VECTOR, NkSocketDir::Output, false},
+				};
+
+				// Attribute : une seule sortie, couleur. Pas de `Fac` -- voir la
+				// note sur kAttributs : ce serait la conversion couleur -> reel
+				// que ce module refuse par ailleurs.
+				static const NkMatSocketDecl kAttribute[] = {
+					{"color", NK_MT_COLOR, NkSocketDir::Output, false},
+				};
+
 				static const NkMatNodeProto kProtos[] = {
 					// Le cinquieme champ est `parPixel` — voir la note longue sur
 					// NkMatNodeProto. Il n'est PAS deductible du nom : `Mapping`
@@ -1221,10 +1396,23 @@ namespace nkentseu {
 					{NK_MN_VECTOR_MATH, "Vector Math", kVectorMath, 4, false},
 					// Charge variable, mais pas une source : il remodele: `false`.
 					{NK_MN_FLOAT_CURVE, "Float Curve", kFloatCurve, 3, false},
+					// Rang 4 : TOUS par pixel, et par NATURE. Ils lisent la
+					// normale, la position ou une donnee interpolee : leur valeur
+					// change d'un pixel a l'autre meme sans aucune entree
+					// connectee. C'est precisement la definition de `parPixel`.
+					{NK_MN_FRESNEL, "Fresnel", kFresnel, 3, true},
+					{NK_MN_LAYER_WEIGHT, "Layer Weight", kLayerWeight, 4, true},
+					{NK_MN_GEOMETRY, "Geometry", kGeometry, 3, true},
+					{NK_MN_UV_MAP, "UV Map", kUVMap, 1, true},
+					{NK_MN_ATTRIBUTE, "Attribute", kAttribute, 1, true},
 					// Un puits, jamais une source : il ne fabrique aucune valeur.
 					{NK_MN_OUTPUT_VALUE, "Named Output", kOutputValue, 2, false},
 				};
-				static const uint32 kProtoCount = 28;
+				// ⚠️ COMPTE DERIVE DU TABLEAU, jamais recopie a cote. Cette
+				// collection GRANDIT par conception : un compte tenu a la main
+				// serait corrige un jour sans regarder, et le dernier prototype
+				// ajoute deviendrait invisible en silence.
+				static const uint32 kProtoCount = (uint32)(sizeof(kProtos) / sizeof(kProtos[0]));
 
 			} // namespace detail
 
@@ -1333,15 +1521,6 @@ namespace nkentseu {
 				return "?";
 			}
 
-			inline bool NkMatCleEgale(const char *a, const char *b) {
-				if (!a || !b)
-					return false;
-				while (*a && *a == *b) {
-					++a;
-					++b;
-				}
-				return *a == 0 && *b == 0;
-			}
 
 			// ═════════════════════════════════════════════════════════════════
 			// ✅ DEFAUT CORRIGE LE 2026-08-23 — il etait declare ici depuis la
