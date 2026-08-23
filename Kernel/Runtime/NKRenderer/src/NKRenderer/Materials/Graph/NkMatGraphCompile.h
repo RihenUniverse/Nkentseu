@@ -3073,7 +3073,33 @@ namespace nkentseu {
 							// n'existe dans AUCUN backend : le shader echoue a la
 							// compilation en PORTANT le mot, au lieu de rendre un pixel que
 							// personne ne mettrait en doute.
-							s.Append(c ? c->varying : "nkCANAL_UV_NON_VALIDE");
+							// LE FILET REFUSE, IL N EMET PLUS UN JETON IMPRONONCABLE.
+						//
+						// Le canal a DEJA ete valide par la passe de refus : ce
+						// point est INATTEIGNABLE aujourd hui. La version
+						// precedente emettait ici un nom qui n existe dans aucun
+						// backend, pour que le shader echoue en PORTANT le mot
+						// plutot que de rendre un pixel credible.
+						//
+						// MESURE DU 2026-08-23, ET C EST ELLE QUI A TRANCHE : la
+						// mutation qui REMET le repli plausible (« vUV » pour
+						// n importe quel nom) a SURVECU a tout le banc. Un filet
+						// qu aucune mesure ne peut atteindre n est pas une seconde
+						// ligne de defense, c est un commentaire -- et le premier
+						// qui trouvera le jeton bizarre le remplacera par « vUV »
+						// sans que rien ne rougisse.
+						//
+						// Il REFUSE donc, comme la premiere passe, et la difference
+						// est MESURABLE : en retirant la passe de refus, la
+						// compilation echoue toujours proprement au lieu de rendre
+						// une image credible et fausse.
+						if (!c) {
+							r.error = NkString("canal UV non valide a l emission (le filet du rang 4 a repris "
+											   "la main : la passe de refus ne l a pas attrape)");
+							r.source = NkString("");
+							return r;
+						}
+						s.Append(c->varying);
 						s.Append(", 0.0);\n");
 					} else if (t == NkString(NK_MN_ATTRIBUTE)) {
 						const NkGraphValue *pa = g.FindProp(n->id, NK_MPROP_ATTRIBUT);
@@ -3082,7 +3108,15 @@ namespace nkentseu {
 						detail::PutNom(s, n->id, "color");
 						s.Append(" = ");
 						// Meme raison qu'au-dessus : pas de repli plausible.
-							s.Append(c ? c->varying : "nkATTRIBUT_NON_VALIDE");
+							// Meme raison qu au-dessus, et meme mesure : un filet
+						// inatteignable ne protege rien. Il refuse.
+						if (!c) {
+							r.error = NkString("attribut non valide a l emission (le filet du rang 4 a repris "
+											   "la main : la passe de refus ne l a pas attrape)");
+							r.source = NkString("");
+							return r;
+						}
+						s.Append(c->varying);
 						s.Append(".rgb;\n");
 					} else if (t == NkString(NK_MN_OUTPUT)) {
 						// ── LE PUITS : ombrage puis ecriture ────────────────
