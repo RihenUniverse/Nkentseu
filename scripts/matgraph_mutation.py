@@ -54,6 +54,7 @@ RACINE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COMPILE_H = "Kernel/Runtime/NKRenderer/src/NKRenderer/Materials/Graph/NkMatGraphCompile.h"
 BANC_SRC = "Applications/NkMatGraphCheck/src/main.cpp"
 GRAPH_IO = "Kernel/Runtime/NKGraph/src/NKGraph/NkNodeGraphIO.inl"
+NKSL_CC = "Kernel/Runtime/NKSL/src/NKSL/Compiler/NkSLCompiler.cpp"
 BANC = "Build/Bin/Debug-Windows/NkMatGraphCheck/NkMatGraphCheck.exe"
 
 # --------------------------------------------------------------------------
@@ -181,7 +182,47 @@ _ANCRE_M22 = """	bool vrai = false;
 _MUTE_M22 = """	bool vrai = sp.success;
 	if (outMsg) {"""
 
+
+# ── LA REMONTEE DES ERREURS DE GLSLANG ───────────────────────────────────────
+# M23 : les erreurs de glslang ne sont plus recopiees -- retour a l'echec MUET.
+_ANCRE_M23 = """					for (auto &e : echec.errors) {
+						NkSLCompileError etiquetee = e;
+						etiquetee.file = NkString("glslang (SPIR-V)");"""
+_MUTE_M23 = """					for (uint32 z = 0; z < 0u; ++z) {
+						NkSLCompileError etiquetee = echec.errors[z];
+						etiquetee.file = NkString("glslang (SPIR-V)");"""
+
+# M24 : les erreurs remontent mais SANS etiquette d'etape -- deux journaux
+# concatenes a l'aveugle, ce que Rodolf a explicitement refuse.
+_ANCRE_M24 = """						NkString m("[glslang/SPIR-V] ");
+						m.Append(e.message);
+						etiquetee.message = m;"""
+_MUTE_M24 = """						etiquetee.message = e.message;"""
+
+_ANCRE_M23BIS = """					res.success = false;
+					res.bytecode.Clear(); // rien ne doit ressembler a du SPIR-V"""
+_MUTE_M23BIS = """					res.bytecode.Clear(); // rien ne doit ressembler a du SPIR-V"""
+
 MUTATIONS = {
+	"M23": {
+		"quoi": "les erreurs de glslang ne remontent plus -- retour a l echec MUET",
+		"cas": "rang4/emis-credible-contre-emis-qui-echoue",
+		"attendu": "ATTRAPEE -- c est l etat exact d avant le correctif ; le cas doit le voir revenir.",
+		"edits": [(NKSL_CC, _ANCRE_M23, _MUTE_M23)],
+	},
+	"M24": {
+		"quoi": "les erreurs remontent mais SANS etiquette d etape -- deux journaux melanges a l aveugle",
+		"cas": "rang4/emis-credible-contre-emis-qui-echoue",
+		"attendu": "ATTRAPEE -- le mot seul ne suffit pas : l auteur doit savoir QUEL etage se plaint.",
+		"edits": [(NKSL_CC, _ANCRE_M24, _MUTE_M24)],
+	},
+	"M23bis": {
+		"quoi": "le repli remet success=true (le mensonge d origine, celui que 9033312d a retire)",
+		"cas": "rang4/emis-credible-contre-emis-qui-echoue",
+		"attendu": "A SURVECU attendu -- le cas lit le MOT MAGIQUE, pas `success` (regle du 22/08). "
+				   "S il rougit, c est que quelque chose lit `success` sans le dire.",
+		"edits": [(NKSL_CC, _ANCRE_M23BIS, _MUTE_M23BIS)],
+	},
 	"M21": {
 		"quoi": "la substitution du jeton porte AUSSI sur la declaration -- le jeton devient DECLARE",
 		"cas": "rang4/emis-credible-contre-emis-qui-echoue",
