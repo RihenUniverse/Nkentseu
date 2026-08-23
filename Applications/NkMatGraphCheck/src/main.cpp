@@ -625,15 +625,30 @@ static void CasIndexDePriseContreNom() {
 									? &nh->sockets[(uint32)lh->toSocket].name
 									: nullptr;
 	const bool tientBon = relu && nomTruque && *nomTruque == NkString("surface");
+	// ⚠️ ET LA PERTURBATION DOIT AVOIR EU LIEU, SINON CE VERT NE VAUT RIEN.
+	//
+	// 🔴 MESURE DU 2026-08-23, ET C EST LA MUTATION QUI L A DIT. Tant que le cas
+	// exigeait « le lien REPOINTE », l'insertion se prouvait toute seule : sans
+	// elle, rien ne repointait. Le jour ou la version 2 du format a inverse
+	// l'assertion en « le lien RESTE », ce garde-fou implicite a disparu -- et
+	// M15, qui neutralise l'insertion, EST PASSEE DE ROUGE A VERTE sans que le
+	// cas bouge d'une ligne.
+	//
+	// C'est la premiere facon dont un cas juste ne mesure rien -- il manque la
+	// MATIERE -- et elle est arrivee ici PAR UN CORRECTIF, pas par negligence :
+	// une assertion inversee ne porte pas les memes preuves implicites que
+	// celle qu'elle remplace. On exige donc que la prise intruse soit
+	// REELLEMENT arrivee dans le graphe charge.
+	const bool intruseArrivee = relu && nh && nh->FindSocket("intruse", NkSocketDir::Input) >= 0;
 
 	NkString d;
 	d = NkFormat("MEMOIRE : ajout de prise, le lien garde son index {0} et son nom « {1} »={2} (PushBack seul, "
 				 "aucune operation ne retire ni n'insere) | FICHIER v{3} : une prise glissee avant les autres "
-				 "laisse le lien sur « {4} »={5} (relu={6})",
+				 "laisse le lien sur « {4} »={5} | et la prise intruse est BIEN arrivee={6} (relu={7})",
 				 idxAvant, nomApres ? *nomApres : NkString("?"), memoireTient ? 1 : 0,
 				 (uint32)NK_NKGRAPH_VERSION, nomTruque ? *nomTruque : NkString("?"), tientBon ? 1 : 0,
-				 relu ? 1 : 0);
-	Cas("graphe/index-de-prise-contre-nom", memoireTient && tientBon, d);
+				 intruseArrivee ? 1 : 0, relu ? 1 : 0);
+	Cas("graphe/index-de-prise-contre-nom", memoireTient && tientBon && intruseArrivee, d);
 }
 
 // ── outils communs aux cas de valeurs ────────────────────────────────────────
