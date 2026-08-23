@@ -249,7 +249,38 @@ _MUTE_M30 = """				if (true)
 					continue;
 				out.Append("typec ");"""
 
+
+# ── LA GARDE DU MODELE NON NODAL ─────────────────────────────────────────────
+# M31 : la garde laisse passer les types composes. Le graphe manipulerait un
+# type que la compilation n'a nulle part ou ecrire.
+_ANCRE_M31 = """							const graph::NkTypeKind genre = g.TypeKind(n->sockets[k].type);
+							if (genre == graph::NkTypeKind::Leaf)
+								continue;"""
+_MUTE_M31 = """							const graph::NkTypeKind genre = g.TypeKind(n->sockets[k].type);
+							if (true)
+								continue;"""
+
+# M32 : le refus ne dit plus OU ca coince (« NkMaterial ») -- il devient un
+# « type non supporte » qui envoie l'auteur chercher un reglage.
+_ANCRE_M32 = """							r.error.Append(" : NkMaterial n'a aucune forme pour ce type. Le graphe COMPILE VERS "
+										   "NkMaterial, il ne le remplace pas -- un type que la compilation n'a "
+										   "nulle part ou ecrire ne peut pas exister dans le graphe. NkMaterial "
+										   "porte float, vec2/3/4, couleur, entier, booleen, texture.");"""
+_MUTE_M32 = """							r.error.Append(" : type non supporte.");"""
+
 MUTATIONS = {
+	"M31": {
+		"quoi": "la garde du modele non nodal laisse passer les types composes",
+		"cas": "nonnodal/type-compose-refuse-car-non-exprimable",
+		"attendu": "ATTRAPEE -- sans elle le graphe manipule un type que la compilation n a nulle part ou ecrire.",
+		"edits": [(COMPILE_H, _ANCRE_M31, _MUTE_M31)],
+	},
+	"M32": {
+		"quoi": "le refus ne dit plus OU ca coince -- « type non supporte » au lieu de nommer NkMaterial",
+		"cas": "nonnodal/type-compose-refuse-car-non-exprimable",
+		"attendu": "ATTRAPEE -- un refus qui ne dit pas d ou vient la limite envoie l auteur chercher un reglage.",
+		"edits": [(COMPILE_H, _ANCRE_M32, _MUTE_M32)],
+	},
 	"M26": {
 		"quoi": "l empreinte ignore l ORDRE des membres (somme commutative)",
 		"cas": "types/espace-de-noms-et-empreinte",
