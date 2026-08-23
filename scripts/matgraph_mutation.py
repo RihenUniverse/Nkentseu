@@ -19,6 +19,18 @@ INSUFFISANTE -- elle comptait sur la vigilance. Elle est ici INSTRUMENTEE :
   GARDE 4 -- le compte d'erreurs de CONSTRUCTION se lit AVANT le banc. Un banc
              qui rend « 0 echec » sur un binaire perime ne mesure rien ; c'est
              la seule sortie qui ment sans qu'on puisse le voir.
+  GARDE 5 -- la restauration RECONSTRUIT. Restaurer la source ne suffit pas :
+             le binaire reste celui de la derniere mutation, On branch feat/materiaux-graphe
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   scripts/matgraph_mutation.py
+
+no changes added to commit (use "git add" and/or "git commit -a") dit
+             « propre », et le banc lance juste apres rend UN ECHEC pour un
+             defaut qui n'existe plus nulle part. Ce piege-la est PIRE que le
+             binaire perime ordinaire -- il rend un ROUGE sur du code sain, et
+             le premier reflexe est de chercher le defaut dans la source.
 
 La troisieme campagne l'a paye a son tour : le script precedent n'existait plus
 sur le disque quand l'agent suivant a repris. Il est donc DANS LE DEPOT, avec
@@ -235,10 +247,25 @@ def applique(edits):
 
 
 def restaure(edits):
+	"""Restaure les SOURCES **et reconstruit**.
+
+	🔴 GARDE 5 -- MESUREE LE 2026-08-23, PAR MON PROPRE SCRIPT CONTRE MOI.
+	Restaurer la source ne suffit pas : le BINAIRE reste celui de la derniere
+	mutation. `git status` dit « propre », la campagne dit « restauration :
+	arbre propre », et le banc lance juste apres rend UN ECHEC pour un defaut
+	qui n'existe plus nulle part. C'est exactement la regle 2 -- le binaire
+	perime -- fabriquee par l'instrument cense la faire respecter.
+
+	Le piege est pire que l'original : d'habitude un binaire perime rend un
+	VERT sur du code casse. Ici il rend un ROUGE sur du code sain, et le
+	premier reflexe est de chercher le defaut dans la source. On reconstruit
+	donc, et on le DIT.
+	"""
 	fics = sorted({fic for (fic, _, _) in edits})
 	_git("checkout", "--", *fics)
 	propre, sale = arbre_propre()
-	return propre, sale
+	bien, _, _ = construis()
+	return propre, sale, bien
 
 
 def joue(cle):
@@ -291,8 +318,10 @@ def joue(cle):
 		print("   VERDICT : %s%s" % (verdict, "" if attrapee else (" (par un autre cas)" if autres else "")))
 		return verdict
 	finally:
-		propre, sale = restaure(m["edits"])
-		print("   restauration : %s" % ("arbre propre" if propre else "⚠️ ARBRE SALE : " + sale))
+		propre, sale, rebati = restaure(m["edits"])
+		print("   restauration : %s, binaire rebati : %s"
+			  % ("arbre propre" if propre else "⚠️ ARBRE SALE : " + sale,
+				 "oui" if rebati else "⚠️ NON -- le banc rendrait un ROUGE sur du code sain"))
 
 
 def main():
