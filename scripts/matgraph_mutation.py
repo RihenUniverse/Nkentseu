@@ -161,22 +161,34 @@ def compte_echecs(sortie):
 
 
 def applique(edits):
-	"""Rend (ok, message). Refuse si une ancre n'apparait pas exactement une fois."""
-	# Verification de TOUTES les ancres AVANT d'ecrire quoi que ce soit.
+	"""Rend (ok, message). Refuse si une ancre n'apparait pas exactement une fois.
+
+	⚠️ LES SOURCES DU DEPOT SONT EN CRLF, LES ANCRES DE CE FICHIER EN LF. Une
+	comparaison naive rend « ancrage x0 » sur une ancre parfaitement juste --
+	et la garde 2 le dirait, mais en accusant l'ancre au lieu du saut de ligne.
+	On lit donc le fichier en le NORMALISANT, et on REECRIT avec la fin de
+	ligne d'origine : muter un fichier ne doit pas le reformater.
+	"""
 	contenus = {}
+	crlf = {}
+	# Verification de TOUTES les ancres AVANT d'ecrire quoi que ce soit.
 	for (fic, ancre, _) in edits:
 		chemin = os.path.join(RACINE, fic.replace("/", os.sep))
 		if fic not in contenus:
-			with open(chemin, "r", encoding="utf-8", newline="") as f:
-				contenus[fic] = f.read()
+			with open(chemin, "rb") as f:
+				brut = f.read().decode("utf-8")
+			crlf[fic] = "\r\n" in brut
+			contenus[fic] = brut.replace("\r\n", "\n")
 		n = contenus[fic].count(ancre)
 		if n != 1:
 			return False, "ancrage x%d (1 attendu) dans %s -- ON NE MUTE PAS" % (n, fic)
 	for (fic, ancre, remp) in edits:
 		contenus[fic] = contenus[fic].replace(ancre, remp, 1)
 	for fic, txt in contenus.items():
-		with open(os.path.join(RACINE, fic.replace("/", os.sep)), "w", encoding="utf-8", newline="") as f:
-			f.write(txt)
+		if crlf[fic]:
+			txt = txt.replace("\n", "\r\n")
+		with open(os.path.join(RACINE, fic.replace("/", os.sep)), "wb") as f:
+			f.write(txt.encode("utf-8"))
 	return True, "ancrages x1"
 
 
