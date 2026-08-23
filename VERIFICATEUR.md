@@ -15,6 +15,7 @@ rend un **verdict lisible**, et sort **non nul** si quoi que ce soit échoue.
 ./contre_epreuve_verif.sh         # prouve que le vérificateur sait dire NON
 ./contre_epreuve_capacites.sh     # prouve que le détecteur de capacités sait dire NON
 ./preuve_copies_mortes.sh         # les fichiers « copy » versionnés, et la preuve qu'aucun build ne les compile
+./epreuve_msaa_contract.sh        # prouve que NkMsaaContractCheck sait tomber (deux défauts réels)
 ```
 
 | fichier | rôle |
@@ -27,6 +28,7 @@ rend un **verdict lisible**, et sort **non nul** si quoi que ce soit échoue.
 | `config/capacites.list` | **la donnée** : le classement des capacités détectées |
 | `contre_epreuve_capacites.sh` | introduit `NkCapFantome` et exige le rouge |
 | `preuve_copies_mortes.sh` | recalcule la preuve que les 27 fichiers « copy » ne sont compilés par rien |
+| `epreuve_msaa_contract.sh` | injecte deux défauts réels dans `NkDeviceCaps` et exige que le banc MSAA les voie |
 
 ---
 
@@ -770,6 +772,166 @@ résout mal. Il **prouve** ; la suppression se décide et se fait sur `main`.
 
 ---
 
+## `NkMsaaContractCheck` — le nombre d'échantillons impossible
+
+La neuvième des capacités creuses, et **la seule qui demandait une exécution** :
+*« le nombre d'échantillons impossible qui rend 0 sans erreur »*. Aucun motif de
+texte ne la voit ; tout détecteur statique qui prétendrait la voir serait un
+générateur de faux positifs. **Ce n'est pas une règle, c'est un banc.**
+
+### Le défaut, mesuré
+
+`NkVulkanDevice::ToVkSamples()` est un `switch` sur `NkSampleCount` dont le
+`default:` rend **`VK_SAMPLE_COUNT_1_BIT`**.
+
+Or trois chemins y mènent :
+
+| entrée | statut | ce que le backend rend |
+|---|---|---|
+| `NK_S32`, `NK_S64` | **déclarés dans l'enum**, honorés par aucun backend | **1 échantillon** |
+| `static_cast<NkSampleCount>(3)` | légal — et `NkRendererConfig::msaaSamples` est un `uint32` nu | **1 échantillon** |
+| `NK_S4` sur une carte sans MSAA 4× | non supporté | **1 échantillon** |
+
+**Sans erreur, sans journal, sans retour.** L'appelant croit avoir du MSAA et
+n'en a pas. C'est *« un repli qui préserve `success` n'est pas un repli, c'est un
+mensonge »* dans sa forme la plus dangereuse : **le repli produit un résultat
+plausible.**
+
+### Ce que le banc mesure
+
+`NkDeviceCaps::SupportsSamples()` rend la question **dicible** avant qu'elle
+n'atteigne un backend, et `MaxSamples()` remplace un ternaire qui était recopié
+à la main dans `GetContextInfo()`.
+
+⚠️ **Deux mots qu'on confondait, et c'est toute l'affaire :**
+
+| | |
+|---|---|
+| **EXPRIMABLE** | la valeur existe dans l'énum `NkSampleCount` |
+| **HONORABLE** | ce périphérique sait réellement la rendre |
+
+`NK_S32` est exprimable et ne sera jamais honorable.
+
+### Des relations, pas des exemples
+
+Le banc parcourt les **2⁴ = 16 combinaisons** de drapeaux MSAA et vérifie une
+**relation** sur chacune — pas trois cas choisis à la main :
+
+| cas | relation vérifiée |
+|---|---|
+| 1 | `NK_S1` est honorable sur les 16 combinaisons (sinon une carte sans MSAA ne rendrait plus rien) |
+| 2 | 10 valeurs non-puissances-de-deux refusées sur les 16 — **dont 3 et 7, le cas du mandat** |
+| 3 | `NK_S32` et `NK_S64` refusés sur les 16 |
+| 4 | `SupportsSamples(2/4/8/16)` **==** le drapeau correspondant, 16 sur 16 |
+| 5 | `SupportsSamples(MaxSamples())` vrai, **et rien au-dessus n'est honorable** |
+| 6 | 3 et 7 refusés **même sur la carte la plus capable**, 4 accepté sur la même |
+
+⚠️ Le cas 4 est ce qui fait qu'un cinquième drapeau MSAA ajouté sans `case`
+correspondant **est dit**, au lieu de passer en silence. C'est une relation, pas
+un compte figé — la leçon de `matgraph` appliquée à un banc neuf.
+
+### Il sait tomber — et le premier essai a raté, ce qui a trouvé autre chose
+
+Un banc vert ne prouve rien tant qu'il n'a pas montré qu'il sait rougir. Les
+défauts sont **injectés dans le contrat lui-même**, pas dans le `main` du banc.
+
+**Premier essai — le défaut A n'en était pas un.** J'avais retiré la garde
+« puissance de deux » de `SupportsSamples`. **Aucun cas n'est tombé : 8 OK / 0
+FAIL.**
+
+Mon premier diagnostic — *« le banc a tourné sur l'ancien binaire »* — était une
+**supposition, et elle était fausse**. La mesure :
+
+| | fichiers recompilés | verdict du banc |
+|---|---|---|
+| `jenga build` #1 après le changement d'en-tête | **33** | 8 OK / 0 FAIL |
+| `jenga build` #2, #3 (rien n'a bougé) | 0 | 8 OK / 0 FAIL |
+| `jenga rebuild` (**table rase**) | tout | **8 OK / 0 FAIL** |
+
+Jenga suit donc parfaitement les en-têtes. Le banc était vert pour la vraie
+raison :
+
+> **Le `default: return false` du `switch` refusait déjà 0, 3, 5, 6, 7, 100. La
+> garde « puissance de deux » était entièrement REDONDANTE — du code que rien ne
+> pouvait faire tomber, donc du code dont on ne pouvait pas savoir s'il était
+> juste.**
+
+⚠️ **Deux protections pour le même cas rendent le banc incapable de dire
+laquelle tient.** C'est ce que l'épreuve a révélé, et c'est plus utile que
+l'épreuve elle-même. La garde a été supprimée : une seule règle, exprimée une
+seule fois.
+
+**Second essai — deux défauts qui touchent des règles distinctes :**
+
+| défaut injecté | mesuré |
+|---|---|
+| **A** — `case 4: return msaa4x;` devient `return true` (le drapeau est ignoré) | **code 1**, 6 OK / **2 FAIL** — cas 4 et 5 |
+| **B** — `default: return false` devient `return true` | **code 1**, 3 OK / **5 FAIL** — cas 2, 3, 5, 6 |
+| restauration | fichier **identique**, banc **code 0**, 8 OK / 0 FAIL |
+
+Les deux défauts font tomber des **ensembles différents** de cas — c'est ce qui
+prouve que les cas mesurent des règles distinctes, et pas la même trois fois.
+
+⚠️ **La leçon de méthode, et elle vaut plus que le banc** : *un défaut injecté qui
+n'en est pas un fait croire que le banc est aveugle.* Avant de conclure qu'un
+contrôle ne voit rien, il faut prouver que **ce qu'on lui a montré était
+visible**.
+
+### La limite, dite plutôt que tue
+
+Le banc mesure le **contrat** : CPU pur, aucun périphérique. Il tourne donc dans
+un arbre neuf, chez tout agent, sur une machine sans carte — c'est pour ça qu'il
+est en mode `rapide`.
+
+Il ne mesure **pas** l'appel réel à `ToVkSamples()` ni la création d'une texture
+multi-échantillon : cela demande un GPU, donc un banc en mode `complet` du genre
+de `NkGpuProbe`. **Il l'imprime sur sa dernière ligne.**
+
+> **Un banc qui tait sa limite est pire qu'un banc absent : on croit la question
+> réglée.**
+
+⚠️ Et la conséquence en clair : **tant que le `default:` de `ToVkSamples()`
+existe, une valeur qui contourne `SupportsSamples()` sera encore ramenée à 1 en
+silence.** Le banc rend le mensonge *évitable*, il ne le supprime pas.
+
+---
+
+## ⚠️ Un filet armé avant son contrôle détruit ce que le contrôle protège
+
+Payé cette nuit, sur un script d'épreuve jetable.
+
+Le script devait injecter un défaut dans `NkIDevice.h` puis le restaurer. Il
+avait les deux bonnes idées — un `trap 'restaurer' EXIT` et un contrôle négatif
+qui **refuse de démarrer sur un arbre sale** — et il les avait **dans le mauvais
+ordre** :
+
+```bash
+trap 'restaurer' EXIT INT TERM HUP          # ← armé en premier
+sale=$(git status --porcelain -- "$H")
+if [ -n "$sale" ]; then exit 2; fi          # ← son refus déclenche le trap
+```
+
+Le contrôle négatif a fait son travail : il a vu l'arbre sale et a refusé. **Et
+son `exit 2` a déclenché le `git checkout` qui a détruit la modification non
+commitée qu'il refusait justement d'écraser.**
+
+> **Le contrôle négatif d'abord, le piège ensuite. Un filet armé avant le
+> contrôle détruit exactement ce que le contrôle existe pour protéger.**
+
+C'est l'avertissement que `contre_epreuve_capacites.sh` porte déjà, mot pour
+mot — *« partir d'un arbre sale reviendrait à jeter ton travail en cours à la
+restauration »*. Je l'avais écrit ; je ne l'ai pas appliqué dans le script
+suivant. **Écrire un piège ne protège pas celui qui l'écrit.**
+
+⚠️ **Et le vrai coût n'est pas la modification perdue** (49 lignes, réappliquées
+en une minute) : c'est que le commit qui a suivi a laissé, pendant quelques
+minutes, un dépôt où **un banc référençait une fonction absente**. Le banc avait
+compilé *avant* la destruction ; son binaire était vert alors que la source ne
+compilait plus. **Exactement l'ancien binaire qui tourne — la panne qui a motivé
+tout ce chantier.**
+
+---
+
 ## Le format de `config/bancs.list`
 
 ```
@@ -936,6 +1098,12 @@ vers **une minute**.
 **Où c'est** : dépôt Jenga (`D:\Projets\MacShared\Projets\Jenga`), séparé. Le
 corriger depuis ici serait sortir du périmètre.
 
+⚠️ **Et une mesure qui délimite ce défaut, faite le 23/08** : Jenga suit
+**correctement les en-têtes**. Un changement dans `NkIDevice.h` a bien fait
+recompiler **33 fichiers** au build suivant, puis 0 aux deux builds d'après.
+Le défaut porte donc sur le **changement de cible**, et sur lui seul — ne pas
+l'élargir en « le cache ne marche pas ».
+
 **Piste non explorée**, à mesurer avant de promettre : un seul `jenga build`
 sans `--target` (workspace entier), suivi de 8 `--target` devenus no-op à 4,6 s.
 Le workspace compte ~146 projets dont 50 applications fenêtrées — **ça peut
@@ -947,13 +1115,16 @@ Prouvés morts (voir *Les fichiers « copy » versionnés*). La suppression ne s
 fait **pas depuis une branche** pendant que plusieurs agents travaillent.
 `./preuve_copies_mortes.sh --morts` redonne la liste à jour le jour venu.
 
-### 🟠 Le banc de l'échantillonnage impossible
+### 🟢 Le banc de l'échantillonnage impossible — LIVRÉ (2026-08-23)
 
-Demander 3 (ou 7) échantillons MSAA à NKRHI et exiger **soit une ressource
-valide, soit une erreur** — jamais un `0` muet. C'est le seul des neuf capacités
-qui demande une **exécution** : aucun motif de texte ne le voit, et tout
-détecteur qui prétendrait le voir serait un générateur de faux positifs.
-**Ce n'est pas un détecteur, c'est un banc.** Attribué, pas encore écrit.
+`NkMsaaContractCheck`, 8 cas, 16 combinaisons de drapeaux, CPU pur, mode
+`rapide`. Voir *`NkMsaaContractCheck` — le nombre d'échantillons impossible*.
+
+**Ce qui reste ouvert derrière lui** : `NkVulkanDevice::ToVkSamples()` garde son
+`default: return VK_SAMPLE_COUNT_1_BIT`. Le banc rend le mensonge **évitable**
+(la question est dicible avant d'atteindre le backend) ; il ne le **supprime**
+pas. Mesurer le chemin réel demande un périphérique GPU — un banc en mode
+`complet`, pas celui-ci.
 
 ### 🟡 Les 117 lignes `non-examine` de `config/capacites.list`
 
