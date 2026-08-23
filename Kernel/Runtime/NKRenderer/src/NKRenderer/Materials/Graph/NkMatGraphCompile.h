@@ -1046,6 +1046,24 @@ namespace nkentseu {
 						// ═══════════════════════════════════════════════════════
 						//
 						// ⚠️ LA CONTRAINTE VIENT DU CHOIX D'EN DESSOUS, PAS D'ICI.
+						//
+						// 🔴 ET ELLE N'EST PAS UNE PREFERENCE DE PERFORMANCE : ELLE
+						// TOMBE DE LA REGLE D'ORDRE. Le nodal APPUIE le non nodal,
+						// donc le graphe COMPILE VERS `NkMaterial` et disparait.
+						// UN JEU LIVRE CHARGE DES MATERIAUX, PAS DES GRAPHES : il
+						// n'y a rien a recompiler a l'execution PARCE QUE LE GRAPHE
+						// N'EST PLUS LA. C'est ce qui rend « ne jamais recompiler a
+						// chaque image » naturellement vrai, au lieu d'une
+						// discipline qu'il faudrait tenir.
+						//
+						// ⚠️ COROLLAIRE, ET C'EST UN CRITERE D'ARCHITECTURE : RIEN A
+						// L'EXECUTION NE DOIT DEPENDRE DE L'EXISTENCE D'UN GRAPHE.
+						// Si un consommateur de `NkMaterial` a besoin d'interroger
+						// le graphe qui l'a produit, ce n'est pas un manque d'API a
+						// combler -- c'est un defaut a signaler. L'accommoder
+						// ferait du graphe une dependance d'execution, et le jeu
+						// livre embarquerait un compilateur.
+						//
 						// Un parametre ecrit depuis le gameplay ne doit JAMAIS
 						// faire recompiler le graphe — reconstruire un shader a
 						// chaque image est hors de question tant qu'on n'a pas de
@@ -1304,6 +1322,76 @@ namespace nkentseu {
 							return r;
 						}
 						sortiePixel = premiere;
+					}
+				}
+
+				// ═══════════════════════════════════════════════════════════════
+				// 🔴 UN TYPE DU GRAPHE DOIT ETRE EXPRIMABLE DANS LE MODELE NON NODAL
+				// ═══════════════════════════════════════════════════════════════
+				// Regle d'ordre de Rodolf, reaffirmee le 2026-08-23 : « le systeme
+				// nodal vient APPUYER les systemes non nodaux. Donc il faut
+				// toujours le non nodal, et APRES definir le nodal par-dessus. »
+				//
+				// Consequence directe, et c'est une contrainte D'EXISTENCE, pas de
+				// style : LE GRAPHE COMPILE VERS `NkMaterial`, il ne le remplace
+				// pas. Un materiau engendre doit etre le MEME objet qu'un materiau
+				// ecrit a la main -- le graphe n'est qu'un producteur parmi
+				// d'autres. Un type que la compilation n'a nulle part ou ecrire ne
+				// peut donc pas exister dans le graphe, quelle que soit l'elegance
+				// du registre qui sait le declarer.
+				//
+				// ⚠️ CE QUE `NkMaterial` SAIT PORTER, MESURE ET NON SUPPOSE :
+				// `SetFloat`, `SetVec2/3/4`, `SetColor`, `SetInt`, `SetBool`,
+				// `SetTexture`. NI ENUMERATION, NI STRUCTURE, NI UNION.
+				//
+				// La question a poser pour chaque type compose est donc : SOUS
+				// QUELLE FORME SORT-IL DE LA COMPILATION ? Reponses d'aujourd'hui :
+				//
+				//   ENUMERATION -> un entier (`SetInt`) plus une table de noms
+				//                  COTE EDITEUR SEULEMENT. Exprimable EN PRINCIPE,
+				//                  pas construit : le bloc de parametres exposes
+				//                  n'accepte que reel/vecteur/couleur.
+				//   STRUCTURE   -> N parametres a plat (`truc.a`, `truc.b`).
+				//                  Exprimable en principe, pas construit.
+				//   UNION       -> RIEN. Quel membre est vivant est une notion
+				//                  d'execution, et `NkMaterial` n'a aucun endroit
+				//                  ou l'inscrire. Ce type n'a pas sa place ici, et
+				//                  ce n'est pas une question de calendrier.
+				//
+				// On REFUSE donc tout type compose sur une prise, en nommant le
+				// type ET ce qu'il faudrait pour l'accepter. Le refus n'est pas un
+				// « pas encore » vague : il dit ce qui manque du cote NON NODAL.
+				//
+				// 📌 Le registre de NkNodeGraph garde la machinerie composite : le
+				// coeur sert AUSSI l'AnimGraph et NkUIDesign, dont le modele non
+				// nodal n'est pas `NkMaterial`. La contrainte est PAR DOMAINE, et
+				// c'est au domaine de la faire respecter -- le coeur ne peut pas
+				// savoir ou chacun ecrit.
+				{
+					for (uint32 i = 0; i < g.RawNodeCount(); ++i) {
+						const graph::NkNode *n = g.RawNodeAt(i);
+						if (!n || !n->alive)
+							continue;
+						for (uint32 k = 0; k < (uint32)n->sockets.Size(); ++k) {
+							const graph::NkTypeKind genre = g.TypeKind(n->sockets[k].type);
+							if (genre == graph::NkTypeKind::Leaf)
+								continue;
+							const NkString *nt = g.TypeName(n->sockets[k].type);
+							r.error = NkString("type « ");
+							r.error.Append(nt ? *nt : NkString("?"));
+							r.error.Append(" » (");
+							r.error.Append(graph::NkTypeKindName(genre));
+							r.error.Append(") sur la prise « ");
+							r.error.Append(n->sockets[k].name);
+							r.error.Append(" » du noeud ");
+							r.error.Append(n->type);
+							r.error.Append(" : NkMaterial n'a aucune forme pour ce type. Le graphe COMPILE VERS "
+										   "NkMaterial, il ne le remplace pas -- un type que la compilation n'a "
+										   "nulle part ou ecrire ne peut pas exister dans le graphe. NkMaterial "
+										   "porte float, vec2/3/4, couleur, entier, booleen, texture.");
+							r.source = NkString("");
+							return r;
+						}
 					}
 				}
 

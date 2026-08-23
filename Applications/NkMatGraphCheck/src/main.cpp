@@ -6708,6 +6708,73 @@ static void CasEmisCredibleContreEmisQuiEchoue() {
 		d);
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LE NODAL APPUIE LE NON NODAL — UN TYPE DU GRAPHE DOIT ETRE EXPRIMABLE
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Regle d'ordre de Rodolf, reaffirmee le 2026-08-23 : « le systeme nodal vient
+// APPUYER les systemes non nodaux. Donc il faut toujours le non nodal, et
+// APRES definir le nodal par-dessus. »
+//
+// 🔴 CE CAS EXISTE PARCE QUE J'AI CONSTRUIT LES TYPES COMPOSES AVANT DE POSER
+// LA QUESTION. Le registre savait declarer `Rihen::Difficulte` ; rien ne
+// verifiait que la compilation avait UN ENDROIT OU L'ECRIRE. C'est une
+// contrainte d'EXISTENCE, pas de style, et elle se mesure ici.
+//
+// DISCRIMINE DANS LES DEUX SENS : un type FEUILLE passe (sinon la garde
+// refuserait tout et le cas serait vert pour rien), un type COMPOSE est refuse
+// en nommant ce qui manque DU COTE NON NODAL.
+static void CasTypeComposeRefuseCarNonExprimable() {
+	// ── TEMOIN POSITIF : les types feuilles compilent, comme toujours ────
+	NkNodeGraph ok;
+	NkMatTypes tok = NkMatRegisterTypes(ok);
+	NkNodeId outOk;
+	MonteUnPrincipled(ok, tok, &outOk);
+	const NkMatCompileResult rOk = NkMatCompileToNkSL(gReg, ok);
+
+	// ── LE COMPOSE : declarable dans le coeur, PAS ecrivable dans NkMaterial
+	NkNodeGraph g;
+	NkMatTypes t = NkMatRegisterTypes(g);
+	NkNodeId out;
+	const NkNodeId bsdf = MonteUnPrincipled(g, t, &out);
+	NkTypeMember diff[3];
+	diff[0].name = NkString("Facile");
+	diff[1].name = NkString("Normal");
+	diff[2].name = NkString("Difficile");
+	NkString errType;
+	const NkTypeId tEnum = g.RegisterCompositeType("Rihen::Difficulte", NkTypeKind::Enum, diff, 3, &errType);
+	// ⚠️ LE COEUR L'ACCEPTE, ET C'EST VOULU : il sert aussi l'AnimGraph et
+	// NkUIDesign, dont le modele non nodal n'est PAS NkMaterial. La contrainte
+	// est PAR DOMAINE ; c'est au domaine de la faire respecter.
+	const bool coeurAccepte = tEnum != NK_TYPE_INVALID && errType.Size() == 0;
+
+	g.AddSocket(bsdf, "difficulte", tEnum, NkSocketDir::Input);
+	const NkMatCompileResult r = NkMatCompileToNkSL(gReg, g);
+
+	const bool refuse = !r.ok;
+	const bool nommeLeType = ContientSansCasse(r.error, "Rihen::Difficulte");
+	const bool nommeLeGenre = ContientSansCasse(r.error, "enumeration");
+	const bool nommeLaPrise = ContientSansCasse(r.error, "difficulte");
+	// ⚠️ ET LE REFUS DOIT DIRE CE QUI MANQUE DU COTE NON NODAL. « type non
+	// supporte » enverrait l'auteur chercher un reglage ; ici on veut qu'il
+	// comprenne que c'est NkMaterial qui n'a pas d'endroit ou l'ecrire.
+	const bool ditOuCaCoince = ContientSansCasse(r.error, "NkMaterial");
+	const bool ditCeQuiExiste = ContientSansCasse(r.error, "texture") && ContientSansCasse(r.error, "booleen");
+	const bool rienEmis = r.source.Size() == 0;
+
+	NkString d;
+	d = NkFormat("TEMOIN : les feuilles compilent={0} | le COEUR accepte le compose={1} (il sert aussi "
+				 "l AnimGraph) | le MATERIAU le refuse={2} en nommant le type={3} le genre={4} la prise={5} | "
+				 "dit que c est NkMaterial qui n a pas de place={6} et ce qu il porte={7} | rien emis={8} | {9}",
+				 rOk.ok ? 1 : 0, coeurAccepte ? 1 : 0, refuse ? 1 : 0, nommeLeType ? 1 : 0, nommeLeGenre ? 1 : 0,
+				 nommeLaPrise ? 1 : 0, ditOuCaCoince ? 1 : 0, ditCeQuiExiste ? 1 : 0, rienEmis ? 1 : 0, r.error);
+	Cas("nonnodal/type-compose-refuse-car-non-exprimable",
+		rOk.ok && coeurAccepte && refuse && nommeLeType && nommeLeGenre && nommeLaPrise && ditOuCaCoince &&
+			ditCeQuiExiste && rienEmis,
+		d);
+}
+
 static void CasRang4ParPixelContagieux() {
 	// Les cinq noeuds du rang 4 sont des SOURCES par pixel : ils lisent une
 	// donnee interpolee, donc leur valeur change d'un pixel a l'autre meme sans
@@ -7049,6 +7116,7 @@ int main() {
 	CasRang4CanalNommeRefuseEnSeNommant();
 	CasRang4ObjectInfoIndisponibleAvecSaRaison();
 	CasRang4ParPixelContagieux();
+	CasTypeComposeRefuseCarNonExprimable();
 	CasEmisCredibleContreEmisQuiEchoue();
 
 	CasB1ToutMateriauDeclareEtEcritLaSecondeCible();
