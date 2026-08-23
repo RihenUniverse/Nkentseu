@@ -556,6 +556,19 @@ namespace nkentseu {
 
 			// ── ACYCLICITE : LA DONNEE SEULE ─────────────────────────────────
 			// Un rebouclage d'execution est une BOUCLE, pas une erreur.
+			//
+			// ⚠️ CETTE GARDE EST REDONDANTE AVEC `WouldCreateCycle`, QUI NE
+			// PARCOURT DEJA QUE LA DONNEE -- et la redondance est VOULUE :
+			// `WouldCreateCycle` est publique, un appelant peut l'interroger
+			// directement, donc elle doit etre juste toute seule. Ici on evite en
+			// plus un parcours entier pour un lien qui ne peut pas cycler.
+			//
+			// 🔴 MAIS UNE DEFENSE REDONDANTE EST INVISIBLE A UNE MUTATION A UN
+			// SEUL DEFAUT (regle 6) : M36, qui retire CETTE garde, SURVIT. C'est
+			// M38 -- le couple M36 + le parcours desactive -- qui mesure ce que
+			// chacune achete. Si tu retires l'une des deux en la croyant morte
+			// parce qu'aucune mutation ne rougit, relis M38 avant.
+			
 			if (fa == NkSocketFamily::Data && WouldCreateCycle(from, to))
 				return NkLinkError::WouldCycle;
 
