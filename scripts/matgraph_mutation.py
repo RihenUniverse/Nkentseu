@@ -93,6 +93,17 @@ _MUTE_FILET_UV_JETON = """						s.Append(c ? c->varying : "nkCANAL_UV_NON_VALIDE
 _MUTE_FILET_ATTR_JETON = """						s.Append(c ? c->varying : "nkATTRIBUT_NON_VALIDE");
 						s.Append(".rgb;\\n");"""
 
+# L'insertion de la prise « intruse » dans le texte serialise, au banc. La
+# neutraliser doit faire rougir le cas index/nom -- sinon ce cas serait vert
+# pour une raison qu'il n'annonce pas.
+_ANCRE_M15 = """				if (debute) {
+					truque.Append(entete);
+					pose = true;
+				}"""
+_MUTE_M15 = """				if (debute) {
+					pose = true;
+				}"""
+
 MUTATIONS = {
 	"M11": {
 		"quoi": "le second filet (site d emission) REMET le repli plausible : vUV / vColor pour n importe quel nom",
@@ -121,9 +132,7 @@ MUTATIONS = {
 		"quoi": "l insertion de la prise intruse devient un no-op -- le cas index/nom mesure-t-il l INSERTION ?",
 		"cas": "graphe/index-de-prise-contre-nom",
 		"attendu": "ATTRAPEE -- sinon le cas serait vert pour une autre raison que celle qu il annonce (regle 1).",
-		"edits": [(BANC_SRC, '					truque.Append(entete);
-					pose = true;',
-				   '					pose = true;')],
+		"edits": [(BANC_SRC, _ANCRE_M15, _MUTE_M15)],
 	},
 	"M14": {
 		"quoi": "M12 + le second filet DANS SA VERSION D AVANT LE CORRECTIF (jeton imprononcable au lieu de refus)",
