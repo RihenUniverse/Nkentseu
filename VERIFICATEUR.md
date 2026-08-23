@@ -1090,6 +1090,69 @@ avoir prouvé qu'il avait tort est un contrôle qu'on vient d'aveugler.
 
 ---
 
+## ⚠️ Le lanceur décide : un `libstdc++` étranger en tête de PATH corrompt le tas
+
+**Mesuré le 2026-08-23, sur cette référence, `NkSLComputeCheck` en Release.**
+
+Il circulait que **glslang corrompt le tas dès sa première compilation
+GLSL→SPIR-V en Release**, et que tout ce qui tournait ne tournait que grâce à un
+**cache chaud**. **Les deux moitiés sont fausses.**
+
+`NkSLComputeCheck` n'utilise **aucun cache** — `NkSLCompiler c;` prend le
+`cacheDir` vide par défaut (`Kernel/Runtime/NKSL/src/NKSL/Compiler/NkSLCompiler.h:83`).
+Il compile donc à froid **à chaque exécution**. Et il **passe en Release**,
+code de sortie **0**, 153 lignes, glslang compilant réellement.
+
+### Ce qui décide vraiment
+
+| lancement | binaire | code de sortie |
+|---|---|---|
+| **git-bash** | Release | **0xC0000374** `STATUS_HEAP_CORRUPTION`, dès la 1re compilation SPIR-V |
+| **PowerShell** | Release | **0** — 6 essais sur 6 |
+| **git-bash** | Debug | **0** |
+| **git-bash**, cible 0 (GLSL-OpenGL, sans glslang) | Release | **0** |
+
+Déterministe des deux côtés. `env -i` ne change rien : ce n'est pas une variable
+d'environnement.
+
+**La cause est mécanique.** L'exécutable importe `api-ms-win-crt-*` : il est bâti
+**ucrt64**. Il dépend de `libstdc++-6.dll` et `libgcc_s_seh-1.dll`, **absents de
+son dossier** — il les résout donc par le PATH :
+
+- sous PowerShell, le PATH n'offre que `C:\msys64\ucrt64\bin` → libstdc++ de
+  **2 667 044** octets, **celui contre lequel il a été lié** ;
+- sous git-bash, le PATH commence par `/mingw64/bin` = `C:\msys64\mingw64\bin`,
+  variante **msvcrt** → libstdc++ de **2 667 040** octets, **chargé en premier**.
+
+Un exécutable ucrt64 avec la `libstdc++` msvcrt, ce sont **deux allocateurs
+différents** : le tas part à la première allocation C++ lourde — chez glslang.
+
+**Preuve par une seule variable changée**, même binaire, même machine :
+
+```bash
+PATH="/c/msys64/ucrt64/bin:$PATH" ./…/NkSLComputeCheck.exe 2   # EXIT=0
+PATH="/c/msys64/ucrt64/bin:$PATH" ./…/NkSLComputeCheck.exe     # EXIT=0, 153 lignes
+```
+
+### Ce que ça impose au vérificateur — et c'est un aveu sur ses propres mesures
+
+`verif_bancs.sh` **est un script bash** et **ne touche pas au PATH**. Il tourne
+en **Debug par défaut**, et Debug passe : **les passes actuelles ne sont pas
+faussées**. Mais il accepte `--config Release`.
+
+**Donc, aujourd'hui, une passe `--config Release` lancée depuis bash verrait tout
+banc touchant glslang planter, et l'outil écrirait ÉCHEC en accusant le code.**
+Un rouge reproductible, argumenté, situé — et **faux** : le défaut serait dans le
+PATH du lanceur, pas dans le code accusé. C'est *une supposition consignée comme
+mesure*, retournée contre le code.
+
+Le remède **n'est pas** que l'outil force le PATH : ce serait **armer un filet
+avant son contrôle**, l'outil réparerait l'environnement qu'il est censé mesurer
+et ne saurait plus dire qu'il est cassé. **Il doit détecter et refuser de
+démarrer.** Décision en attente de Rodolf (voir *Dettes ouvertes*).
+
+---
+
 ## ⚠️ Un filet armé avant son contrôle détruit ce que le contrôle protège
 
 Payé cette nuit, sur un script d'épreuve jetable.
