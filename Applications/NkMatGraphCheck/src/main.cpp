@@ -1622,19 +1622,30 @@ static void CasAcycliciteUniverselle() {
 	//     `Boucle Pour` a une sortie « corps » et une sortie « termine », et le
 	//     corps NE REVIENT JAMAIS au noeud par un fil : le noeud itere lui-meme.
 	//     C'est la forme d'Unreal, et elle passe sans toucher a l'acyclicite.
+	//
+	// 🔴 LES NOEUDS SONT POSES A L'ENVERS DE LEUR ORDRE D'EXECUTION, ET CE
+	// N'EST PAS UNE COQUETTERIE. Mesure du 24/08 : la premiere version les
+	// posait dans l'ordre naturel, et la mutation M44 -- `TopoSort` recompte la
+	// seule donnee -- A SURVECU. Cause : sans lien de DONNEE, tous les degres
+	// entrants valent zero, le tri emet dans l'ORDRE D'INSERTION, et cet ordre
+	// satisfaisait par hasard les comparaisons de rang. Le controle rendait donc
+	// vert pour une raison qu'il n'annoncait pas (regle 1).
+	//
+	// A l'envers, l'ordre d'insertion CONTREDIT l'ordre d'execution : seul un
+	// tri qui compte VRAIMENT les fils d'execution peut rendre les bons rangs.
 	NkNodeGraph k;
 	const NkTypeId r3 = k.RegisterType("reel");
-	const NkNodeId debut = k.AddNode("flot.debut", "Debut");
-	k.AddSocket(debut, "apres", r3, NkSocketDir::Output, NkSocketFamily::Exec);
+	const NkNodeId fin = k.AddNode("flot.fin", "Fin");
+	k.AddSocket(fin, "avant", r3, NkSocketDir::Input, NkSocketFamily::Exec);
+	const NkNodeId corps = k.AddNode("flot.action", "Action");
+	k.AddSocket(corps, "avant", r3, NkSocketDir::Input, NkSocketFamily::Exec);
+	k.AddSocket(corps, "apres", r3, NkSocketDir::Output, NkSocketFamily::Exec);
 	const NkNodeId boucle = k.AddNode("flot.boucle_pour", "Boucle Pour");
 	k.AddSocket(boucle, "avant", r3, NkSocketDir::Input, NkSocketFamily::Exec);
 	k.AddSocket(boucle, "corps", r3, NkSocketDir::Output, NkSocketFamily::Exec);
 	k.AddSocket(boucle, "termine", r3, NkSocketDir::Output, NkSocketFamily::Exec);
-	const NkNodeId corps = k.AddNode("flot.action", "Action");
-	k.AddSocket(corps, "avant", r3, NkSocketDir::Input, NkSocketFamily::Exec);
-	k.AddSocket(corps, "apres", r3, NkSocketDir::Output, NkSocketFamily::Exec);
-	const NkNodeId fin = k.AddNode("flot.fin", "Fin");
-	k.AddSocket(fin, "avant", r3, NkSocketDir::Input, NkSocketFamily::Exec);
+	const NkNodeId debut = k.AddNode("flot.debut", "Debut");
+	k.AddSocket(debut, "apres", r3, NkSocketDir::Output, NkSocketFamily::Exec);
 	const bool boucleExprimable = k.Connect(debut, "apres", boucle, "avant") == NkLinkError::Ok &&
 								  k.Connect(boucle, "corps", corps, "avant") == NkLinkError::Ok &&
 								  k.Connect(boucle, "termine", fin, "avant") == NkLinkError::Ok;
@@ -1644,7 +1655,9 @@ static void CasAcycliciteUniverselle() {
 	const bool retourRefuse = retourNaif == NkLinkError::WouldCycle;
 
 	// (4) TEMOIN DU TRI : il compte MAINTENANT les fils d'execution. L'ordre
-	//     rendu doit honorer debut < boucle < corps et debut < boucle < fin.
+	//     rendu doit honorer debut < boucle < corps et boucle < fin -- ET les
+	//     noeuds ont ete poses A L'ENVERS, donc l'ordre d'insertion ne peut pas
+	//     rendre ce vert tout seul.
 	NkVector<NkNodeId> ordre;
 	const bool trie = k.TopoSort(ordre) && ordre.Size() == 4;
 	auto rang = [&](NkNodeId id) -> int32 {
