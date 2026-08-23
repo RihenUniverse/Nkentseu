@@ -50,6 +50,7 @@ struct PS_Input
 struct PS_Output
 {
     float4 fragcolor : SV_Target0;
+    float4 fragaux : SV_Target1;
 };
 
 PS_Output main(PS_Input input)
@@ -78,6 +79,7 @@ PS_Output main(PS_Input input)
     float3 diffuse = (surfalbedo * (ndotl + 0.18f));
     float3 specular = ((speccolor * spec) * ((surfmetallic * 0.7f) + 0.3f));
     output.fragcolor = float4(((diffuse + specular) + surfemission), 1.0f);
+    output.fragaux = float4(0.0f, 0.0f, 0.0f, 0.0f);
     return output;
 }
 

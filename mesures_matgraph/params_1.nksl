@@ -12,6 +12,7 @@
 @location(3) in vec4 vColor;
 
 @location(0) out vec4 fragColor;
+@location(1) out vec4 fragAux;
 
 @binding(set=0, binding=0)
 uniform CameraUBO {
@@ -63,4 +64,5 @@ void main() {
     vec3 diffuse = surfAlbedo * (NdotL + 0.18);
     vec3 specular = specColor * spec * (surfMetallic * 0.7 + 0.3);
     fragColor = vec4(diffuse + specular + surfEmission, 1.0);
+    fragAux = vec4(0.0, 0.0, 0.0, 0.0);
 }
