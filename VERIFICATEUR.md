@@ -1090,6 +1090,66 @@ avoir prouvé qu'il avait tort est un contrôle qu'on vient d'aveugler.
 
 ---
 
+## `NkMsaaDeviceCheck` ne vire PAS au vert — et il a raison de rester rouge
+
+On m'a annoncé que le MSAA était corrigé sur les quatre backends et que ce banc
+**virerait au vert de lui-même**. **Mesuré, puis lu : non, et c'est justifié.**
+
+### 1. Mesure sur CETTE référence — `feat/verificateur`, 23/08
+
+`NkMsaaDeviceCheck` en Debug : **code de sortie 1**, `4 OK / 5 FAIL`. Les cinq
+échecs sont « le contrat REFUSE, la carte ACCEPTE » pour **3, 7, 16, 32 et 64**.
+
+Ce n'est pas un banc périmé : le défaut est **littéralement présent sur cette
+branche**. `NkDirectX11Device.cpp` y pose toujours `td.SampleDesc.Count = 1`
+quand `CheckMultisampleQualityLevels` rend 0, **puis crée la texture**. Le banc
+mesure ce qui est là.
+
+### 2. Le correctif existe — mais sur une branche non fusionnée, et il est PARTIEL
+
+Le bloc corrigé vit sur **`feat/rendu-temps-reel`**, pas ici, pas sur `main`.
+Et son propre commentaire dit qu'il ne fait que la **moitié** du travail :
+
+> *PREMIER TEMPS DE LA CORRECTION : LE RAPPORT.* […]
+> *SECOND TEMPS, PAS ENCORE FAIT : le REFUS des nombres qui n'existent pas.*
+> *Ici, 3 et 7 sont SIGNALES puis plafonnés.*
+
+**Signalés puis plafonnés — donc la texture est toujours créée.** Or ce banc
+compare `obtenu = h.IsValid()` (`main.cpp:104`). Une texture plafonnée reste
+valide. **Le banc restera donc rouge sur `feat/rendu-temps-reel` aussi**, tant
+que le second temps n'est pas fait.
+
+⚠️ **Ce dernier point est une LECTURE DE CODE, pas une mesure** : je n'ai pas
+construit NKRHI sur `feat/rendu-temps-reel`. Je le note comme lecture, parce
+qu'une supposition consignée comme mesure se propage avec l'autorité d'une
+mesure.
+
+Les deux chantiers ne mesurent pas la même chose, et aucun des deux n'a tort :
+le correctif a rendu la substitution **visible** ; ce banc demande qu'elle soit
+**refusable**. Le vert viendra du second temps, pas du premier.
+
+### 3. ⚠️ Ce que ce banc ne mesure pas, et que sa fiche laissait croire
+
+`config/bancs.list` annonçait « (DX11, puis DX12, puis OpenGL) ». C'est une
+**chaîne de repli, pas un balayage** : `main.cpp:167` fait `break` au premier
+périphérique qui s'ouvre. Sur cette machine, **DX11 s'ouvre — donc DX12 et
+OpenGL n'ont jamais été mesurés**, 9 confrontations en tout.
+
+Conséquence directe : les deux faits qu'on m'a transmis — **DX12 n'a jamais su
+créer une cible MSAA**, **OpenGL mentait par zéro** — sont **hors d'atteinte de
+ce banc sur toute machine où DX11 s'ouvre**. Je ne peux ni les confirmer ni les
+infirmer. La fiche est corrigée pour le dire.
+
+### 4. IGNORÉ comme troisième état : vérifié dans le code, pas sur parole
+
+`NB_IGNORE` est un compteur **distinct** de `NB_OK` et `NB_ECHEC`
+(`verif_bancs.sh:926`, incrémenté l.934), **nommé dans les deux lignes de
+verdict** (l.979 et l.981), et la passe annonce explicitement combien de bancs
+ont été ignorés (l.989). `code+ignore:0` est **refusé délibérément** (l.726).
+La condition est tenue.
+
+---
+
 ## ⚠️ Le lanceur décide : un `libstdc++` étranger en tête de PATH corrompt le tas
 
 **Mesuré le 2026-08-23, sur cette référence, `NkSLComputeCheck` en Release.**
