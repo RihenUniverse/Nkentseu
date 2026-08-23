@@ -2626,6 +2626,91 @@ static uint32 DecalageHLSLDe(const NkString *noms, const uint32 *offs, uint32 n,
 	return 0xFFFFFFFFu;
 }
 
+// Range le bloc uniforme du NkSL EMIS selon `std140`, sans consulter la table
+// du compilateur. Meme forme que `RangeCBufferHLSL`, autres regles :
+// `std140` ALIGNE (un vec3 sur 16), HLSL se contente de ne pas CHEVAUCHER.
+//
+// ⚠️ POURQUOI CETTE TROISIEME LECTURE EXISTE, ET CE QU UNE MUTATION A APPRIS.
+// La premiere version de ce cas comparait la table PUBLIEE au HLSL, et rien
+// d autre. La mutation M1 -- retirer tout remplissage -- l a montree BORGNE :
+// la table publiait alors 0/4/16 et le HLSL rangeait 0/4/16. Les deux cotes
+// avaient bouge ENSEMBLE, donc ils s accordaient, et la comparaison etait
+// verte sur une disposition que la carte n emploierait jamais.
+// C est la meme faute que celle du cas voisin, prise une couche plus loin :
+// deux mesures issues de la MEME decision ne se controlent pas l une l autre.
+// Le troisieme rangement est INDEPENDANT -- il derive du texte NkSL et des
+// regles de `std140`, pas de ce que le compilateur a decide -- et c est ce qui
+// ferme la boucle : PUBLIE == std140 == HLSL, trois lectures, deux sources.
+static uint32 RangeBlocStd140(const NkString &nksl, const char *bloc, NkString *noms, uint32 *offs, uint32 maxN) {
+	NkString motif("uniform ");
+	motif.Append(bloc);
+	const int32 d = Apres(nksl, motif.CStr());
+	if (d < 0)
+		return 0;
+	const char *p = nksl.CStr() + d;
+	while (*p && *p != '{')
+		++p;
+	if (!*p)
+		return 0;
+	++p;
+	uint32 n = 0;
+	uint32 curseur = 0;
+	while (*p && *p != '}') {
+		while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+			++p;
+		if (!*p || *p == '}')
+			break;
+		NkString typ;
+		while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r' && *p != ';') {
+			typ.Append(*p);
+			++p;
+		}
+		while (*p == ' ' || *p == '\t')
+			++p;
+		NkString nom;
+		while (*p && *p != ';' && *p != '\n' && *p != '\r') {
+			if (*p != ' ' && *p != '\t')
+				nom.Append(*p);
+			++p;
+		}
+		if (*p == ';')
+			++p;
+		// Sauter le commentaire de fin de ligne, s il y en a un.
+		while (*p && *p != '\n')
+			++p;
+		uint32 taille = 0, aligne = 0;
+		if (typ == NkString("float")) {
+			taille = 4u;
+			aligne = 4u;
+		} else if (typ == NkString("vec2")) {
+			taille = 8u;
+			aligne = 8u;
+		} else if (typ == NkString("vec3")) {
+			taille = 12u;
+			aligne = 16u;
+		} else if (typ == NkString("vec4")) {
+			taille = 16u;
+			aligne = 16u;
+		} else
+			continue;
+		curseur = NkMatAlignUp(curseur, aligne);
+		if (n < maxN) {
+			noms[n] = nom;
+			offs[n] = curseur;
+			++n;
+		}
+		curseur += taille;
+	}
+	return n;
+}
+
+static uint32 TrouveDecalage(const NkString *noms, const uint32 *offs, uint32 n, const NkString &nom) {
+	for (uint32 i = 0; i < n; ++i)
+		if (noms[i] == nom)
+			return offs[i];
+	return 0xFFFFFFFFu;
+}
+
 static void CasAccordStd140HLSLSurLeHLSLEmis() {
 	NkNodeGraph g;
 	const NkMatTypes t = NkMatRegisterTypes(g);
@@ -2651,19 +2736,34 @@ static void CasAccordStd140HLSLSurLeHLSLEmis() {
 	// Le bloc emis doit porter les trois parametres ET les trois remplissages :
 	// six membres. Un compte plus petit voudrait dire qu'un remplissage n'a pas
 	// traverse jusqu'au HLSL — et c'est LUI qui fait coincider les conventions.
-	const bool sixMembres = (nm == 6u);
+	bool sixMembres = false; // renseigne apres le rangement std140, qui declare `ng`
 
-	// L'ACCORD, parametre par parametre : le decalage calcule sous HLSL doit
-	// valoir celui que la table publie sous std140.
-	bool accord = r.ok && nm > 0;
+	// Le meme bloc, range depuis le NkSL EMIS selon `std140`. Lecture
+	// INDEPENDANTE : elle ne consulte pas la table du compilateur.
+	NkString nomsG[24];
+	uint32 offsG[24];
+	const uint32 ng = r.ok ? RangeBlocStd140(r.source, renderer::NK_MATBIND_GRAPH_PARAMS_BLOCK, nomsG, offsG, 24u)
+						   : 0u;
+
+	// L'ACCORD, parametre par parametre, et A TROIS LECTURES.
+	//
+	// ⚠️ DEUX N'AURAIENT PAS SUFFI, et c'est la mutation M1 qui l'a montre :
+	// en retirant tout remplissage, la table PUBLIEE passait a 0/4/16 et le
+	// HLSL rangeait 0/4/16. Elles bougeaient ENSEMBLE, donc elles
+	// s'accordaient — sur une disposition que `std140` n'emploie jamais. Le
+	// rangement `std140` du NkSL emis est la seule des trois qui ne descende
+	// pas de la decision du compilateur.
+	sixMembres = (nm == 6u) && (ng == 6u);
+	bool accord = r.ok && nm > 0 && ng > 0;
 	NkString ligne;
 	for (uint32 i = 0; i < (uint32)r.params.Size(); ++i) {
 		const NkMatParamExpose &p = r.params[i];
 		const uint32 oh = DecalageHLSLDe(noms, offs, nm, renderer::NK_MATBIND_GRAPH_PARAMS_BLOCK, p.nom);
-		if (oh != p.decalage)
+		const uint32 og = TrouveDecalage(nomsG, offsG, ng, p.nom);
+		if (oh != p.decalage || og != p.decalage)
 			accord = false;
-		ligne.Append(NkFormat("{0} std140@{1} hlsl@{2}{3} | ", p.nom, p.decalage, oh,
-							  NkString(oh == p.decalage ? "" : " DESACCORD")));
+		ligne.Append(NkFormat("{0} publie@{1} std140@{2} hlsl@{3}{4} | ", p.nom, p.decalage, og, oh,
+							  NkString((oh == p.decalage && og == p.decalage) ? "" : " DESACCORD")));
 	}
 	// Le temoin qui empeche le cas de se rassurer tout seul : le montage DOIT
 	// contenir un vecteur qui suit un reel. Sans lui les deux conventions
@@ -2672,9 +2772,9 @@ static void CasAccordStd140HLSLSurLeHLSLEmis() {
 	const bool temoinUtile = v && v->decalage == 16u && v->remplissageAvant == 3u;
 
 	Cas("variable/accord-std140-hlsl-sur-le-hlsl-emis", r.ok && accord && sixMembres && temoinUtile,
-		NkFormat("{0}membres du cbuffer={1} (6 attendus : 3 parametres + 3 remplissages) | TEMOIN un vec3 "
-				 "APRES un reel, sans quoi les deux conventions donnent 0 des deux cotes={2}",
-				 ligne, nm, temoinUtile ? 1 : 0));
+		NkFormat("{0}membres : cbuffer HLSL={1} bloc NkSL={2} (6 attendus de chaque cote : 3 parametres + 3 "
+				 "remplissages) | TEMOIN un vec3 APRES un reel, sans quoi les trois lectures donnent 0={3}",
+				 ligne, nm, ng, temoinUtile ? 1 : 0));
 }
 
 static void CasPriseConnecteeEtExposeeRefusee() {
