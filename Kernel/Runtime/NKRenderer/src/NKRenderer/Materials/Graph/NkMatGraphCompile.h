@@ -3065,34 +3065,43 @@ namespace nkentseu {
 						s.Append("    vec3 ");
 						detail::PutNom(s, n->id, "vector");
 						s.Append(" = vec3(");
-						// ⚠️ AUCUN REPLI PLAUSIBLE ICI. Le canal a ete valide par la
-							// passe de refus ; ce ternaire n'est qu'un filet. Mais ecrire
-							// `vUV` quand `c` est nul rendrait une image CREDIBLE ET FAUSSE
-							// -- exactement ce que la decision du rang interdit, et la forme
-							// de mensonge la plus chere a debusquer. On emet donc un nom qui
-							// n'existe dans AUCUN backend : le shader echoue a la
-							// compilation en PORTANT le mot, au lieu de rendre un pixel que
-							// personne ne mettrait en doute.
-							// LE FILET REFUSE, IL N EMET PLUS UN JETON IMPRONONCABLE.
+						// ⚠️ AUCUN REPLI PLAUSIBLE ICI -- LE SECOND FILET REFUSE.
 						//
-						// Le canal a DEJA ete valide par la passe de refus : ce
-						// point est INATTEIGNABLE aujourd hui. La version
-						// precedente emettait ici un nom qui n existe dans aucun
-						// backend, pour que le shader echoue en PORTANT le mot
-						// plutot que de rendre un pixel credible.
+						// Le canal a DEJA ete valide par la passe de refus (~l.1322) :
+						// ce point est INATTEIGNABLE tant que cette passe tient. Ce
+						// qui suit est donc une SECONDE LIGNE DE DEFENSE, et sa valeur
+						// a ete MESUREE au lieu d'etre supposee. Campagne rejouable :
+						// `python scripts/matgraph_mutation.py M11 M12 M13 M14`.
 						//
-						// MESURE DU 2026-08-23, ET C EST ELLE QUI A TRANCHE : la
-						// mutation qui REMET le repli plausible (« vUV » pour
-						// n importe quel nom) a SURVECU a tout le banc. Un filet
-						// qu aucune mesure ne peut atteindre n est pas une seconde
-						// ligne de defense, c est un commentaire -- et le premier
-						// qui trouvera le jeton bizarre le remplacera par « vUV »
-						// sans que rien ne rougisse.
+						//   etat du code             | inconnu | prop.absente | rien emis
+						//   -------------------------|---------|--------------|-----------
+						//   HEAD (les deux passes)   |    1    |      1       |     1
+						//   M11 filet = « vUV »      |    1    |      1       |     1  <- SURVIT
+						//   M12 sans passe 1         |    0    |      1       |  ** 1 **
+						//   M13 sans passe 1 + vUV   |    0    |      0       |  ** 0 **
+						//   M14 sans passe 1 + jeton |    0    |      0       |  ** 0 **
 						//
-						// Il REFUSE donc, comme la premiere passe, et la difference
-						// est MESURABLE : en retirant la passe de refus, la
-						// compilation echoue toujours proprement au lieu de rendre
-						// une image credible et fausse.
+						// CE QUE LA TABLE DIT, ET C'EST PLUS NUANCE QUE CE QUI ETAIT
+						// ECRIT ICI LE 23/08 :
+						//
+						// 1. M11 SEULE SURVIT ENCORE. Le correctif n'a pas rendu ce
+						//    site atteignable -- il ne pouvait pas : la passe 1 le
+						//    couvre par construction. UNE DEFENSE REDONDANTE EST
+						//    INVISIBLE A UNE MUTATION A UN SEUL DEFAUT. Elle ne se
+						//    mesure qu'en COUPLE, en faisant d'abord tomber la ligne
+						//    qui est devant. C'est la generalisation a retenir, et
+						//    elle vaut pour tout filet pose derriere un autre.
+						// 2. LE COUPLE QUI MESURE LE CORRECTIF EST M12 CONTRE M14 :
+						//    meme mutation de la passe 1, seul le filet change. Refus
+						//    -> « rien emis=1 » ; jeton imprononcable -> « rien emis=0 ».
+						//    Le correctif du 23/08 achete donc quelque chose de reel,
+						//    et c'est cette colonne qui le prouve.
+						// 3. ⚠️ CE QUE LE BANC NE VOIT PAS : M13 et M14 sont
+						//    INDISCERNABLES pour lui. Le banc mesure « a-t-on emis ? »,
+						//    pas « ce qu'on a emis est-il credible ? ». L'argument
+						//    « le shader echoue en PORTANT le mot plutot que de rendre
+						//    un pixel credible » reste juste, mais AUCUN CAS NE LE
+						//    MESURE. Le tenir pour acquis serait le refaire.
 						if (!c) {
 							r.error = NkString("canal UV non valide a l emission (le filet du rang 4 a repris "
 											   "la main : la passe de refus ne l a pas attrape)");
