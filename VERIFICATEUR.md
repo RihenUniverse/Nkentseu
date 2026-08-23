@@ -883,16 +883,191 @@ Le banc mesure le **contrat** : CPU pur, aucun périphérique. Il tourne donc da
 un arbre neuf, chez tout agent, sur une machine sans carte — c'est pour ça qu'il
 est en mode `rapide`.
 
-Il ne mesure **pas** l'appel réel à `ToVkSamples()` ni la création d'une texture
-multi-échantillon : cela demande un GPU, donc un banc en mode `complet` du genre
-de `NkGpuProbe`. **Il l'imprime sur sa dernière ligne.**
+Il ne mesure **pas** ce que le backend fait de la valeur demandée : cela demande
+un GPU. **Il l'imprime sur sa dernière ligne.**
 
 > **Un banc qui tait sa limite est pire qu'un banc absent : on croit la question
 > réglée.**
 
-⚠️ Et la conséquence en clair : **tant que le `default:` de `ToVkSamples()`
-existe, une valeur qui contourne `SupportsSamples()` sera encore ramenée à 1 en
-silence.** Le banc rend le mensonge *évitable*, il ne le supprime pas.
+📌 **Cette limite est levée depuis le 2026-08-23.** Le banc `NkMsaaDeviceCheck`
+(mode `complet`) mesure la moitié GPU — et il a trouvé le défaut sur une vraie
+carte. La phrase qui figurait ici, *« le banc rend le mensonge évitable, il ne le
+supprime pas »*, était vraie tant que rien ne mesurait ce chemin ; elle ne l'est
+plus, et l'effacer est ici la seule chose juste à faire. Voir la section
+suivante.
+
+⚠️ Ce qui **reste** vrai, et qu'il ne faut pas effacer avec elle : le contrat rend
+le mensonge évitable, **le défaut lui-même est toujours dans les backends**. Un
+appelant qui contourne `SupportsSamples()` sera encore ramené à 1 en silence.
+
+---
+
+## `NkMsaaDeviceCheck` — la moitié GPU, et **IGNORÉ comme troisième état**
+
+Banc en mode `complet` (2026-08-23). Il ferme ce que `NkMsaaContractCheck`
+laissait ouvert : pour chaque nombre d'échantillons, il confronte ce que le
+**contrat** annonce à ce que la **carte** fait.
+
+```
+attendu = caps.SupportsSamples(s)
+obtenu  = CreateTexture(desc avec samples = s).IsValid()
+exigence : obtenu == attendu
+```
+
+### Les deux directions d'erreur n'ont pas le même sens, et sont nommées à part
+
+| mesure | ce que ça veut dire |
+|---|---|
+| attendu **NON**, obtenu **OUI** | **le mensonge visé.** La carte a accepté une valeur que le contrat refuse : elle a dégradé en silence, et l'appelant croit avoir du MSAA. |
+| attendu **OUI**, obtenu **NON** | le contrat est **trop optimiste** : il promet ce que la carte refuse. Moins dangereux, faux quand même. |
+
+Les confondre sous un seul « FAIL » enverrait chercher au mauvais endroit.
+
+### Ce qu'il a mesuré au premier passage — et c'est un vrai défaut
+
+Périphérique DX11 headless, drapeaux `2x=oui 4x=oui 8x=oui 16x=non`,
+`MaxSamples()=8`. **4 OK / 5 FAIL**, et les cinq sont dans la direction du
+mensonge :
+
+> demander **3, 7, 16, 32 ou 64** échantillons rend une texture **VALIDE**.
+
+⚠️ Le cas **16** est le plus net : le contrat **et** la carte disent tous les deux
+que 16x est impossible sur ce matériel, et `CreateTexture` rend quand même une
+poignée valide.
+
+**Prouvé à la source, pas déduit du comportement** —
+`Kernel/Runtime/NKRHI/src/NKRHI/DirectX11/NkDirectX11Device.cpp:969-977` :
+
+```cpp
+if (td.SampleDesc.Count > 1) {
+    UINT qualityLevels = 0;
+    mDevice->CheckMultisampleQualityLevels(td.Format, td.SampleDesc.Count, &qualityLevels);
+    if (qualityLevels == 0) {
+        td.SampleDesc.Count = 1;   // <- et on cree la texture QUAND MEME
+        td.SampleDesc.Quality = 0;
+    }
+```
+
+C'est **exactement le `default:` de `ToVkSamples()`**, dans un autre backend, et
+écrit explicitement plutôt que par omission. Même famille : *un repli qui
+préserve `success` n'est pas un repli, c'est un mensonge.*
+
+📌 **Ce banc n'a PAS été rendu vert.** Le défaut est dans le backend, et le
+corriger change le comportement de tous les appelants — ce n'est pas une décision
+d'outilleur. Le banc mesure, il rapporte, et il reste rouge tant que la question
+n'est pas tranchée. **Un banc qu'on rend vert avant de corriger ce qu'il montre
+n'a jamais servi à rien.**
+
+⚠️ Et la limite de cette mesure, à ne pas surinterpréter : le banc retient le
+**premier** périphérique disponible, et c'était DX11. `ToVkSamples()` lui-même
+**n'est toujours pas mesuré** — il reste une lecture de source, pas une mesure.
+
+### Le témoin, et pourquoi il passe avant toute accusation
+
+> **Avant de conclure qu'un contrôle ne voit rien, prouver que ce qu'on lui a
+> montré était visible.**
+
+Le symétrique s'applique ici, et il mord plus fort : **avant de conclure que le
+contrat ment, prouver que la question pouvait être posée.**
+
+Si une texture 64×64 RGBA8 render-target à **un seul** échantillon ne peut pas
+être créée, alors aucune ne le peut, et les huit autres valeurs rendraient toutes
+« le contrat PROMET, la carte REFUSE » — **huit accusations pour zéro mesure**.
+Le banc dirait « le contrat ment » sans avoir rien mesuré du contrat. C'est *une
+supposition consignée comme mesure*, en huit exemplaires.
+
+Donc le témoin à 1 échantillon tourne **en premier**, et son échec est un
+**IGNORÉ**, jamais un ÉCHEC.
+
+### ⚠️ IGNORÉ est un TROISIÈME état — c'est le cœur de ce banc
+
+Un banc qui exige un GPU sera **sauté** sur une machine qui n'en a pas, ou dont
+le pilote refuse.
+
+> **Un banc ignoré qui rapporte vert est le mensonge que ce chantier traque : on
+> croit la question mesurée alors que personne ne l'a posée.**
+
+Et le compter ÉCHEC n'est pas mieux : une machine sans carte n'est le bug de
+personne, et un banc qui accuse la moitié du parc est désactivé en une semaine.
+C'est le défaut de `NkGpuProbe`, qui rend **1** quand aucun périphérique n'existe
+— il confond « pas de carte » et « la carte est cassée ». **Un faux ÉCHEC, le
+symétrique du faux vert.**
+
+D'où trois états :
+
+| verdict | code | sens |
+|---|---|---|
+| `OK` | 0 | la question a été posée, la réponse est bonne |
+| `ÉCHEC` | 1 | la question a été posée, la réponse est mauvaise |
+| `IGNORÉ` | 77 | **la question n'a pas été posée** |
+
+### Comment le vérificateur l'apprend — une donnée, pas une constante devinée
+
+Nouveau critère de verdict dans `config/bancs.list` :
+
+```
+NkMsaaDeviceCheck | banc | complet | | code+ignore:77 | ...
+```
+
+`code 0` → OK ; `code 77` → IGNORÉ ; **tout autre code** → ÉCHEC.
+
+Le nombre est une **donnée de la ligne du banc**. S'il était une constante en dur
+dans le script, le banc et le vérificateur auraient un **accord tacite** que rien
+ne garde — et le jour où l'un des deux change, personne ne l'apprend.
+
+⚠️ **`code+ignore:0` est refusé explicitement.** Ce serait déclarer que le code du
+succès est aussi celui de « rien mesuré » : la distinction que le critère existe
+pour porter s'effondrerait, silencieusement. *Une donnée qui détruit la
+distinction qu'elle sert à porter n'est pas une donnée acceptable.*
+
+### La raison est LUE, jamais fabriquée
+
+`raison_ignore()` extrait la ligne `[IGNORE]` de la sortie du banc. « pas de
+carte » et « la carte refuse la texture la plus banale » n'appellent pas la même
+suite, et le vérificateur n'a pas à choisir pour le banc.
+
+Si le banc n'a rien dit, le rapport écrit **qu'il n'a rien dit** — pas une raison
+plausible à sa place.
+
+### Ce que la passe complète doit dire, et qu'elle dit maintenant
+
+Le compte des verts ne suffit pas. La passe imprime désormais :
+
+- `IGNORE` dans la colonne verdict du tableau ;
+- une section **`-- IGNORES : ces bancs N ONT RIEN MESURE --`**, un par un, avec
+  sa raison et son journal ;
+- le compte sur la ligne de verdict : `… au vert, N ignoré(s), … indéterminé(s)` ;
+- et **sous** le verdict, l'avertissement qui empêche de mal lire le mot « OK » :
+
+> ⚠️ *N banc(s) IGNORÉ(S) : leur question n'a pas été posée sur cette machine. Le
+> verdict ci-dessus ne porte QUE sur les M banc(s) qui ont réellement tourné.*
+
+Un IGNORÉ **ne change pas le code de sortie** — rien n'est cassé. Mais il rend
+impossible de lire « OK » comme « tout est vérifié ».
+
+### Son épreuve : `epreuve_ignore_gpu.sh`
+
+Sur la machine où ce banc a été écrit, un GPU existe — **le chemin IGNORÉ n'avait
+donc jamais tourné**. Un chemin d'erreur que rien n'a jamais emprunté est du code
+dont on ne sait pas s'il est juste : c'est la leçon de la garde « puissance de
+deux », redondante donc improuvable, supprimée le 22/08.
+
+L'épreuve injecte **deux** défauts réels, sur des chemins **distincts** :
+
+| défaut | injection | IGNORÉ attendu |
+|---|---|---|
+| **A** | `Ouvrir()` : le pilote refuse le périphérique | « aucun périphérique headless » |
+| **B** | le témoin à 1 échantillon est refusé | « le témoin a été REFUSÉ » |
+
+Ils doivent produire des **raisons différentes**. Si les deux donnaient la même
+ligne, la raison ne serait pas lue dans la sortie du banc mais fabriquée.
+
+Et l'épreuve exige les trois marques du mandat : le compte sur la ligne de
+verdict, la section `IGNORES`, l'avertissement sous le verdict.
+
+⚠️ **Le contrôle négatif y est armé AVANT le filet**, pas l'inverse — voir la
+section suivante, qui existe parce que l'ordre inverse a détruit du travail dans
+ce dépôt le 22/08.
 
 ---
 
@@ -941,7 +1116,12 @@ tout ce chantier.**
 - **classe** : `banc` · `pas-banc` · `banc-arrete`
 - **mode** : `rapide` · `complet`
 - **verdict** : `code` · `code+absence:<motif>` · `code+presence:<motif>` ·
-  `sans-verdict`
+    `sans-verdict` • `code+ignore:<n>`
+- **`code+ignore:<n>`** : trois états. `0` → OK, `<n>` → **IGNORÉ**, tout
+  autre code → ÉCHEC. À déclarer sur tout banc qui exige quelque chose que la
+  machine peut ne pas avoir. `<n>` est une **donnée de la ligne**, pas une
+  constante devinée par le script ; `0` y est refusé (ce serait confondre le
+  succès et le « rien mesuré »).
 
 ### `sans-verdict` — la valeur ajoutée après mesure, et le banc qu'elle a fait corriger
 
@@ -1020,6 +1200,14 @@ on la verse, soit le banc la fabrique à l'exécution, soit il part en
 | 1 | au moins un banc en ÉCHEC (construction, exécution, ou verdict) |
 | 2 | **échec d'instrument** : précondition manquante, montage cassé. **Rien n'est conclu sur le dépôt** — c'est le vérificateur qui n'est pas en état |
 | 3 | **échec de classement** : un projet d'`Applications/` n'est pas classé |
+
+⚠️ **IGNORÉ n'a pas de code à lui, et c'est voulu.** Un banc ignoré ne casse
+rien : la passe peut sortir **0** avec des bancs ignorés. Ce qu'il change, c'est
+ce que la passe **dit** — compte séparé sur la ligne de verdict, section
+`IGNORES`, et avertissement sous le verdict. *Le code de sortie répond « quelque
+chose est-il cassé ? » ; le rapport répond « qu'a-t-on réellement mesuré ? ».
+Ce ne sont pas la même question, et les faire porter par le même nombre
+obligerait à mentir sur l'une des deux.*
 
 La distinction 1 / 2 est le cœur de l'honnêteté de l'outil : *une mesure ne vaut
 que ce que vaut son montage*.

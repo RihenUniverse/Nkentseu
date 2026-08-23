@@ -32,12 +32,20 @@
 //   n'atteigne un backend. Le banc verifie que ce contrat tient sur les SEIZE
 //   combinaisons de drapeaux MSAA — pas sur trois exemples choisis.
 //
-// NON COUVERT — l'appel reel a ToVkSamples() et la creation d'une texture
-//   multi-echantillon. Cela demande un peripherique GPU, donc un banc en mode
-//   `complet` du genre de NkGpuProbe.
-//   ⚠️ Ce banc-ci ne PRETEND PAS le couvrir, et il le dit sur sa derniere ligne.
-//   Un banc qui tait sa limite est pire qu'un banc absent : on croit la question
-//   reglee.
+// NON COUVERT ICI, MAIS PLUS NON COUVERT DU TOUT (2026-08-23)
+//   La creation reelle d'une texture multi-echantillon demande un peripherique
+//   GPU. Ce banc-ci ne la couvre toujours pas — mais NkMsaaDeviceCheck, en mode
+//   `complet`, la couvre desormais, et il a TROUVE le defaut.
+//   Mesure du 23/08 sur DX11 : demander 3, 7, 16, 32 ou 64 echantillons rend une
+//   texture VALIDE. NkDirectX11Device.cpp:969-977 appelle
+//   CheckMultisampleQualityLevels(), et quand la carte repond « impossible » il
+//   pose SampleDesc.Count = 1 puis cree la texture QUAND MEME. Meme defaut que le
+//   `default:` de ToVkSamples, dans un autre backend, et ecrit explicitement.
+//   ⚠️ Ce que ce banc-la n'a PAS mesure : ToVkSamples lui-meme. Il retient le
+//   premier peripherique disponible, et c'etait DX11. Le chemin Vulkan reste une
+//   deduction par lecture, pas une mesure.
+//   Ce banc-ci garde donc sa limite, et la dit — un banc qui tait sa limite est
+//   pire qu'un banc absent : on croit la question reglee.
 //
 // POURQUOI DES RELATIONS ET PAS DES EXEMPLES
 // -----------------------------------------------------------------------------
@@ -230,11 +238,13 @@ int main() {
 	printf("\n=== Resultat : %d OK / %d FAIL ===\n", gPass, gFail);
 	printf("\n[LIMITE] dite plutot que tue :\n");
 	printf("   ce banc mesure le CONTRAT (CPU pur, aucun peripherique). Il ne mesure\n");
-	printf("   PAS l'appel reel a NkVulkanDevice::ToVkSamples(), dont le `default:`\n");
-	printf("   rend toujours VK_SAMPLE_COUNT_1_BIT. Tant que ce chemin existe, une\n");
-	printf("   valeur qui contourne SupportsSamples() sera encore ramenee a 1 EN\n");
-	printf("   SILENCE. Mesurer ce chemin demande un peripherique GPU : c'est un banc\n");
-	printf("   en mode `complet`, pas celui-ci.\n");
+	printf("   PAS ce que le backend fait de la valeur demandee.\n");
+	printf("   Ce chemin-la a maintenant son banc : NkMsaaDeviceCheck, mode complet.\n");
+	printf("   Il a mesure le 23/08, sur DX11, que demander 3, 7, 16, 32 ou 64\n");
+	printf("   echantillons rend une texture VALIDE, ramenee a 1 en silence\n");
+	printf("   (NkDirectX11Device.cpp:969-977). Le contrat rend la chose EVITABLE ;\n");
+	printf("   le defaut, lui, est toujours dans le backend.\n");
+	printf("   Non mesure a ce jour : ToVkSamples lui-meme — ce banc-la a retenu DX11.\n");
 
 	return gFail == 0 ? 0 : 1;
 }

@@ -65,6 +65,22 @@
 #                      mode qui tranche ce cas — et c'est arrive ICI, dans la
 #                      contre-epreuve, avant d'etre corrige.
 #
+# TROIS ETATS, PAS DEUX — OK, ECHEC, ET IGNORE
+#   Un banc qui exige un GPU (ou un pilote, ou un peripherique) sera SAUTE sur une
+#   machine qui ne l'a pas. Le compter OK est le pire des deux mensonges possibles :
+#   on croit la question mesuree alors que personne ne l'a posee. Le compter ECHEC
+#   n'est pas mieux — une machine sans carte n'est le bug de personne, et un banc
+#   qui accuse la moitie du parc est desactive en une semaine.
+#   Donc IGNORE est un TROISIEME etat : compte a part, NOMME avec sa raison lue
+#   dans la sortie du banc, et rappele sous la ligne de verdict. Il ne change pas
+#   le code de sortie (rien n'est casse), mais il rend impossible de lire « OK »
+#   comme « tout est verifie ».
+#   Un banc le declare par le verdict « code+ignore:<n> » dans config/bancs.list ;
+#   <n> est une DONNEE de sa ligne, jamais une constante devinee par ce script.
+#   ⚠️ Le precedent a ne pas suivre : NkGpuProbe rend 1 quand aucun device n'existe.
+#   Il confond « pas de carte » et « la carte est cassee » — un faux ECHEC, le
+#   symetrique du faux vert.
+#
 # CODES DE SORTIE
 #   0  tout va bien
 #   1  au moins un banc en ECHEC (construction ou execution ou verdict)
@@ -112,7 +128,7 @@ while [ "$#" -gt 0 ]; do
     --sans-construire) SANS_CONSTRUIRE=1; shift ;;
     --reconstruire)    RECONSTRUIRE=1; shift ;;
     --delai)           DELAI_DEFAUT="${2:-}"; shift 2 ;;
-    -h|--help)         sed -n '2,74p' "$0"; exit 0 ;;
+    -h|--help)         awk 'NR<2{next} /^# ={10,}$/{n++; print; if(n==2) exit; next} {print}' "$0"; exit 0 ;;
     *) dire2 "[verif] option inconnue : $1 (voir --help)"; exit 2 ;;
   esac
 done
@@ -591,6 +607,24 @@ chemin_exe() {
   return 1
 }
 
+# RAISON D'UN IGNORE — on la LIT dans la sortie du banc, on ne l'invente pas.
+# Un banc qui rend son code « rien mesure » DOIT dire pourquoi : « pas de carte »
+# et « la carte refuse la texture la plus banale » n'appellent pas la meme suite.
+# S'il ne l'a pas dit, on ecrit qu'il ne l'a pas dit — jamais une raison plausible
+# a sa place. Une supposition consignee comme mesure se propage avec l'autorite
+# d'une mesure.
+raison_ignore() {
+  local jr="$1" code="$2" l=""
+  if [ -f "$jr" ]; then
+    l=$(grep -aF '[IGNORE]' "$jr" | head -1 | sed 's/^[[:space:]]*//' | cut -c1-200)
+  fi
+  if [ -n "$l" ]; then
+    printf '%s' "$l"
+  else
+    printf 'code %s (IGNORE declare dans %s) — mais le banc N A PAS DIT pourquoi : aucune ligne [IGNORE] dans sa sortie' "$code" "$LISTE"
+  fi
+}
+
 # Resultats
 declare -a R_NOM=() R_CONSTRUIT=() R_CODE=() R_DUREE=() R_VERDICT=() R_POURQUOI=() R_JOURNAL=()
 
@@ -676,6 +710,39 @@ traiter_banc() {
         else
           verdict="OK"
         fi
+        ;;
+      code+ignore:*)
+        # TROIS ETATS. Le banc exige quelque chose que la machine peut ne pas
+        # avoir (un GPU, un pilote). Son code « rien mesure » est une DONNEE de
+        # sa ligne dans la liste, pas une constante devinee ici : sans cela, le
+        # banc et le verificateur auraient un accord tacite que rien ne garde.
+        local nign="${crit#code+ignore:}"
+        case "$nign" in
+          ''|*[!0-9]*)
+            verdict="ECHEC"
+            pourquoi="critere « $crit » malforme dans $LISTE : « $nign » n'est pas un entier"
+            ;;
+          0)
+            # ⚠️ Refus DELIBERE. « code+ignore:0 » ferait compter IGNORE tout
+            # banc qui reussit — chaque vert deviendrait un « rien mesure », ou
+            # l'inverse selon l'ordre des tests. Une donnee qui detruit la
+            # distinction que le critere existe pour porter n'est pas acceptable.
+            verdict="ECHEC"
+            pourquoi="critere « $crit » interdit : 0 est deja le code du succes, il ne peut pas etre celui d'IGNORE"
+            ;;
+          *)
+            if [ "$code" -eq "$nign" ]; then
+              # NI OK, NI ECHEC. Le banc n'a rien mesure, et le dire est tout
+              # l'interet : un banc ignore compte vert est le mensonge que ce
+              # chantier traque — on croit la question reglee.
+              verdict="IGNORE"; pourquoi="$(raison_ignore "$jr" "$code")"
+            elif [ "$code" -ne 0 ]; then
+              verdict="ECHEC"; pourquoi="code de sortie $code : $(premiere_ligne_utile "$jr" run)"
+            else
+              verdict="OK"
+            fi
+            ;;
+        esac
         ;;
       code|"")
         if [ "$code" -ne 0 ]; then
@@ -856,7 +923,7 @@ dire ""
 dire "-- Tableau -----------------------------------------------------------"
 printf '  %-26s %-10s %-6s %-8s %s\n' "banc" "construit" "code" "duree" "verdict"
 printf '  %-26s %-10s %-6s %-8s %s\n' "--------------------------" "---------" "-----" "-------" "-------"
-NB_OK=0; NB_ECHEC=0; NB_IND=0
+NB_OK=0; NB_ECHEC=0; NB_IND=0; NB_IGNORE=0
 for i in "${!R_NOM[@]}"; do
   printf '  %-26s %-10s %-6s %-8s %s\n' \
     "${R_NOM[$i]}" "${R_CONSTRUIT[$i]}" "${R_CODE[$i]}" "${R_DUREE[$i]}" "${R_VERDICT[$i]}"
@@ -864,6 +931,7 @@ for i in "${!R_NOM[@]}"; do
     OK)          NB_OK=$((NB_OK + 1)) ;;
     ECHEC)       NB_ECHEC=$((NB_ECHEC + 1)) ;;
     INDETERMINE) NB_IND=$((NB_IND + 1)) ;;
+    IGNORE)      NB_IGNORE=$((NB_IGNORE + 1)) ;;
   esac
 done
 
@@ -877,6 +945,19 @@ if [ "$NB_ECHEC" -gt 0 ]; then
     dire "    journal complet : ${R_JOURNAL[$i]}"
     situer_echec "${R_NOM[$i]}" "${R_POURQUOI[$i]}"
   done
+fi
+
+if [ "$NB_IGNORE" -gt 0 ]; then
+  dire ""
+  dire "-- IGNORES : ces bancs N ONT RIEN MESURE -----------------------------"
+  for i in "${!R_NOM[@]}"; do
+    [ "${R_VERDICT[$i]}" != "IGNORE" ] && continue
+    dire "  ${R_NOM[$i]} : ${R_POURQUOI[$i]}"
+    dire "    journal complet : ${R_JOURNAL[$i]}"
+  done
+  dire "  Ni succes, ni echec. Ce qu ils verifient n est NI confirme NI infirme"
+  dire "  sur cette machine. Les compter verts ferait croire la question reglee :"
+  dire "  c est exactement le mensonge que ces bancs existent pour traquer."
 fi
 
 if [ "$NB_IND" -gt 0 ]; then
@@ -895,11 +976,20 @@ fi
 dire ""
 dire "======================================================================"
 if [ "$RC" -eq 0 ] && [ "$NB_ECHEC" -eq 0 ]; then
-  dire " VERDICT : OK — $NB_OK banc(s) au vert, $NB_IND indetermine(s)"
+  dire " VERDICT : OK — $NB_OK banc(s) au vert, $NB_IGNORE ignore(s), $NB_IND indetermine(s)"
 else
-  dire " VERDICT : ECHEC — $NB_ECHEC banc(s) en echec, $NB_OK au vert, $NB_IND indetermine(s)"
+  dire " VERDICT : ECHEC — $NB_ECHEC banc(s) en echec, $NB_OK au vert, $NB_IGNORE ignore(s), $NB_IND indetermine(s)"
 fi
 dire " mode $MODE : ${#A_LANCER[@]} banc(s) lance(s) sur ${#CL_ORDRE[@]} projet(s) classe(s)"
+if [ "$NB_IGNORE" -gt 0 ]; then
+  # ⚠️ La phrase la plus importante de ce rapport quand elle s affiche : sans
+  # elle, « VERDICT : OK » se lit comme « tout est verifie », alors qu une part
+  # des bancs n a pas pose sa question. Un banc ignore qui rapporte vert est le
+  # mensonge que ce chantier traque.
+  dire " ⚠️ $NB_IGNORE banc(s) IGNORE(S) : leur question n a pas ete posee sur cette"
+  dire "    machine. Le verdict ci-dessus ne porte QUE sur les $NB_OK banc(s) qui ont"
+  dire "    reellement tourne. Voir la section IGNORES pour la raison de chacun."
+fi
 if [ "$AVEC_CAPACITES" -eq 1 ]; then
   case "$CAP_RC" in
     0) dire " capacites : toutes classees" ;;

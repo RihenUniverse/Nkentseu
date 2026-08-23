@@ -37,6 +37,21 @@
 #     code                     le code de sortie fait foi
 #     code+absence:<motif>     code 0 ET aucune ligne ne correspond au motif
 #     code+presence:<motif>    code 0 ET au moins une ligne correspond
+#     code+ignore:<n>          TROIS ETATS. code 0 = OK ; code <n> = IGNORE ;
+#                              tout autre code = ECHEC. A declarer sur tout banc
+#                              qui exige quelque chose que la machine peut ne pas
+#                              avoir (un GPU, un pilote, un peripherique).
+#                              ⚠️ IGNORE N'EST PAS VERT. Le banc n'a RIEN mesure ;
+#                              le compter OK ferait croire la question reglee, ce
+#                              qui est exactement le mensonge que ce chantier
+#                              traque. Le verificateur le compte a part et le NOMME
+#                              sur sa ligne de verdict.
+#                              ⚠️ Et il n'est pas ECHEC non plus : une machine sans
+#                              carte n'est le bug de personne. Accuser la ferait
+#                              desactiver le banc en une semaine.
+#                              Le nombre <n> est une DONNEE de cette ligne, pas une
+#                              constante devinee par l'outil : sans cela, le banc et
+#                              le verificateur auraient un accord tacite.
 #     sans-verdict             LE BANC NE SAIT PAS DIRE S'IL VA BIEN. Il est
 #                              lance et journalise, et compte INDETERMINE —
 #                              jamais vert. Prendre le code de sortie d'un tel
@@ -60,7 +75,8 @@ NkEditableMeshDemo   | banc        | rapide  |                        | code    
 NkFBXParityDemo      | banc        | complet |                        | code         | parite FBX / glTF. Passe en mode complet le 22/08 : exige Resources/Models/CesiumMan/CesiumMan.fbx, ABSENT du depot ET de la copie de travail de Rodolf (seul le .glb existe) — gros fichier, sujet a part. XBot/YBot sont deja sautes proprement par le banc.
 NkGpuProbe           | banc        | complet |                        | code         | compute NKRHI HEADLESS : demande un vrai peripherique GPU
 NkMatInventaireTest  | banc-arrete |         |                        |              | banc ARRETE le 17/08 (cc6aba5b) : include commente Nkentseu.jenga:1220, echouait au lien PAR CONSTRUCTION. Se re-enregistre quand Demo3DHost devient une bibliotheque.
-NkMsaaContractCheck  | banc        | rapide  |                        | code         | le CONTRAT d'echantillonnage MSAA : demander 3 ou 7 echantillons doit etre REFUSABLE avant d'atteindre un backend, parce que NkVulkanDevice::ToVkSamples() a un `default:` qui rend VK_SAMPLE_COUNT_1_BIT -- 3, 32 et 64 deviennent 1 sans erreur ni journal. CPU pur, aucun peripherique : il tourne dans un arbre neuf, chez tout agent, sur une machine sans carte. Ne couvre PAS l'appel reel a ToVkSamples (demande un GPU) et le DIT sur sa derniere ligne. Rend gFail == 0 ? 0 : 1.
+NkMsaaContractCheck  | banc        | rapide  |                        | code         | le CONTRAT d'echantillonnage MSAA : demander 3 ou 7 echantillons doit etre REFUSABLE avant d'atteindre un backend, parce que NkVulkanDevice::ToVkSamples() a un `default:` qui rend VK_SAMPLE_COUNT_1_BIT -- 3, 32 et 64 deviennent 1 sans erreur ni journal. CPU pur, aucun peripherique : il tourne dans un arbre neuf, chez tout agent, sur une machine sans carte. La moitie GPU est desormais couverte par NkMsaaDeviceCheck (mode complet), qui a MESURE le 23/08 que DX11 accepte 3, 7, 16, 32 et 64 en ramenant SampleDesc.Count a 1 en silence (NkDirectX11Device.cpp:969-977). Ce banc-ci reste donc le contrat seul, et le dit sur sa derniere ligne ; ToVkSamples lui-meme n'est toujours pas mesure. Rend gFail == 0 ? 0 : 1.
+NkMsaaDeviceCheck    | banc        | complet |                        | code+ignore:77 | la MOITIE GPU du contrat d'echantillonnage. Pour 1,2,3,4,7,8,16,32,64 il confronte caps.SupportsSamples(s) a CreateTexture(samples=s).IsValid() sur un vrai peripherique headless (DX11, puis DX12, puis OpenGL). Les deux directions d'erreur sont NOMMEES separement : « le contrat REFUSE, la carte ACCEPTE » est le mensonge vise (degradation silencieuse) ; « le contrat PROMET, la carte REFUSE » est un contrat trop optimiste. Un TEMOIN a 1 echantillon tourne AVANT toute accusation : s'il est refuse, le banc rend IGNORE et se tait, au lieu de produire huit accusations pour zero mesure. Rend 77 (IGNORE) si aucun peripherique n'a pu etre cree : ni OK, ni ECHEC.
 NkSLCheck            | banc        | rapide  |                        | code         | 8 conversions NkSL + le PBR FS en GL et Vulkan. Rendait 0 inconditionnellement avec success=0 dans sa sortie ; corrige le 22/08 : compte ses echecs, rend 1. Etait sans-verdict jusque-la.
 NkSLComputeCheck     | banc        | rapide  |                        | code         | compute NkSL 6 cibles ; rend g_fail
 

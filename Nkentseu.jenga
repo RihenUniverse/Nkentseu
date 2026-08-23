@@ -1471,6 +1471,12 @@ with workspace("Nkentseu", location="."):
 
 
 
+    with include("Applications/NkMsaaDeviceCheck/NkMsaaDeviceCheck.jenga"):
+
+        pass
+
+
+
     with include("Applications/NKMeshRenderTest/NKMeshRenderTest.jenga"):
 
         pass
