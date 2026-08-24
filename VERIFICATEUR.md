@@ -2046,3 +2046,14 @@ du défaut B, sur un dépôt parfaitement sain.**
 > et L'ANCIEN BINAIRE avait tourné »* — posé par l'épreuve écrite pour le
 > traquer.** Elle reconstruit maintenant, et l'échec de reconstruction est une
 > exigence non tenue.
+
+### Remesure apres le correctif du binaire menteur (04h32)
+
+Passe `complet` **avec construction reelle des 13 bancs** : `10 OK / 3 ECHEC /
+**0 IGNORE**`. `NkMsaaDeviceCheck` est bien revenu a **ECHEC 4/5** — le faux
+IGNORE lu une heure plus tot venait du binaire laisse par l epreuve, pas du depot.
+Et les deux bancs MSAA portent desormais la phrase juste :
+
+```
+  branches non fusionnees : RIEN CHERCHE, et ce n'est pas AUCUNE.
+```
