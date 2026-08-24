@@ -25,3 +25,7 @@
 2026-08-24 | bancs/cause-citee-construction | ce-bancs @ 9e42c907 | [vu] la premiere ligne significative du compilateur (exigence 5)
 2026-08-24 | bancs/cause-citee-execution | ce-bancs @ 9e42c907 | [vu] la premiere ligne significative de la SORTIE DU BANC (exigence 5)
 2026-08-24 | bancs/retour-au-vert | ce-bancs @ 9e42c907 | [vu] retour au code 0
+2026-08-24 | ctl/cliquet-rompu | ce-controles @ 5a787e9f | [vu] l'outil dit CLIQUET ROMPU
+2026-08-24 | ctl/controle-neuf-nomme | ce-controles @ 5a787e9f | [vu] le controle fantome est NOMME, pas seulement compte
+2026-08-24 | ctl/motif-introuvable-nul | ce-controles @ 5a787e9f | [vu] aucune ligne de journal pour un motif introuvable
+2026-08-24 | ctl/cliquet-absent | ce-controles @ 5a787e9f | [vu] code 2 : ECHEC D'INSTRUMENT, jamais un vert
