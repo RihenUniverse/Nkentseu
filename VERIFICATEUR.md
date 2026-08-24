@@ -1969,3 +1969,80 @@ au diff.
 > tâche de fond — mais « ça ressemble à » n'est pas une mesure, et *une supposition
 > consignée comme mesure se propage avec l'autorité d'une mesure.* Si ça revient,
 > ça se mesure ; en attendant, ça se dit.
+
+---
+
+## 🔴 CORRECTION AU DOSSIER — ma trouvaille MSAA était déjà corrigée ailleurs
+
+**Ce que j'ai écrit plus haut est vrai sur la référence que j'ai mesurée, et
+trompeur sur l'état du dépôt.** Je le corrige ici plutôt que de réécrire le texte
+d'origine : le contenu était juste, la conclusion ne l'était pas.
+
+`feat/rendu-temps-reel`, commit **`9b774ab8`**, remplace déjà les trois littéraux
+par une interrogation réelle de la carte, **sur les trois backends concernés** :
+
+```
++ const VkSampleCountFlags dispo =
++     props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
++ mCaps.msaa2x  = (dispo & VK_SAMPLE_COUNT_2_BIT)  != 0;
++ …
++ mCaps.msaa16x = (dispo & VK_SAMPLE_COUNT_16_BIT) != 0;
+```
+
+Vulkan, DX11, DX12 : corrigés. OpenGL n'avait rien à corriger — il mesurait déjà.
+**Le commentaire qu'ils ont laissé dans le code dit mot pour mot ce que j'ai
+« trouvé » : *« Trois affirmations, zéro interrogation, et `msaa16x` jamais
+touché »*.**
+
+### Ce qui reste vrai, et ce qui tombe
+
+| | |
+|---|---|
+| **tient** | sur `main` + `feat/verificateur`, les trois littéraux sont là. La mesure du banc est exacte sur sa référence. |
+| **tient** | les FAIL sur **3, 7, 32, 64** — le `default:` de `ToVkSamples` — ne sont pas touchés par leur correction. |
+| **tombe** | « le contrat repose sur trois littéraux » présenté comme un **état du projet** à réparer. C'était l'état d'**une** référence. |
+
+📌 **Prédiction, et elle est étiquetée comme telle** : une fois `feat/rendu-temps-reel`
+fusionnée, `NkMsaaVulkanCheck` devrait passer de **5 FAIL à 4** — le cas `16`
+disparaît, les quatre du `default:` restent. *Je ne l'ai pas mesuré : je n'ai pas
+fusionné leur branche. Tant que ce n'est pas mesuré, ce n'est pas un résultat.*
+
+### ⚠️ Et le vrai défaut, c'est le mien : mon outil m'a rassuré à tort
+
+Sur cette ligne d'échec, `verif_bancs.sh` a imprimé :
+
+> *branches non fusionnées touchant les fichiers accusés : **AUCUNE** (16
+> examinées) — le défaut est bien sur CETTE référence. **Ne perds pas une heure à
+> fusionner avant de chercher.***
+
+`chemins_accuses()` construit son ensemble à partir des **jetons de la ligne de
+cause**. La ligne de cause du banc est `[FAIL] 3 echantillons : le contrat REFUSE,
+la carte ACCEPTE.` — **pas un seul nom de fichier**. L'outil n'avait donc rien à
+confronter, et il a rendu ce vide comme une certitude.
+
+> **« AUCUNE » ne voulait pas dire « aucune branche ne corrige ce défaut ». Ça
+> voulait dire « aucune branche ne touche les fichiers que j'ai su extraire ».**
+> Un silence sur mon montage, servi comme une information sur le dépôt.
+
+*« Un outil qui situe peut accuser plus fort qu'un outil qui se tait »* — la
+section existe déjà dans ce document. **Ici il a RASSURÉ plus fort, ce qui est le
+même défaut retourné, et c'est la direction la plus coûteuse : une accusation se
+vérifie, une réassurance se croit.**
+
+**Corrigé** : l'outil compte désormais les fichiers de **code** réellement
+extraits, et sépare les deux phrases — `AUCUNE (n fichiers confrontés)` d'un côté,
+`RIEN CHERCHÉ, et ce n'est pas AUCUNE` de l'autre, avec la consigne au banc de
+citer le fichier qu'il met en cause.
+
+### ⚠️ Une épreuve qui laissait un binaire menteur derrière elle
+
+Trouvé dans la foulée : `epreuve_ignore_gpu.sh` restaurait la **source** et
+faisait `touch`, mais **ne reconstruisait pas**. L'exécutable porteur du défaut
+injecté restait sur le disque. Un `verif_bancs.sh --sans-construire` lancé après
+elle a lu ce binaire : **`NkMsaaDeviceCheck` est ressorti IGNORÉ, avec la raison
+du défaut B, sur un dépôt parfaitement sain.**
+
+> **C'est le défaut fondateur de tout ce chantier — *« la compilation avait échoué
+> et L'ANCIEN BINAIRE avait tourné »* — posé par l'épreuve écrite pour le
+> traquer.** Elle reconstruit maintenant, et l'échec de reconstruction est une
+> exigence non tenue.
