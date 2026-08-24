@@ -73,3 +73,4 @@
 # (vide au 24/08 : les deux seuls cas trouves ont ete CORRIGES, pas classes.
 #  Voir le commit — un premier rouge qu on classe au lieu de reparer apprend a
 #  l equipe que ce fichier sert a faire taire l outil.)
+contre_epreuve_chemins.sh | /tmp/nkchemin_fantome.log | tolere | Le chemin du FANTOME de la contre-epreuve. Il n est jamais ECRIT par un agent : ce script fabrique un fichier NkCheminFantome.sh qui contient cette chaine, le fait examiner par la garde, puis le supprime. Le fantome n est jamais EXECUTE. La chaine existe ici POUR ETRE DETECTEE — la cacher (en la construisant par morceaux) reviendrait a apprendre a la garde a ne pas voir sa propre epreuve.
