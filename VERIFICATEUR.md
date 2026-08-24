@@ -1692,9 +1692,38 @@ Les deux corrections ne peuvent qu'**ajouter** des candidats, jamais en retirer.
 > **Un candidat de trop se classe une fois ; un candidat manqué ne se voit
 > jamais.**
 
-**Mesure : 128 → 143 candidats.** Quinze capacités qui existaient déjà et que
-l'outil ne montrait pas — dont `NkRendererConfig::hdr` et `::vsync`, deux voisines
-de `pipeline` dans la même structure.
+**Mesure : 128 → 143 candidats.**
+
+### ⚠️ Défaut 3 — né de la correction des deux premiers : quatre faux positifs
+
+**Quatre des quinze étaient faux**, et je les ai trouvés en contre-vérifiant à la
+main, pas par un outil.
+
+```cpp
+srcStage |= toStage(bb[i].srcStage);   // une LOCALE à gauche, une VRAIE LECTURE à droite
+```
+
+Le test d'écriture cherchait `nom … =` **n'importe où sur la ligne** : il
+attrapait la locale, classait la ligne « écriture », et le champ ne pouvait plus
+jamais compter de lecture. `NkBufferBarrier::srcStage`, `::dstStage` et leurs deux
+jumeaux de `NkTextureBarrier` sont **réellement lus**
+(`NkVulkanCommandBuffer.cpp:400-401` et `:456-457`).
+
+**Parade : la même règle que pour la lecture.** Hors du fichier déclarant, une
+écriture de membre porte elle aussi un `.` ou un `->` juste devant le nom.
+`c.pipeline = X`, `mCaps.x = true` et l'initialisation désignée `{.pipeline = X}`
+la portent toutes les trois ; `srcStage |=` nu, non.
+
+> ⚠️ **La leçon, et elle est pour moi.** J'avais justifié les deux premières
+> corrections par la direction de l'erreur — *« un candidat de trop se classe une
+> fois »*. **C'est vrai du COÛT, pas de la VÉRITÉ** : un faux positif classé
+> `vision-assumee` aurait fait dire au fichier que quatre champs lus par le
+> backend Vulkan ne servaient à rien. Les vérifier un par un n'était pas du zèle,
+> c'était le travail.
+
+**Reste 139 candidats — onze capacités réellement découvertes**, dont
+`NkRendererConfig::hdr` et `::vsync`, deux voisines de `pipeline` dans la même
+structure.
 
 ### ⚠️ Et la règle (a) ne voit **toujours** pas ce cas-là
 
