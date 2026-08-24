@@ -1633,3 +1633,253 @@ fusionnées touchant les fichiers accusés : AUCUNE (15 branches examinées) —
 défaut est bien sur CETTE référence. »* **Ce rouge-là ne se règle pas par une
 fusion.** Il se règle par un type qui n'accepte que les comptes valides — voir
 `NkRendererConfig::msaaSamples` (E1) dans `CAPACITES_A_DATER.md`, **même sujet**.
+
+---
+
+# Journée du 24 août — le détecteur ne voyait pas tout, et le contrôle qui le prouve
+
+## ⚠️ Le onzième cas était surtout une mesure sur **mon** détecteur
+
+Le chantier rendu a trouvé un onzième paramètre déclaré non honoré :
+`NkRendererConfig::pipeline`. `ForFilm()` et `ForArchviz()` posent
+`pipeline = NK_DEFERRED`, et le SSR fonctionne quand même — parce que
+`NkRendererImpl.cpp:829` lit **`mCfg.deferred`**, un *autre* champ, déclaré
+`false` à la ligne 410 et que les deux préréglages ne touchent pas.
+
+> **Qui demande `ForFilm()` obtient du FORWARD pendant que sa configuration dit
+> DEFERRED.**
+
+La première chose à faire n'était pas de le classer. C'était de vérifier que
+**mon détecteur l'attrapait**. *Il ne l'attrapait pas.* Et un onzième cas qui
+échappe veut dire qu'il y en a d'autres : **il y en avait quatorze.**
+
+### Défaut 1 — le commentaire était amputé, la **chaîne de caractères** non
+
+```
+logger.Info("[NkRender3D] Shadow pipeline create: shader_valid={0} …")
+```
+
+Cette ligne porte le jeton `pipeline`, et ce jeton était compté comme une
+**lecture** du champ. Une seule lecture suffit à clore le dossier — c'est même
+une optimisation assumée du détecteur (17 s → 5 s).
+
+⚠️ **C'est exactement la faute qu'ampute la ligne au-dessus**, dans un second
+vêtement. Le code disait déjà, en toutes lettres : *« une mention dans un
+commentaire n'est pas une lecture, et prendre l'une pour l'autre est exactement
+chercher un mot au lieu d'un état »*. **Un nom dans une chaîne n'est pas plus une
+lecture qu'un nom dans un commentaire** — et j'avais écrit la règle sans voir son
+second cas.
+
+### Défaut 2 — le repli « ce fichier nomme le type » attrape les **variables locales**
+
+`NkRender3D.cpp` nomme `NkRendererConfig` **une fois** et déclare partout un
+`NkPipelineHandle pipeline` **local** :
+
+```cpp
+NkPipelineHandle pipeline = mPBRPipeline;
+cmd->BindGraphicsPipeline(pipeline);      // comptée comme lecture du CHAMP
+```
+
+**La règle juste est celle du langage** : un membre ne se lit que par `x.nom`,
+`x->nom`, ou **nu dans le fichier qui le déclare** (ses méthodes en ligne, où le
+`this->` est implicite). Le fichier déclarant garde donc l'exemption ; partout
+ailleurs, un jeton nu n'est pas un accès au membre.
+
+### La direction de l'erreur, et c'est pour ça qu'on ose
+
+Les deux corrections ne peuvent qu'**ajouter** des candidats, jamais en retirer.
+
+> **Un candidat de trop se classe une fois ; un candidat manqué ne se voit
+> jamais.**
+
+**Mesure : 128 → 143 candidats.** Quinze capacités qui existaient déjà et que
+l'outil ne montrait pas — dont `NkRendererConfig::hdr` et `::vsync`, deux voisines
+de `pipeline` dans la même structure.
+
+### ⚠️ Et la règle (a) ne voit **toujours** pas ce cas-là
+
+`vision-assumee` est interdit « dès qu'un drapeau annonce `true` à du code ». Le
+détecteur ne reconnaît la promesse que si elle s'écrit littéralement `= true`.
+Ici la promesse est faite par une **valeur d'énumération** différente du défaut
+déclaré — `pipeline = NK_DEFERRED`. **C'est le même mensonge dans un autre
+vêtement, et il passe.**
+
+Je ne l'ai **pas** corrigé : la règle juste demanderait de comparer chaque
+écriture au défaut déclaré, et je ne veux pas d'une règle que je n'ai pas
+mesurée. Elle est **signalée** dans la note de `capacites.list`, et le classement
+de `pipeline` y est dit **provisoire pour cette raison**.
+
+### Le cliquet relevé de 24 à 25 — délibérément
+
+`NkRendererConfig::vsync` **ne peut pas** être `vision-assumee` : six démos
+livrées écrivent `rcfg.vsync = true`, et **le détecteur a refusé mon
+classement**. Il avait raison. Les deux autres sorties étaient `implementee`
+(faux) et `morte-a-retirer` (une décision produit qui n'est pas la mienne).
+
+> **Le cliquet reposait sur une prémisse — « le stock est un héritage qui ne se
+> renouvelle pas » — et elle ne tenait que tant que le détecteur voyait tout le
+> stock. Il ne le voyait pas.**
+
+Ce `+1` n'est pas une capacité nouvelle : c'est de l'héritage qui était
+invisible. La décision est écrite dans `config/capacites.list`, dans la fiche
+**C5** de `CAPACITES_A_DATER.md`, et dans une section dédiée de ce document-là.
+
+⚠️ **Ce que ça dit du chiffre 24 lui-même :** il n'a jamais mesuré « les capacités
+creuses du dépôt ». Il mesurait **celles que mon outil savait voir**.
+
+---
+
+## `NkMsaaVulkanCheck` — `ToVkSamples()` exercé, et il trouve autre chose
+
+`NkMsaaDeviceCheck` essaie DX11, puis DX12, puis OpenGL, et **s'arrête au premier
+qui s'ouvre**. Sur cette machine c'est DX11. **Le chemin Vulkan n'avait jamais
+tourné** — et `NkVulkanDevice::ToVkSamples()`, l'origine écrite de toute
+l'affaire, restait une déduction par lecture.
+
+Le nouveau banc **n'a aucune chaîne de repli** : il ouvre Vulkan ou il rend `77`
+(IGNORÉ). *Se replier reproduirait trait pour trait le défaut qui a laissé
+`ToVkSamples` non mesuré pendant deux jours.*
+
+**Vulkan s'ouvre ici** — il n'avait simplement jamais été demandé. Première
+course, `main` à jour :
+
+```
+--- peripherique : Vulkan ---
+    drapeaux MSAA : 2x=oui 4x=oui 8x=oui 16x=non   MaxSamples()=8
+  [TEMOIN] obtenue.
+  [OK]    1, 2, 4, 8       [FAIL]  3, 7, 16, 32, 64
+=== Resultat : 4 OK / 5 FAIL ===
+```
+
+### 🔴 Les cinq FAIL ne sont **pas** tous `ToVkSamples`
+
+Le banc n'imprime sa note `[LECTURE]` que pour **3, 7, 32, 64** — celles qui
+tombent dans le `default:`. Pour **16**, il ne l'imprime pas : 16 **a** un `case`,
+le nombre atteint le pilote tel quel. **Et 16 est accusé quand même.** Donc la
+cause de ce FAIL-là est ailleurs, et elle est pire :
+
+```
+NkVulkanDevice.cpp:2475      mCaps.msaa2x = mCaps.msaa4x = mCaps.msaa8x = true;
+NkDirectX11Device.cpp:1754   idem
+NkDirectX12Device.cpp:3021   idem
+NkOpenglDevice.cpp:1040-43   mCaps.msaaNx = maxS >= N     ← le seul qui MESURE
+```
+
+> **Trois backends sur quatre n'interrogent pas la carte. Ils écrivent trois
+> littéraux à `true` et ne touchent JAMAIS `msaa16x`, qui reste `false` par
+> défaut.** `framebufferColorSampleCounts` n'est jamais lu côté Vulkan.
+
+`SupportsSamples()` — la fonction qui rend la question dicible **avant** qu'elle
+n'atteigne un backend, le socle entier de `NkMsaaContractCheck` — repose donc, sur
+trois backends sur quatre, sur **trois littéraux et un oubli**. Ce n'est pas un
+contrat sur la carte : c'est une constante qui a la forme d'une réponse.
+
+⚠️ **Sans la distinction `[LECTURE]` / pas de `[LECTURE]`, j'aurais mis les cinq
+FAIL sur le dos de `ToVkSamples` et réparé la mauvaise ligne.** Un banc qui dit
+**pourquoi** il accuse, cas par cas, vaut mieux qu'un banc qui compte.
+
+### Ce que ce banc ne mesure pas, et il le dit
+
+Il ne relit pas le `VkImage` créé. « La texture porte 1 échantillon au lieu de
+32 » reste une **lecture** du code (`NkVulkanDevice.cpp:2787`, appelé ligne 1271),
+étiquetée `[LECTURE]` dans sa sortie. Son **discriminant** (une valeur avec `case`
+refusée + 32/64 acceptées) est imprimé comme **information**, jamais comme
+verdict : il repose sur la monotonie de `framebufferColorSampleCounts`, que Vulkan
+ne garantit pas — **la supposition est nommée dans la sortie elle-même**. Sur
+cette carte il est sorti **NON CONCLUANT**, et ce n'est pas un succès.
+
+**Défaut trouvé dans mon propre banc en l'écrivant** : un tableau `gAttendu`
+écrit à chaque mesure et lu par personne. *Le défaut que ce banc traque, dans le
+banc.* Retiré.
+
+---
+
+## 🔴 « Un contrôle qui n'a jamais rougi n'est pas un contrôle, c'est une intention »
+
+Le chantier design a écrit un contrôle avec `\b` dans une chaîne Python **non
+brute** — où `\b` n'est pas une frontière de mot mais le caractère **retour
+arrière**. Le contrôle tournait, ne trouvait rien, et **rendait vert**.
+
+⚠️ **C'est ma propre règle dans sa version la plus sournoise** : l'`ok` était bien
+**après** l'écriture, et il ne prouvait rien — **parce qu'il portait sur zéro cas
+examiné**. *« Je n'ai rien trouvé » et « je ne lis plus le fichier » rendent la
+même sortie verte.*
+
+**Donc la question « ce contrôle a-t-il déjà rougi ? » ne doit pas se poser à la
+mémoire de celui qui l'a écrit. Elle se lit.**
+
+### Trois fichiers, le dessin de `bancs.list` et de `capacites.list`
+
+| | |
+|---|---|
+| `config/controles.list` | l'**inventaire** — une donnée, jamais une heuristique |
+| `controles_rouges.journal` | ce qui a **été vu** rougir : date, contrôle, épreuve, `sha`, **et la ligne exacte** |
+| `verif_controles.sh` | la garde, et le mode `--enregistrer <épreuve>` |
+
+`--enregistrer` lance l'épreuve et **n'écrit une ligne que si le motif déclaré est
+trouvé** dans la sortie obtenue. Motif absent → **rien n'est écrit, et c'est dit**.
+
+⚠️ **Le motif est une chaîne fixe (`grep -F`), jamais une expression régulière.**
+Une regex ici rejouerait le défaut même du chantier design : *un motif qui ne peut
+pas apparaître rend vert.*
+
+⚠️ **Et si l'épreuve elle-même échoue, rien n'est écrit.** Une épreuve ratée ne
+dit pas que les contrôles n'ont pas rougi : elle dit **qu'on ne sait pas**.
+
+### La mesure du 24/08 — les cinq épreuves lancées pour de vrai
+
+```
+45 contrôles inventoriés   —   31 ONT DÉJÀ ROUGI   —   14 JAMAIS
+```
+
+**Et les quatorze ont tous la même raison : aucune épreuve ne sait les faire
+rougir.** Ce sont les **préconditions** et les **témoins d'instrument** :
+
+```
+bancs/precond-sous-modules      bancs/precond-liste-absente
+bancs/instr-temoin-inventaire   bancs/verdict-absence-motif
+bancs/verdict-presence-motif    bancs/sans-verdict-jamais-vert
+bancs/delai-banc-muet           cap/autocontrole-format-awk
+cap/precond-entete-introuvable  cap/precond-liste-absente
+cap/instr-nb-motifs             cap/instr-nb-hits
+cap/temoin-D1                   cap/temoin-D2
+```
+
+> ⚠️ **C'est-à-dire précisément ceux dont le métier est de distinguer « je n'ai
+> rien trouvé » de « je ne lis plus le fichier ».** Aujourd'hui, personne ne peut
+> distinguer « il garde » de « il ne garde plus » pour ces quatorze-là.
+
+*(Certains ont rougi pendant leur écriture — l'autocontrôle awk a été payé trois
+fois le 22/08. Mais je n'en ai **aucune trace mécanique**, et une trace qui vit
+dans un souvenir n'est pas une trace. Le journal ne consigne que ce qu'une épreuve
+a fait apparaître.)*
+
+### Il ne rougit pas sur un contrôle jamais rouge, et c'est délibéré
+
+Un contrôle jamais rouge n'est pas **cassé**, il est **suspect**. Le rougir ferait
+désactiver cet outil-ci dans la semaine — **même arbitrage que pour `A-DATER` et
+pour `bancs.list`**, et pour la même raison mesurée. Ce qui garde, c'est le
+**cliquet** : `PLAFOND-JAMAIS-ROUGE = 14`, il peut descendre, il ne peut pas
+monter. Un contrôle **neuf** se fait rougir **à la naissance**.
+
+### Et il a sa contre-épreuve, sinon il serait ce qu'il dénonce
+
+Un tableau de bord des contrôles jamais rouges, jamais rouge lui-même, serait
+l'illustration parfaite du problème. `contre_epreuve_controles.sh` :
+
+| | attendu | vu |
+|---|---|---|
+| **J** un contrôle neuf jamais rouge | `CLIQUET ROMPU`, code 5 | ✅ et le fantôme est **nommé** |
+| **K** un motif introuvable | rien enregistré, et c'est dit | ✅ aucune ligne pour lui |
+| **L** plus de directive de plafond | `ECHEC D'INSTRUMENT`, code 2 | ✅ jamais un vert |
+| **M** après retrait | vert, arbre identique | ✅ journal **octet pour octet** |
+
+⚠️ **Ce qu'une entrée de journal prouve, et rien de plus** : que l'**épreuve** a
+affirmé avoir vu ce contrôle rougir. Sa force est celle de l'épreuve. C'est pour
+cela que les cinq épreuves ont toutes un **contrôle négatif** — elles refusent de
+démarrer sur un arbre déjà rouge ou déjà sale. *Sans ce refus, un `[vu]` vaudrait
+ce que valait l'`ok` du chantier design.*
+
+⚠️ Et le contrôle négatif passe **avant** le `trap … EXIT`. *Un filet armé avant
+son contrôle détruit ce que le contrôle refusait d'écraser* — c'est arrivé ici le
+22/08, ça a coûté 49 lignes.
