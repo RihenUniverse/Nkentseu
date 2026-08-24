@@ -50,6 +50,18 @@
 #   ./verif_bancs.sh --sans-construire      # execute les exes deja presents
 #   ./verif_bancs.sh --reconstruire         # `jenga rebuild` : table rase par banc
 #
+# ET UN QUATRIEME OUTIL, A COTE DE CELUI-CI (2026-08-24)
+#   ./verif_controles.sh   dit lesquels de MES PROPRES CONTROLES ont deja
+#   rougi au moins une fois, et nomme ceux qui n ont jamais rougi.
+#   « Un controle qui n a jamais rougi n est pas un controle, c est une
+#   intention. » Le journal (controles_rouges.journal) n est jamais ecrit de
+#   memoire : `--enregistrer <epreuve>` lance l epreuve et n inscrit une ligne
+#   que si le motif declare est TROUVE dans la sortie obtenue.
+#   Mesure du 24/08 : 45 controles, 31 ont deja rougi, 14 JAMAIS -- et les 14
+#   sont les preconditions et les temoins d instrument de CE script-ci et de
+#   verif_capacites.sh. Personne ne peut aujourd hui distinguer « il garde »
+#   de « il ne garde plus » pour ces quatorze-la.
+#
 # TROIS NIVEAUX DE GARANTIE SUR LA FRAICHEUR DU BINAIRE — dire lequel garantit
 # quoi fait partie du travail :
 #   --sans-construire  ne garantit RIEN sur la fraicheur. Utile pour rejouer une
