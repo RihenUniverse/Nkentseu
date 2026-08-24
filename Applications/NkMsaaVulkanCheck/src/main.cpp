@@ -222,7 +222,7 @@ namespace {
 		printf("  !! CE N'EST PAS UNE PREUVE. Vulkan ne garantit pas que le masque\n");
 		printf("  framebufferColorSampleCounts soit monotone : rien dans la specification\n");
 		printf("  n'interdit formellement de refuser 16 et d'accepter 32. Aucun pilote reel\n");
-		printf("  ne fait cela -- mais "aucun pilote reel" est une croyance, pas une\n");
+		printf("  ne fait cela -- mais 'aucun pilote reel' est une croyance, pas une\n");
 		printf("  mesure. D'ou : information, pas verdict.\n");
 	}
 
