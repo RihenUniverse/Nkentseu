@@ -245,6 +245,118 @@ d'Unreal la permettent, pour cette raison). Si le blueprint de modélisation en 
 besoin, la réponse sera un **nœud d'appel** distinct du nœud d'instance — pas un
 assouplissement de l'aplatissement. À décider avec le premier consommateur.
 
+## ✅ Les trois décisions des 23-24/08 — et ce qu'elles FERMENT
+
+> Elles viennent de Rodolf, elles se tiennent, et elles se lisent ensemble : la
+> deuxième est la raison technique de la première, et la troisième dit vers quoi
+> tout ça compile. Les deux premières sont **codées et mesurées** ; la troisième
+> est **écrite et rien d'autre** — c'est délibéré, et dit plus bas pourquoi.
+
+### 1. ✅ L'acyclicité est **UNIVERSELLE** — pas d'exception pour l'exécution
+
+> **Un cycle vit à l'intérieur d'un nœud, jamais dans le graphe.**
+
+⚠️ **Ce module a porté le contraire pendant une journée**, et la trace reste
+écrite dans le code plutôt qu'effacée. Le 23/08 au matin, la spécification du
+chantier design proposait que `WouldCreateCycle` et `TopoSort` ne voient plus que
+les liens de famille `Data`, pour rendre un rebouclage d'exécution traçable. Ça a
+été codé. ❌ **Retiré le 23/08 au soir** : ça affaiblissait une règle **générale**
+pour un cas **particulier**.
+
+**Trois raisons, et la première est celle qui décide :**
+
+1. ⚠️ **Une règle sans exception est une règle que les outils n'ont pas à
+   interroger.** Le jour où l'acyclicité dépend de la famille du lien, **tout** ce
+   qui parcourt un graphe doit savoir dans quelle famille il se trouve — et ce
+   chantier venait de passer trois jours sur des défauts causés par des choses qui
+   **ne savaient pas à quelle famille elles appartenaient** ;
+2. **le tri topologique reste valide sur le graphe ENTIER** : autoriser un cycle
+   *quelque part*, c'est perdre l'ordre défini *partout* ;
+3. **tous les cas connus sont couverts sans fil qui revienne.** Le `For Loop`
+   d'Unreal a une sortie *corps* et une sortie *terminé*, et le corps ne revient
+   **jamais** au nœud par un fil : le nœud itère lui-même.
+
+| ce que ça change dans le code | où |
+|---|---|
+| `WouldCreateCycle` suit **tous** les liens vivants | `NkNodeGraph.inl` |
+| `Connect` appelle la garde **sans condition de famille** | `NkNodeGraph.inl` |
+| `TopoSort` compte **tous** les liens vivants | `NkNodeGraph.inl` |
+| `NkSocketFamily` ne commande plus que **trois** comportements (compatibilité, arité d'entrée, arité de sortie) | `NkNodeGraph.h` |
+| `LinkFamily()` n'a plus **aucun appelant dans le cœur** — elle sert la **vue**, qui ne dessine pas un fil d'exécution comme un fil de donnée | `NkNodeGraph.h/.inl` |
+
+📌 **Et un gain qu'on n'attendait pas.** L'exemption s'écrivait à **deux**
+endroits — la condition dans `Connect` **et** le filtre dans le parcours. Deux
+encodages de la même règle, donc **invisibles à une mutation à un seul défaut** :
+M36 survivait, et il avait fallu un **couple** (M38) pour mesurer ce que chacun
+achetait. Les deux sont partis ensemble ; **M36 et M38seul rougissent désormais
+seules**. Une règle sans exception se mesure aussi plus simplement.
+
+**Ce que ça coûte, et il faut l'écrire :** `Portail (aller à)` — un saut **en
+arrière** — n'existe pas sous cette décision. Les trois usages qu'on en attendait
+sont couverts autrement (nœud de boucle · relais/`reroute` · fil d'exécution
+ordinaire pour un saut **en avant**).
+
+### 2. ✅ La machine à états est un **NŒUD** — la voie d'Unreal, pas celle d'Unity
+
+**Et l'argument décisif est technique**, pas esthétique : ses cycles vivent **à
+l'intérieur** du nœud, dans la liste de transitions que le runtime porte déjà
+(`AddTransition(from, to, paramName, kind, threshold, fadeDur)`). **Le graphe
+extérieur ne voit jamais de cycle, donc `WouldCycle` n'est pas touché.** C'est le
+seul choix qui n'affaiblit pas une règle générale pour un cas particulier — et
+c'est ce qui rend la décision 1 tenable.
+
+🔴 **Le cœur n'a besoin de RIEN de neuf pour la porter**, et c'est une mesure,
+pas une opinion : le cas `etats/la-machine-a-etats-est-un-noeud` de
+`NkMatGraphCheck` n'appelle **aucune API nouvelle**. Le § 19.3 de la
+spécification concluait « le mode états est **impossible** sur le cœur
+d'aujourd'hui » ; **c'était faux**.
+
+- la machine est **DÉSIGNÉE** par une **propriété de nœud** — le mécanisme qui
+  porte déjà l'opération d'un Math et le chemin d'une image ;
+- ⚠️ **pas dans `NkNode::subgraph`**, et la tentation est forte parce que le champ
+  existe et porte déjà une référence par nom. Mais `subgraph` veut dire *« un
+  `NkNodeGraph` de ce document »*, et **une machine à états n'en est pas un** :
+  c'est une liste d'états et de transitions, avec son propre format. Deux sens
+  pour un champ obligeraient tout lecteur à savoir lequel s'applique — exactement
+  le défaut que la famille de prise vient de corriger ailleurs. Le cas vérifie que
+  `subgraph` reste **vide** sur ce nœud ;
+- **contre-épreuve**, sans laquelle le cas serait une tautologie : les **mêmes
+  états câblés dehors** — `Marche → Saut → Marche` — tombent sur `WouldCycle` dès
+  la transition de retour.
+
+### 3. 📝 La forme **non nodale** d'un blueprint sera un **MODULE DE BYTECODE** — décidé le 24/08, **rien à construire maintenant**
+
+C'est la réponse à *« vers quoi compile un graphe d'exécution ? »*, et elle ferme
+la question au lieu de la laisser ouverte sous chaque chantier qui la croisera.
+**À la manière d'Unreal**, dont le Blueprint compile vers un bytecode que la VM
+du moteur exécute.
+
+📌 **Pourquoi c'est cohérent avec tout le reste :** *le nodal vient **par-dessus**
+le non nodal.* Le graphe **compile vers** la représentation non nodale, il ne la
+remplace pas. Le graphe de matériaux l'applique déjà — c'est pour ça qu'il a
+**refusé** les types composés : `NkMaterial` n'a nulle part où les écrire, et
+*« ce n'est pas le graphe qui manque de types, c'est ce vers quoi il COMPILE »*.
+La machine à états l'applique aussi (§ 2 ci-dessus) : le nœud **désigne** un
+modèle non nodal qui existe déjà. Le blueprint suit la même loi.
+
+🔴 **LA CONTRAINTE QUI DÉFINIT LA DÉCISION, et c'est elle qu'il faudra tenir :**
+
+> **Le bytecode doit pouvoir s'écrire, se lire et se sérialiser SANS QU'AUCUN
+> GRAPHE N'EXISTE.**
+
+C'est le même critère que celui appliqué partout ici : si la forme non nodale
+dépend du graphe pour exister, ce n'est pas une forme non nodale, c'est un cache
+du graphe — et le jour où quelqu'un voudra produire un module autrement (import,
+génération, écriture à la main, un autre langage de surface), il découvrira qu'il
+ne peut pas.
+
+⚠️ **RIEN N'EST À CONSTRUIRE AUJOURD'HUI, et c'est délibéré** : ni Noge, ni
+NKScena, ni NKAnee ne sont fonctionnels. Écrire le bytecode maintenant, ce serait
+l'écrire **sans consommateur** — exactement ce que le garde-fou n°2 de ce module
+interdit (« le cœur se construit AVEC son premier client réel »). La décision est
+donc **écrite ici et nulle part ailleurs**, pour qu'elle n'ait pas à être reprise
+depuis zéro à chaque fois que la question remonte.
+
 ## Consommateurs prévus (état de leur côté)
 
 - **NKRenderer Phase T.2** — graphe de matériaux (extension des templates
@@ -252,7 +364,12 @@ assouplissement de l'aplatissement. À décider avec le premier consommateur.
 - **Noge VFX** — graphe d'effets (émetteurs/forces/rendu). Cf. `Engine/Noge/ROADMAP.md`.
   ⚠️ `Engine/Noge/src/Noge/ECS/VisualScript/NkBlueprint.h` (header de spec 696
   lignes, aucun .cpp) devra être **réaligné sur NKGraph** au moment de son
-  implémentation — ne pas l'implémenter en silo.
+  implémentation — ne pas l'implémenter en silo. ⚠️ Son
+  `NkPinPrimitiveType { Exec, Float, … }` mélange **la famille et le type** :
+  c'est le piège que le cœur a écarté (`NkSocketFamily` est un **axe séparé**),
+  et il est mesuré par `exec/le-piege-du-type-exec`. À réaligner, pas à recopier.
+  ⚠️ Sa forme **non nodale** est décidée : un **module de bytecode** (section
+  ci-dessus) — **rien à construire aujourd'hui**.
 - **NKCode** — Blueprint + Scratch (`src/NKCode/{Graph,Blueprint,Blocks}/` =
   README seulement à ce jour) : NKCode devient un **client** de NKGraph comme les
   autres. ⚠️ NKCode est tenu par un autre agent — coordination nécessaire avant
@@ -260,7 +377,11 @@ assouplissement de l'aplatissement. À décider avec le premier consommateur.
 - **Kernel/AI** — graphe de modélisation procédurale (pilotable par prompt).
   Cf. `Kernel/AI/ROADMAP.md`.
 - **NkAnima M2** — anim graph / state machine (HFSM) éditables. Cf.
-  `Applications/NkAnima/ROADMAP.md`.
+  `Applications/NkAnima/ROADMAP.md`. ✅ **Le mur annoncé n'existe pas** : la
+  machine à états est **un nœud** du graphe d'animation (décision du 23/08,
+  section ci-dessus), ses cycles vivent dans son modèle interne, et **le cœur n'a
+  besoin de rien de neuf** pour la porter — mesuré par
+  `etats/la-machine-a-etats-est-un-noeud`.
 
 ## Dépendances
 
