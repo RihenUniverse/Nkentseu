@@ -40,3 +40,12 @@
 2026-08-24 | msaa/contrat-borne-exprimable | msaa-contrat @ b95c3a53 | [FAIL] NK_S32 et NK_S64 refuses sur les 16 combinaisons (exprimables, jamais honorables)
 2026-08-24 | msaa/contrat-non-puissance-de-2 | msaa-contrat @ b95c3a53 | [FAIL] 10 valeurs impossibles refusees sur les 16 combinaisons (dont 3 et 7)
 2026-08-24 | msaa/contrat-max-samples | msaa-contrat @ b95c3a53 | [FAIL] MaxSamples() honorable, et rien au-dessus ne l'est (16 combinaisons)
+2026-08-24 | chem/occurrence-non-classee | ce-chemins @ c2f48157 | [vu] l outil dit NON CLASSE
+2026-08-24 | chem/fichier-nomme | ce-chemins @ c2f48157 | [vu] le fichier est NOMME, pas seulement compte
+2026-08-24 | chem/chemin-cite | ce-chemins @ c2f48157 | [vu] le CHEMIN exact est cite
+2026-08-24 | chem/tolere-sans-note | ce-chemins @ c2f48157 | [vu] l outil dit TOLERE SANS NOTE
+2026-08-24 | chem/retour-au-vert-en-classant | ce-chemins @ c2f48157 | [vu] code 0 : on revient au vert en CLASSANT, pas en desactivant
+2026-08-24 | chem/tolerance-comptee | ce-chemins @ c2f48157 | [vu] le compte des tolerees est dit, la tolerance ne disparait pas du rapport
+2026-08-24 | chem/interdit-reste-rouge | ce-chemins @ c2f48157 | [vu] code 6 : « interdit » reste ROUGE, ce n est pas une case pour classer sans reparer
+2026-08-24 | chem/canari-perdu | ce-chemins @ c2f48157 | [vu] code 2 : ECHEC D INSTRUMENT, et surtout PAS un vert
+2026-08-24 | chem/plancher-lecture | ce-chemins @ c2f48157 | [vu] code 2 : un outil qui ne lit presque plus rien ne conclut pas

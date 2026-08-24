@@ -62,6 +62,13 @@
 #   verif_capacites.sh. Personne ne peut aujourd hui distinguer « il garde »
 #   de « il ne garde plus » pour ces quatorze-la.
 #
+#   ./verif_chemins.sh     refuse qu un script suivi ecrive a un chemin FIXE
+#   sous un repertoire temporaire partage. « Un chemin partage entre agents
+#   concurrents est une variable globale deguisee en fichier temporaire » :
+#   le 24/08, deux chantiers ont echange leurs messages de commit par ce
+#   moyen, et RIEN N A ECHOUE. Rouge de naissance sur deux fichiers reels,
+#   repares le jour meme.
+#
 # TROIS NIVEAUX DE GARANTIE SUR LA FRAICHEUR DU BINAIRE — dire lequel garantit
 # quoi fait partie du travail :
 #   --sans-construire  ne garantit RIEN sur la fraicheur. Utile pour rejouer une

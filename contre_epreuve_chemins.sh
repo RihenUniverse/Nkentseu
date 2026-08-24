@@ -19,7 +19,7 @@
 #   Il est cree puis « git add -N » : un script NON SUIVI n est deliberement pas
 #   examine par la garde, donc l injecter sans l enregistrer ne prouverait rien.
 #
-# LES SIX EPREUVES
+# LES SEPT EPREUVES
 #   N  un chemin fixe injecte, non classe      -> ECHEC code 6, fichier NOMME
 #   O  classe « tolere » SANS note             -> ECHEC code 6 : une tolerance
 #                                                 sans raison ecrite est le mot
@@ -45,7 +45,7 @@
 #   dans ce depot le 22/08, et ca a coute 49 lignes.
 #
 # CODES DE SORTIE
-#   0  les six epreuves passent
+#   0  les sept epreuves passent
 #   1  au moins une exigence non tenue
 #   2  refus de demarrer, ou restauration douteuse
 # =============================================================================
@@ -174,6 +174,26 @@ printf '%s\n' "$S" | grep -qF "un detecteur casse et un depot sain rendent la me
   || attendu "la raison n est pas dite" ko
 git checkout -- "$LISTE" 2>/dev/null
 
+# ---------------------------------------------------------------- T
+sep "EPREUVE T — le PLANCHER DE LECTURE : moins de 20 scripts examines"
+# On ne casse pas le depot pour eprouver ce controle : on pousse la DONNEE
+# (les arbres exclus) jusqu a l absurde. C est exactement ce que ferait un
+# .list mal edite, et c est le seul cas ou l outil lit presque rien tout en
+# ayant l air de fonctionner.
+git checkout -- "$LISTE" 2>/dev/null
+for pfx in s K A c R v g D p e b a T E .; do
+  printf '# EXCLU-ARBRE = %s
+' "$pfx" >> "$LISTE"
+done
+S="$(./verif_chemins.sh 2>&1)"; C=$?
+dire "   code de sortie : $C   (attendu : 2)"
+[ "$C" -eq 2 ] && attendu "code 2 : un outil qui ne lit presque plus rien ne conclut pas" ok                || attendu "code 2 attendu, obtenu $C" ko
+printf '%s
+' "$S" | grep -qF "script(s) examine(s)"   && attendu "il DIT combien de scripts il a examines" ok || attendu "le compte n est pas dit" ko
+printf '%s
+' "$S" | grep -qF "rendent la meme sortie verte"   && attendu "la raison est dite : rien trouve et rien lu se ressemblent" ok   || attendu "la raison n est pas dite" ko
+git checkout -- "$LISTE" 2>/dev/null
+
 # ---------------------------------------------------------------- S
 sep "EPREUVE S — retrait complet -> VERT et arbre identique"
 nettoyer
@@ -202,6 +222,7 @@ if [ "$ECHECS" -eq 0 ]; then
   dire "   P : tolere AVEC note          -> VERT 0, et la tolerance reste comptee"
   dire "   Q : interdit                  -> ECHEC 6, classer n est pas reparer"
   dire "   R : canari retire             -> ECHEC D INSTRUMENT 2, jamais un vert"
+  dire "   T : plancher de lecture       -> ECHEC D INSTRUMENT 2, et le compte est dit"
   dire "   S : apres retrait             -> vert, liste octet pour octet"
 else
   dire " CONTRE-EPREUVE RATEE — $ECHECS exigence(s) non tenue(s)."

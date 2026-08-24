@@ -40,6 +40,7 @@
 #     ignore-gpu      ./epreuve_ignore_gpu.sh
 #     msaa-contrat    ./epreuve_msaa_contract.sh
 #     ce-controles    ./contre_epreuve_controles.sh
+#     ce-chemins      ./contre_epreuve_chemins.sh
 #     aucune          PERSONNE NE SAIT LE FAIRE ROUGIR AUJOURD'HUI. Ce n'est pas
 #                     une case a remplir plus tard : c'est le resultat le plus
 #                     utile de ce fichier. Motif vide.
@@ -58,7 +59,7 @@
 #
 # PLAFOND-JAMAIS-ROUGE = 14
 #
-#   Mesure du 2026-08-24 : sur 45 controles inventories, 31 ont deja rougi sous
+#   Mesure du 2026-08-24 : sur 54 controles inventories, 40 ont deja rougi sous
 #   une epreuve et 14 n'ont jamais rougi. Ces 14 sont des HERITAGES - ecrits
 #   avant ce fichier. Le plafond les gele : on peut en resorber, on ne peut pas
 #   en ajouter en silence. Le relever est possible et c'est un geste DELIBERE
@@ -120,3 +121,14 @@ ctl/cliquet-rompu                | verif_controles.sh | que le stock de controle
 ctl/controle-neuf-nomme          | verif_controles.sh | compter un controle jamais rouge sans le NOMMER | ce-controles | le controle fantome est NOMME, pas seulement compte
 ctl/motif-introuvable-nul        | verif_controles.sh | enregistrer un rouge qu'on n'a pas vu (le defaut du chantier design, retourne) | ce-controles | aucune ligne de journal pour un motif introuvable
 ctl/cliquet-absent               | verif_controles.sh | un cliquet absent lu comme un cliquet satisfait | ce-controles | code 2 : ECHEC D'INSTRUMENT, jamais un vert
+
+# --- verif_chemins.sh — la garde des chemins partages entre agents ----------
+chem/occurrence-non-classee      | verif_chemins.sh | une ecriture a un chemin fixe sous un repertoire partage, sans ligne de classement | ce-chemins | l outil dit NON CLASSE
+chem/fichier-nomme               | verif_chemins.sh | compter une occurrence sans NOMMER le fichier | ce-chemins | le fichier est NOMME, pas seulement compte
+chem/chemin-cite                 | verif_chemins.sh | nommer le fichier sans citer le CHEMIN en cause | ce-chemins | le CHEMIN exact est cite
+chem/tolere-sans-note            | verif_chemins.sh | une tolerance sans raison ecrite (le mot qu on met pour faire taire l outil) | ce-chemins | l outil dit TOLERE SANS NOTE
+chem/retour-au-vert-en-classant  | verif_chemins.sh | revenir au vert en desactivant l outil plutot qu en classant | ce-chemins | on revient au vert en CLASSANT, pas en desactivant
+chem/tolerance-comptee           | verif_chemins.sh | qu une tolerance disparaisse du rapport (une tolerance oubliee redevient un defaut) | ce-chemins | la tolerance ne disparait pas du rapport
+chem/interdit-reste-rouge        | verif_chemins.sh | que « interdit » serve de case pour classer sans reparer | ce-chemins | reste ROUGE, ce n est pas une case pour classer sans reparer
+chem/canari-perdu                | verif_chemins.sh | un detecteur qui ne lit plus les fichiers et rend vert | ce-chemins | ECHEC D INSTRUMENT, et surtout PAS un vert
+chem/plancher-lecture            | verif_chemins.sh | conclure en n ayant presque rien lu | ce-chemins | un outil qui ne lit presque plus rien ne conclut pas
