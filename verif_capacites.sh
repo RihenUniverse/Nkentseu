@@ -604,10 +604,28 @@ awk -v fchamps="$TMP/champs.txt" -v fvoies="$TMP/voies.txt" \
           if (fic != ch_fic[cle] &&               code !~ ("[.][[:space:]]*" nom "([^A-Za-z0-9_]|$)") &&               code !~ ("->[[:space:]]*" nom "([^A-Za-z0-9_]|$)")) { horstype[cle]++; continue }
           # prise d adresse : ce n est pas une lecture, mais ce n est pas rien
           if (code ~ ("&[-A-Za-z0-9_.>()]*" nom "([^A-Za-z0-9_]|$)")) { adr[cle]++; continue }
-          if (code ~ (nom "[[:space:]]*([+][+]|--)")) { ecr[cle]++; continue }
-          if (code ~ (nom "[[:space:]]*([-+*/%|&^]|<<|>>)?=[^=]")) {
+          # ---- L ECRITURE AUSSI PASSE PAR LA VOIE D ACCES --------------------
+          # ⚠️ TROISIEME DEFAUT DU 2026-08-24, et il est ne de la correction des
+          # deux premiers. La ligne
+          #     srcStage |= toStage(bb[i].srcStage);
+          # contient DEUX choses : une variable LOCALE `srcStage` a gauche d un
+          # `|=`, et une VRAIE LECTURE du champ a droite. Le test d ecriture,
+          # cherchant `nom ... =` n importe ou sur la ligne, attrapait la locale
+          # et classait la ligne « ecriture » -- donc jamais « lecture ». Quatre
+          # champs REELLEMENT LUS (NkBufferBarrier / NkTextureBarrier ::srcStage
+          # et ::dstStage, lus en NkVulkanCommandBuffer.cpp:400-401 et 456-457)
+          # sortaient « ecrit-jamais-lu ». Des FAUX POSITIFS, trouves en
+          # contre-verifiant a la main les quinze candidats que la correction
+          # venait de faire apparaitre.
+          # La parade est la meme regle que pour la lecture : hors du fichier
+          # declarant, une ecriture de MEMBRE porte un « . » ou un « -> » juste
+          # devant le nom. `c.pipeline = X`, `mCaps.x = true` et l initialisation
+          # designee `{.pipeline = X}` la portent tous les trois.
+          anc = (fic == ch_fic[cle] ? "" : "[.>][[:space:]]*")
+          if (code ~ (anc nom "[[:space:]]*([+][+]|--)")) { ecr[cle]++; continue }
+          if (code ~ (anc nom "[[:space:]]*([-+*/%|&^]|<<|>>)?=[^=]")) {
             ecr[cle]++
-            if (code ~ (nom "[[:space:]]*=[[:space:]]*true")) prom[cle] = 1
+            if (code ~ (anc nom "[[:space:]]*=[[:space:]]*true")) prom[cle] = 1
             continue
           }
           lec[cle]++

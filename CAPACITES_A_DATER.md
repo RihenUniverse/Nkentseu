@@ -47,9 +47,9 @@ restaient `dette-datee | A-DATER`, `verif_capacites.sh` rendait `0`, et le cliqu
 lisait 24. *(Mesure : `non-examine` passe de 117 à 102 lignes.)*
 **Au 24/08 : une classe a bougé** (`NkRendererConfig::vsync`, refusée en
 `vision-assumee` par le détecteur lui-même) **et le plafond avec elle, 24 → 25.**
-Quinze lignes se sont ajoutées au fichier, dont quatorze en `vision-assumee`.
-`verif_capacites.sh` rend toujours `0`. *(Mesure : `non-examine` remonte à 115 —
-les quinze nouvelles ne sont pas examinées une par une, et le mot le dit.)*
+Onze lignes se sont ajoutées au fichier, dont dix en `vision-assumee`.
+`verif_capacites.sh` rend toujours `0`. *(Mesure : `non-examine` remonte à 111 —
+les nouvelles ne sont pas examinées une par une, et le mot le dit.)*
 
 ### La référence de la mesure, et son retard
 
@@ -610,19 +610,35 @@ défauts, mesurés et corrigés le 24/08 :
 assumée du détecteur. Un champ creux devenait donc invisible à cause d'une variable
 locale homonyme dans un autre fichier.
 
-**Mesure de la correction : 128 candidats → 143.** Quinze capacités qui existaient
-déjà et que l'outil ne montrait pas :
+**Mesure de la correction : 128 candidats → 143.**
+
+⚠️ **Et quatre de ces quinze étaient des FAUX POSITIFS** — trouvés en
+contre-vérifiant à la main, pas par un outil. `NkBufferBarrier::srcStage`,
+`::dstStage` et leurs deux jumeaux de `NkTextureBarrier` sont **réellement lus**
+(`NkVulkanCommandBuffer.cpp:400-401` et `:456-457`). La ligne
+
+```cpp
+srcStage |= toStage(bb[i].srcStage);   // une LOCALE à gauche, une VRAIE LECTURE à droite
+```
+
+contient les deux, et le test d'écriture — qui cherchait `nom … =` **n'importe où
+sur la ligne** — attrapait la locale. Un champ lu ressortait « écrit, jamais lu ».
+*Le troisième défaut du jour, et il est né de la correction des deux premiers.*
+Corrigé le même jour, par la même règle : **hors du fichier déclarant, une
+écriture de membre porte elle aussi un `.` ou un `->` juste devant le nom.**
+
+**Reste 139 candidats — onze capacités qui existaient déjà et que l'outil ne
+montrait pas :**
 
 | | |
 |---|---|
-| `NkBufferBarrier::dstStage` · `::srcStage` | `NkTextureBarrier::dstStage` · `::srcStage` |
 | `NkDrawIndexedIndirectArgs::firstIndex` · `::firstInstance` · `::indexCount` · `::vertexOffset` | `NkDrawIndirectArgs::firstVertex` · `::vertexCount` |
 | `NkFramebufferDesc::layers` | `NkIDevice::mipLevel` |
 | `NkRendererConfig::hdr` · `::pipeline` | `NkRendererConfig::vsync` ← **la 25e** |
 
-Quatorze se classent `vision-assumee` sans difficulté. **La quinzième ne le peut
-pas** : la règle (a) interdit `vision` dès qu'un drapeau annonce `true` à du code,
-et six démos livrées écrivent `rcfg.vsync = true`.
+Dix se classent `vision-assumee` sans difficulté. **La onzième ne le peut pas** :
+la règle (a) interdit `vision` dès qu'un drapeau annonce `true` à du code, et six
+démos livrées écrivent `rcfg.vsync = true`.
 
 > **Le cliquet s'oppose à la dérive silencieuse, pas à la décision.** Ce +1 n'est
 > pas une capacité nouvelle : c'est de l'héritage qui était invisible. Le compter

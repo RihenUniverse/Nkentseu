@@ -101,9 +101,14 @@
 #   comptait comme une lecture) et le repli « ce fichier nomme le type »
 #   attribuait au champ les VARIABLES LOCALES homonymes. Une seule fausse lecture
 #   suffisait a faire disparaitre un candidat.
-#   Resultat : 128 candidats -> 143. Quinze capacites qui existaient DEJA et que
-#   l outil ne montrait pas.
-#   Quatorze se classent « vision-assumee ». La quinzieme, NkRendererConfig::vsync,
+#   Resultat : 128 candidats -> 143. QUATRE de ces quinze etaient des FAUX
+#   POSITIFS, trouves en contre-verifiant a la main : NkBufferBarrier et
+#   NkTextureBarrier ::srcStage/::dstStage sont LUS (NkVulkanCommandBuffer.cpp
+#   :400-401 et :456-457) ; le test d ecriture attrapait une variable LOCALE
+#   homonyme a gauche d un « |= » sur la meme ligne. Corrige le meme jour : une
+#   ecriture de membre passe elle aussi par la voie d acces. Reste 139.
+#   ONZE capacites qui existaient DEJA et que l outil ne montrait pas.
+#   Dix se classent « vision-assumee ». La onzieme, NkRendererConfig::vsync,
 #   ne le peut pas : six demos livrees ecrivent rcfg.vsync = true, et la regle (a)
 #   INTERDIT « vision » des qu un drapeau annonce true a du code. Elle a raison.
 #   Les deux seules autres sorties etaient « implementee » (faux) et
@@ -141,8 +146,6 @@ NkBlendAttachment::dstAlpha                  | D2  | vision-assumee  |         |
 NkBlendAttachment::dstColor                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkBlendAttachment::srcAlpha                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkBlendAttachment::srcColor                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
-NkBufferBarrier::dstStage                    | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu ; detecte le 24/08 seulement (chaines de caracteres et variables locales homonymes comptees comme lectures avant correction)
-NkBufferBarrier::srcStage                    | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu ; detecte le 24/08 seulement (meme correction). A REGARDER AVEC SOIN : NkVulkanCommandBuffer.cpp:400 ecrit 'srcStage |= toStage(bb[i].srcStage)' -- une VARIABLE LOCALE homonyme y lit le champ. Si l attribution rate cette forme, ce candidat est un faux.
 NkClusterConfig::maxLightsPerCluster         | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkClusterConfig::tilesX                      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkClusterConfig::tilesY                      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
@@ -257,8 +260,6 @@ NkSwapchainDesc::hdr                         | D2  | vision-assumee  |         |
 NkSwapchainDesc::imageCount                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkSwapchainDesc::samples                     | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkSwapchainDesc::vsync                       | D2  | dette-datee     | A-DATER | B3. Examine le 23/08. 0 lecture, 0 ecriture. Point d entree mort : NkIDevice::CreateSwapchain (NkIDevice.h:474) rend nullptr en dur, 0 surcharge, 0 appelant. Abandon : RIEN. Recommandation : vision-assumee. ET UN DEFAUT A PART : NkSwapchainDesc est declaree DEUX FOIS dans le meme namespace (NkDescs.h:871 et NkISwapchain.h:25) avec des defauts differents - invisible parce que l unique include de NkISwapchain.h, NkRHI.h:11, est en commentaire.
-NkTextureBarrier::dstStage                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu ; detecte le 24/08 seulement
-NkTextureBarrier::srcStage                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu ; detecte le 24/08 seulement (voir la note de NkBufferBarrier::srcStage : meme forme d ecriture dans NkVulkanCommandBuffer.cpp:456)
 NkVertexAttribute::format                    | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkVertexAttribute::location                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkVertexAttribute::semanticIdx               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
