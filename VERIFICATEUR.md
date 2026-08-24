@@ -2166,3 +2166,90 @@ classe : le fantôme n'est jamais *exécuté*, seulement fabriqué, examiné, su
 **54 contrôles inventoriés, 40 ont déjà rougi, 14 jamais — le cliquet tient
 exactement à 14.** Les neuf nouveaux ont rougi **à la naissance**. *En inscrire un
 seul sans l'avoir vu rougir aurait abîmé le seul chiffre qui sert de cliquet.*
+
+---
+
+## Le coût de `mesurer()` — mesuré, et le résultat renverse la proposition
+
+J'avais proposé une fonction `mesurer()` qui **refuse de rendre une sortie quand le
+code de retour est non nul**, pour mes outils. Le coordinateur a demandé le coût
+avant de trancher, avec le bon critère : *« combien de tes bancs verts
+deviendraient rouges le jour où tu l'appliques — s'il est grand, ce n'est pas une
+garde, c'est une réécriture ; s'il est nul, demande-toi si elle peut rougir. »*
+
+### Les trois chiffres
+
+| | |
+|---|---|
+| **sites d'appel** | **80** substitutions affectées à une variable, dans 10 outils / 3 925 lignes. **56** tiennent sur une ligne, **24** s'étendent sur plusieurs — ces 24 ne sont pas instrumentables mécaniquement et ne sont **pas mesurées**. |
+| **rendent une sortie avec un code non nul aujourd'hui** | **0 sur les 20 sites instrumentés**, en passe verte des quatre gardes. |
+| **deviendraient rouges** | **au moins 1 garde sur 4**, mesurée. |
+
+### ⚠️ Le zéro du deuxième chiffre est un piège, et la contre-mesure le montre
+
+Ce `0` ne dit pas que les sites sont sûrs : il dit que **les fichiers d'entrée
+n'étaient pas vides ce soir-là**. J'ai donc mesuré le cas qui compte — un dépôt
+**sans aucune occurrence**, c'est-à-dire le cas « rien à signaler », celui qu'on
+veut le plus souvent :
+
+```
+=== depot SANS aucune occurrence ===
+[chem]   ok   0 occurrence(s), toutes classees      <- la garde rend 0, VERT
+
+=== codes des substitutions dans CETTE passe ===
+0|verif_chemins.sh:71    0|verif_chemins.sh:109
+0|verif_chemins.sh:85    0|verif_chemins.sh:132
+0|verif_chemins.sh:93    1|verif_chemins.sh:140     <- grep -c '' sur entree vide
+```
+
+`TOTAL=$(grep -c '' < "$TMP/hits.txt")` rend **la sortie juste (`0`) avec le code
+`1`**. Sous un `mesurer()` qui refuse tout code non nul, **cette passe verte
+deviendrait un ÉCHEC D'INSTRUMENT.**
+
+### La famille en cause, comptée
+
+**8 sites sur 80** appartiennent à la famille « non-zéro *est* la réponse juste » :
+
+```
+6 x  grep -c ''            rend « 0 » et code 1 sur une entree vide
+1 x  grep -v | grep -c     idem
+1 x  grep -m1 -F           rend vide et code 1 quand le motif est ABSENT
+```
+
+⚠️ **Le dernier est celui qui porte la discipline du journal** :
+`verif_controles.sh:156` est exactement le site qui permet d'écrire *« motif
+ABSENT, rien enregistré »*. Le refuser reviendrait à casser la règle que la
+fonction est censée servir.
+
+> **`grep` rend 1 pour dire « rien ». Et « rien » est une réponse, pas un échec.**
+> Une garde qui confond les deux ferait précisément ce que ce dispositif traque,
+> retourné : elle transformerait « rien à signaler » en « instrument cassé ».
+
+### Un troisième résultat, que je n'attendais pas : 3 sites ont déjà perdu leur code
+
+`$(grep … | head -1)` rend le code de **`head`**, toujours `0`. Sur
+`verif_bancs.sh:197`, `verif_bancs.sh:670` et `epreuve_ignore_gpu.sh:130`, le code
+de `grep` **est perdu avant que `mesurer()` puisse le voir**. La fonction n'y
+apporterait rien.
+
+📌 **Et ce qui protège ce dernier site n'est pas un code de retour** : si le `grep`
+ne trouve rien, `ligne_tab` est vide, le `case` tombe dans `*)`, et l'épreuve
+**échoue**. *La valeur vide ne peut pas satisfaire le contrôle suivant* — c'est une
+protection plus solide qu'un code de retour, parce qu'elle est structurelle.
+
+### Ce que je retiens, et ce que je ne construis pas
+
+**La proposition telle que je l'avais faite est mauvaise, et c'est la mesure qui
+le dit.** Refuser tout code non nul inverse la règle.
+
+Ce qui resterait défendable est plus petit et plus cher : une `mesurer()` à qui on
+**déclare** les codes acceptables (`mesurer 0,1 grep -c '' fichier`) — une
+déclaration, jamais une devinette. Coût : **80 sites à annoter, dont 24 à
+réécrire** parce qu'ils s'étendent sur plusieurs lignes.
+
+> **C'est une réécriture, pas une garde** — le critère est celui du coordinateur,
+> et il tranche contre ma propre proposition.
+
+**Rien n'est construit.** La faute d'origine — *stderr jeté, code 2 lu comme « 0
+candidat »* — reste sans garde mécanique, et c'est dit plutôt que masqué par une
+fonction qui aurait l'air d'en être une.
