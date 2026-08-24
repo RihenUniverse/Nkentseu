@@ -1,0 +1,27 @@
+2026-08-24 | cap/detection-D1 | ce-capacites @ 9e42c907 | [vu]   D1 nomme NkIDevice::GetNkCapFantomeLevel
+2026-08-24 | cap/detection-D2 | ce-capacites @ 9e42c907 | [vu]   D2 nomme NkDeviceCaps::nkCapFantome
+2026-08-24 | cap/candidat-non-classe | ce-capacites @ 9e42c907 | [vu]   code 4 (echec de classement)
+2026-08-24 | cap/classement-interdit | ce-capacites @ 9e42c907 | [vu]   l'outil dit CLASSEMENT INTERDIT, pas seulement « non classe »
+2026-08-24 | cap/date-vide-reste-rouge | ce-capacites @ 9e42c907 | [vu]   « dette-datee » a date VIDE reste rouge (un oubli n'est pas une dette datee)
+2026-08-24 | cap/cliquet-rompu | ce-capacites @ 9e42c907 | [vu]   l'outil dit CLIQUET ROMPU, et nomme le plafond
+2026-08-24 | cap/cliquet-absent | ce-capacites @ 9e42c907 | [vu]   sans directive de plafond : ECHEC D'INSTRUMENT (code 2), pas un vert
+2026-08-24 | cap/retour-au-vert-en-classant | ce-capacites @ 9e42c907 | [vu]   code 0 : on revient au vert en CLASSANT, pas en desactivant
+2026-08-24 | msaa/contrat-suit-les-drapeaux | msaa-contrat @ 9e42c907 | [FAIL] SupportsSamples(2/4/8/16) == le drapeau correspondant, 16 sur 16
+2026-08-24 | msaa/contrat-borne-exprimable | msaa-contrat @ 9e42c907 | [FAIL] NK_S32 et NK_S64 refuses sur les 16 combinaisons (exprimables, jamais honorables)
+2026-08-24 | msaa/contrat-non-puissance-de-2 | msaa-contrat @ 9e42c907 | [FAIL] 10 valeurs impossibles refusees sur les 16 combinaisons (dont 3 et 7)
+2026-08-24 | msaa/contrat-max-samples | msaa-contrat @ 9e42c907 | [FAIL] MaxSamples() honorable, et rien au-dessus ne l'est (16 combinaisons)
+2026-08-24 | bancs/ignore-troisieme-etat | ignore-gpu @ 9e42c907 | [OK]   verdict du banc : IGNORE
+2026-08-24 | bancs/ignore-code-declare | ignore-gpu @ 9e42c907 | [OK]   code de sortie du banc : 77
+2026-08-24 | bancs/ignore-compte | ignore-gpu @ 9e42c907 | [OK]   compte sur la ligne de verdict : present
+2026-08-24 | bancs/ignore-section | ignore-gpu @ 9e42c907 | [OK]   section IGNORES : presente
+2026-08-24 | bancs/ignore-avertissement | ignore-gpu @ 9e42c907 | [OK]   avertissement sous le verdict : present
+2026-08-24 | bancs/ignore-raison-lue-A | ignore-gpu @ 9e42c907 | [OK]   raison propre au defaut A : trouvee
+2026-08-24 | bancs/ignore-raison-lue-B | ignore-gpu @ 9e42c907 | [OK]   raison propre au defaut B : trouvee
+2026-08-24 | bancs/garde-projet-non-classe | ce-bancs @ 9e42c907 | [vu] code de sortie 3 (echec de classement)
+2026-08-24 | bancs/projet-nomme | ce-bancs @ 9e42c907 | [vu] le projet NOMME dans le rapport
+2026-08-24 | bancs/construction-echouee | ce-bancs @ 9e42c907 | construction echouee (jenga code 1) : ║                                 Compilation Error: main.cpp                                  ║
+2026-08-24 | bancs/ancien-binaire-non-lance | ce-bancs @ 9e42c907 | [vu] L'ANCIEN BINAIRE N'A PAS TOURNE (journal d'execution inchange)
+2026-08-24 | bancs/execution-echouee | ce-bancs @ 9e42c907 | [vu] le CODE DU BANC rapporte tel quel : 3
+2026-08-24 | bancs/cause-citee-construction | ce-bancs @ 9e42c907 | [vu] la premiere ligne significative du compilateur (exigence 5)
+2026-08-24 | bancs/cause-citee-execution | ce-bancs @ 9e42c907 | [vu] la premiere ligne significative de la SORTIE DU BANC (exigence 5)
+2026-08-24 | bancs/retour-au-vert | ce-bancs @ 9e42c907 | [vu] retour au code 0
