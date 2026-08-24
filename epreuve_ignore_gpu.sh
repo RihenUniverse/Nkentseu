@@ -38,6 +38,21 @@
 set -uo pipefail
 cd /d/Projets/2026/Nkentseu/Nkentseu-verif || exit 2
 
+# ⚠️ AUCUN CHEMIN SOUS /tmp. Mesure du 24/08, et le defaut n est pas theorique :
+# le chantier rendu a recu le message de commit d un AUTRE agent parce que les
+# deux composaient dans /tmp/msg.txt. Rien n a echoue -- c est un defaut
+# parfaitement silencieux.
+# Ici c etait PIRE que pour un libelle : ce fichier-la est celui que l epreuve
+# GREPPE pour decider si le controle a rougi. Un autre agent ecrivant au meme
+# chemin au meme instant aurait fait dire [OK] a cette epreuve sur la sortie de
+# quelqu un d autre -- et depuis le 24/08, verif_controles.sh ecrit une ligne de
+# JOURNAL sur la foi de ce grep. Un journal de preuves alimente par une variable
+# globale deguisee en fichier temporaire.
+# Build/ est ignore par git ET propre a CET arbre de travail : c est le seul
+# endroit ou deux agents ne peuvent pas se croiser.
+mkdir -p Build/Verif
+PASSE_LOG="Build/Verif/epreuve_ignore_passe.log"
+
 SRC="Applications/NkMsaaDeviceCheck/src/main.cpp"
 JOURNAL="Build/Verif/NkMsaaDeviceCheck.run.log"
 ECHECS=0
@@ -89,7 +104,7 @@ passe() {
   # Lance la passe sur CE banc seul. Elle construit depuis la source injectee :
   # pas de risque d'ancien binaire.
   ./verif_bancs.sh --mode complet --banc NkMsaaDeviceCheck --sans-capacites \
-    > /tmp/epr_ignore_passe.log 2>&1
+    > "$PASSE_LOG" 2>&1
   printf '%s' "$?"
 }
 
@@ -112,7 +127,7 @@ essai() {
   # le tableau. Meme faute que citer « [OK] ... aucune erreur » comme cause d'un
   # echec : chercher un MOT la ou il faut chercher une STRUCTURE.
   local ligne_tab
-  ligne_tab=$(grep -aE '^  NkMsaaDeviceCheck +(oui|non|saute) ' /tmp/epr_ignore_passe.log | head -1)
+  ligne_tab=$(grep -aE '^  NkMsaaDeviceCheck +(oui|non|saute) ' "$PASSE_LOG" | head -1)
   printf '  tableau : %s\n' "$ligne_tab"
   case "$ligne_tab" in
     *IGNORE*) exiger "verdict du banc" "IGNORE" "IGNORE" ;;
@@ -124,24 +139,24 @@ essai() {
   esac
 
   # La passe le COMPTE-T-ELLE et le NOMME-T-ELLE ? (le mandat)
-  if grep -aq '1 ignore(s)' /tmp/epr_ignore_passe.log; then
+  if grep -aq '1 ignore(s)' "$PASSE_LOG"; then
     exiger "compte sur la ligne de verdict" "present" "present"
   else
     exiger "compte sur la ligne de verdict" "present" "ABSENT"
   fi
-  if grep -aq 'IGNORES : ces bancs N ONT RIEN MESURE' /tmp/epr_ignore_passe.log; then
+  if grep -aq 'IGNORES : ces bancs N ONT RIEN MESURE' "$PASSE_LOG"; then
     exiger "section IGNORES" "presente" "presente"
   else
     exiger "section IGNORES" "presente" "ABSENTE"
   fi
-  if grep -aq "banc(s) IGNORE(S) : leur question n a pas ete posee" /tmp/epr_ignore_passe.log; then
+  if grep -aq "banc(s) IGNORE(S) : leur question n a pas ete posee" "$PASSE_LOG"; then
     exiger "avertissement sous le verdict" "present" "present"
   else
     exiger "avertissement sous le verdict" "present" "ABSENT"
   fi
 
   # La RAISON est-elle celle de CE chemin-la, lue dans la sortie du banc ?
-  if grep -aq "$motif" /tmp/epr_ignore_passe.log; then
+  if grep -aq "$motif" "$PASSE_LOG"; then
     exiger "raison propre au defaut $quoi" "trouvee" "trouvee"
   else
     exiger "raison propre au defaut $quoi" "trouvee" "ABSENTE (/$motif/)"

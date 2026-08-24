@@ -31,6 +31,13 @@
 # =============================================================================
 set -uo pipefail
 cd /d/Projets/2026/Nkentseu/Nkentseu-verif || exit 2
+# AUCUN CHEMIN SOUS /tmp -- voir la note de epreuve_ignore_gpu.sh : un chemin
+# partage entre agents concurrents est une variable globale deguisee en fichier
+# temporaire, et deux agents qui y ecrivent echangent leurs fichiers SANS QUE
+# RIEN N ECHOUE. Build/ est ignore par git et propre a CET arbre de travail.
+mkdir -p Build/Verif/epreuve_msaa
+JOURNALS="Build/Verif/epreuve_msaa"
+
 H="Kernel/Runtime/NKRHI/src/NKRHI/Core/NkIDevice.h"
 EXE="./Build/Bin/Debug-Windows/NkMsaaContractCheck/NkMsaaContractCheck.exe"
 
@@ -81,17 +88,17 @@ for d in A B; do
     printf '%s\n' "  ANCRE INTROUVABLE — l'epreuve ne mesure rien, on s'arrete."
     exit 2
   fi
-  jenga build --target NkMsaaContractCheck --config Debug > "/tmp/ep_build_$d.log" 2>&1
+  jenga build --target NkMsaaContractCheck --config Debug > "$JOURNALS/build_$d.log" 2>&1
   rcb=$?
   if [ "$rcb" -ne 0 ]; then
-    printf '%s\n' "  construction echouee (code $rcb) — voir /tmp/ep_build_$d.log"
+    printf '%s\n' "  construction echouee (code $rcb) — voir $JOURNALS/build_$d.log"
     restaurer
     continue
   fi
-  "$EXE" > "/tmp/ep_run_$d.log" 2>&1
+  "$EXE" > "$JOURNALS/run_$d.log" 2>&1
   rc=$?
   printf '%s\n' "  code de sortie du banc : $rc   (attendu : non nul)"
-  grep -aE '^\s+\[FAIL\]|^=== Resultat' "/tmp/ep_run_$d.log"
+  grep -aE '^\s+\[FAIL\]|^=== Resultat' "$JOURNALS/run_$d.log"
   restaurer
 done
 
@@ -103,7 +110,7 @@ if git diff --quiet -- "$H"; then
 else
   printf '%s\n' "  ATTENTION : $H differe encore"
 fi
-jenga build --target NkMsaaContractCheck --config Debug > /tmp/ep_build_C.log 2>&1
-"$EXE" > /tmp/ep_run_C.log 2>&1
+jenga build --target NkMsaaContractCheck --config Debug > $JOURNALS/build_C.log 2>&1
+"$EXE" > $JOURNALS/run_C.log 2>&1
 printf '%s\n' "  code apres restauration : $?   (attendu : 0)"
-grep -aE '^=== Resultat' /tmp/ep_run_C.log
+grep -aE '^=== Resultat' $JOURNALS/run_C.log
