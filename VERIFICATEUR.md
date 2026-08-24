@@ -1912,3 +1912,60 @@ ce que valait l'`ok` du chantier design.*
 ⚠️ Et le contrôle négatif passe **avant** le `trap … EXIT`. *Un filet armé avant
 son contrôle détruit ce que le contrôle refusait d'écraser* — c'est arrivé ici le
 22/08, ça a coûté 49 lignes.
+
+---
+
+## Passe `complet` du 24/08 — 13 bancs, 10 OK, 3 ÉCHEC, **0 IGNORÉ**
+
+Sur `feat/verificateur` **après fusion de `main`** (`0b918850`, 8 commits, conflit
+`.gitignore` résolu en gardant les deux blocs). *Remesurer sur une photo du matin
+aurait produit des chiffres crédibles et faux — ma propre leçon.*
+
+```
+VERDICT : ECHEC — 3 banc(s) en echec, 10 au vert, 0 ignore(s), 0 indetermine(s)
+mode complet : 13 banc(s) lance(s) sur 125 projet(s) classe(s)
+capacites : toutes classees        (139 candidats, 25 dettes A-DATER)
+```
+
+| banc | verdict | à qui |
+|---|---|---|
+| `NkGpuProbe` | ÉCHEC | **pas à moi** — et l'outil le situe tout seul (ci-dessous) |
+| `NkMsaaDeviceCheck` | ÉCHEC 4 OK / 5 FAIL | **il a raison de rester rouge** |
+| `NkMsaaVulkanCheck` | ÉCHEC 4 OK / 5 FAIL | **neuf, rouge dès sa naissance, et il a raison** |
+| les 10 autres | OK | |
+
+### `NkGpuProbe` — l'outil situe, il ne tranche pas
+
+```
+code de sortie 1 : [NkRHI_DX11][ERR] DX11 shader: manque le source HLSL (stage 0)
+⚠️ 1 branche(s) non fusionnee(s) touchent les fichiers accuses
+   ET en different encore aujourd'hui :
+   feat/rendu-temps-reel   (63 commit(s) inedit(s))
+     Kernel/Runtime/NKRHI/src/NKRHI/DirectX11/NkDirectX11Device.cpp
+```
+
+**Ce rouge-là peut disparaître par une fusion.** Les deux rouges MSAA, eux,
+portent *« branches non fusionnées : AUCUNE (16 examinées) — le défaut est bien
+sur CETTE référence »*. **L'outil dit l'absence aussi fort que la présence**, et
+c'est ce qui sépare « fusionne d'abord » de « cherche ici ».
+
+### ⚠️ Une anomalie que je n'explique pas, et je ne l'invente pas
+
+Sur la **première** passe complète (27 min, lancée en tâche de fond derrière un
+`timeout` et un `grep | tail`), une ligne parasite est apparue :
+
+```
+./verif_bancs.sh: line 914: ire: command not found
+```
+
+…et le rapport final était remplacé, dans le flux capturé, par la section
+`--liste`. **Non reproductible** : quatre relances de la même commande, avec et
+sans le même tuyau, donnent le rapport complet et aucune erreur. `bash -n` passe.
+Ma modification du jour sur ce fichier est **un bloc de commentaires**, vérifiable
+au diff.
+
+> **Je note l'observation sans lui donner de cause.** `ire` est `dire` amputé de sa
+> première lettre, ce qui *ressemble* à un flux tronqué par l'enveloppe de la
+> tâche de fond — mais « ça ressemble à » n'est pas une mesure, et *une supposition
+> consignée comme mesure se propage avec l'autorité d'une mesure.* Si ça revient,
+> ça se mesure ; en attendant, ça se dit.
