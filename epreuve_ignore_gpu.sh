@@ -179,6 +179,25 @@ else
   ECHECS=$((ECHECS + 1))
 fi
 
+
+# --- ET LE BINAIRE AUSSI, PAS SEULEMENT LA SOURCE ---------------------------
+# DEFAUT DE CETTE EPREUVE, MESURE LE 2026-08-24.
+# Elle restaurait la SOURCE et faisait `touch` -- ce qui suffit pour que le
+# PROCHAIN build recompile. Mais elle laissait sur le disque un EXECUTABLE
+# PORTEUR DU DEFAUT INJECTE. Un `verif_bancs.sh --sans-construire` lance apres
+# elle lit ce binaire-la : ce jour-la, NkMsaaDeviceCheck est ressorti IGNORE
+# avec la raison du defaut B, sur un depot parfaitement sain.
+# C EST LE DEFAUT FONDATEUR DE TOUT CE CHANTIER, pose par l epreuve censee le
+# traquer : « la compilation avait echoue et L ANCIEN BINAIRE avait tourne ».
+# Une epreuve ne laisse pas de piege derriere elle. Elle reconstruit.
+printf '\n=== RECONSTRUCTION (ne pas laisser un binaire menteur) ===\n'
+if jenga build --target NkMsaaDeviceCheck --config Debug > Build/Verif/epreuve_ignore_rebuild.log 2>&1; then
+  printf '  [OK]   binaire reconstruit depuis la source restauree\n'
+else
+  printf '  [FAIL] reconstruction ratee - un binaire porteur du defaut injecte\n'
+  printf '         reste sur le disque. Voir Build/Verif/epreuve_ignore_rebuild.log\n'
+  ECHECS=$((ECHECS + 1))
+fi
 printf '\n=== Resultat : %d exigence(s) non tenue(s) ===\n' "$ECHECS"
 if [ "$ECHECS" -eq 0 ]; then
   printf 'IGNORE est bien un troisieme etat : compte a part, nomme, et sa raison\n'

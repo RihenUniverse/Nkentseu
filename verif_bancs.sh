@@ -565,6 +565,13 @@ situer_echec() {
   calculer_branches
   local accuses b liste inter
   accuses="$(chemins_accuses "$banc" "$cause" | grep -av '^[[:space:]]*$' | sort -u)"
+  # ⚠️ COMBIEN DE FICHIERS DE CODE la ligne de cause a-t-elle vraiment livres ?
+  # `chemins_accuses` rend TOUJOURS « Applications/<banc>/ ». Si c'est tout ce
+  # qu'elle rend, l'outil n'a RIEN a chercher -- et son silence n'est pas une
+  # information sur le depot, c'est une information sur lui-meme.
+  local nb_code
+  nb_code="$(printf '%s
+' "$accuses" | grep -acE '\.(h|hpp|cpp|inl|c)$')"
   if [ -z "$accuses" ]; then
     dire "    (aucun chemin accuse identifiable dans la ligne de cause)"
     return 0
@@ -582,9 +589,34 @@ situer_echec() {
 
   local n=$(( ${#avec[@]} + ${#sans[@]} ))
   if [ "$n" -eq 0 ]; then
+    # ⚠️ DEUX SILENCES DIFFERENTS, ET LES CONFONDRE A COUTE UNE FAUSSE CERTITUDE
+    # LE 2026-08-24. NkMsaaVulkanCheck est tombe avec la ligne de cause
+    # « [FAIL] 3 echantillons : le contrat REFUSE, la carte ACCEPTE. » — pas un
+    # seul nom de fichier dedans. `chemins_accuses` n'a donc rendu que le
+    # dossier du banc, aucune branche ne le touche, et l'outil a repondu
+    # « AUCUNE ... le defaut est bien sur CETTE reference. Ne perds pas une
+    # heure a fusionner. »
+    # C'ETAIT FAUX : feat/rendu-temps-reel portait deja, dans 9b774ab8, la
+    # requete reelle de framebufferColorSampleCounts sur les trois backends qui
+    # ecrivaient `mCaps.msaa2x = msaa4x = msaa8x = true` en dur -- soit la moitie
+    # exacte de ce que le banc accusait.
+    # « Un outil qui situe peut accuser plus fort qu'un outil qui se tait » :
+    # ici il a RASSURE plus fort qu'un outil qui se tait, ce qui est le meme
+    # defaut retourne. Il ne peut pas dire « le defaut est bien ici » quand il
+    # n'avait aucun fichier a confronter.
+    if [ "${nb_code:-0}" -eq 0 ]; then
+      dire "    branches non fusionnees : RIEN CHERCHE, et ce n'est pas AUCUNE."
+      dire "      La ligne de cause de ce banc ne nomme AUCUN fichier de code ; il n'y"
+      dire "      avait donc rien a confronter aux ${#BR_FICHIERS[@]} branche(s)."
+      dire "      ⚠️ Ne lis pas ce silence comme « le defaut est sur cette reference » :"
+      dire "      c'est un silence sur MON montage, pas sur le depot. Si le banc peut"
+      dire "      citer le fichier qu'il met en cause dans sa sortie, il le doit."
+      return 0
+    fi
     dire "    branches non fusionnees touchant les fichiers accuses : AUCUNE"
-    dire "      (${#BR_FICHIERS[@]} branche(s) examinee(s)) — le defaut est bien sur CETTE"
-    dire "      reference. Ne perds pas une heure a fusionner avant de chercher."
+    dire "      (${#BR_FICHIERS[@]} branche(s) examinee(s), $nb_code fichier(s) de code"
+    dire "      confronte(s)) — le defaut est bien sur CETTE reference."
+    dire "      Ne perds pas une heure a fusionner avant de chercher."
     return 0
   fi
 
