@@ -1,4 +1,4 @@
-# Les 25 capacités `A-DATER` — de quoi trancher en dix minutes
+# Les 25 capacités `A-DATER` — arbitrées le 24/08 : « tout implémenter »
 
 > **À qui c'est destiné.** À Rodolf, et à personne d'autre. Les 25 lignes classées
 > `dette-datee | A-DATER` dans `config/capacites.list` portent une échéance qui
@@ -665,3 +665,180 @@ comme un inventaire complet, ce qu'ils ne sont pas.
 rien des branches non fusionnées : si une branche en cours implémente le
 chronométrage GPU ou monte la passe SSR, **ce document l'ignore**. C'est la
 même limite que celle du vérificateur de bancs, et elle vaut ici mot pour mot.
+
+---
+
+# L'arbitrage du 24/08 : « tout implémenter » — et ce que ça coûte, mesuré
+
+> **Rodolf, 24/08** : *« tout implémenter progressivement sauf si tu juges que ça
+> ne vaut pas la peine, mais mieux tout implémenter. »*
+
+⚠️ **Ce document était écrit pour l'objectif inverse.** Il optimisait pour
+**réduire le stock de dettes** (24 → 5) : la moitié de ses recommandations
+disaient « abandonner » ou « vision ». Rodolf optimise pour **construire le
+moteur**. Les deux sont légitimes ; c'est la sienne qui compte. **Les
+recommandations des fiches ci-dessus sont donc périmées** — chaque ligne de
+`config/capacites.list` porte désormais son arbitrage en tête de sa note, et son
+ancienne recommandation a été retirée. *Une recommandation d'abandon laissée sous
+une décision de construction recruterait le prochain lecteur contre la décision.*
+
+## 🔴 Les deux réserves n'ont pas pu être enregistrées comme demandé
+
+`logicOp` et `shaderFloat16` devaient passer en `vision-assumee`. **Le détecteur a
+refusé, code 4, et il a raison :**
+
+```
+NkDirectX11Device.cpp:1746   mCaps.logicOp = true;          (en dur)
+NkVulkanDevice.cpp:2469      mCaps.logicOp = feats.logicOp;
+NkVulkanDevice.cpp:2474      mCaps.shaderFloat16 = true;    // approximation
+```
+
+> **Un « non » posé ne suffit pas tant que le code continue de promettre « oui ».**
+
+Décider de ne pas implémenter `logicOp` ne retire rien au fait que DX11 répond
+**oui** à qui le demande à l'exécution. La réserve n'est donc pas un classement :
+c'est une **tâche**, petite, dans les backends — passer `DX11:1746` et `VK:2474` à
+`false`. **Hors de mon périmètre.** Les deux lignes restent `dette-datee | A-DATER`
+et **le cliquet ne bouge pas : 25.** Il descendra de deux le jour où les drapeaux
+se tairont.
+
+📌 C'est la première fois que la règle (a) mord sur un cas que personne n'avait
+anticipé : elle a été écrite pour empêcher de classer « vision » un **mensonge**,
+elle vient d'empêcher de classer « vision » un **renoncement honnête mais
+incomplet**. C'est le même service.
+
+---
+
+## Le coût de l'ordre proposé — mesuré, ou marqué « non mesuré »
+
+| | chantier | fichiers | backends | API publique |
+|---|---|---|---|---|
+| **1** | B4 `IBLConfig::enabled` | **1** | **0** | inchangée |
+| **2** | D2-D6 `NkDeviceCaps` | **4** (+1 à revoir) | DX11, DX12, GL, VK | inchangée |
+| **3** | C5+B3 `vsync` | **2** | Vulkan seul | inchangée |
+| **4** | C1 `debugOverlay` | **non mesuré** | — | non mesuré |
+| **5** | F1-F5 chronométrage GPU | **8 à 10** | les 4 | inchangée |
+| **6** | B5, B6 `dof`, `motionBlur` | **2** | 0 (shaders déjà là ×5) | inchangée |
+| **7** | D1, B1 tessellation, bindless | D1 non mesuré · B1 **tout** | tous | D1 inchangée · **B1 change** |
+
+### 1 · B4 `NkIBLConfig::enabled` — une ligne, et rien d'autre
+
+`InitEnvironment()` (`NkRendererImpl.cpp:363`) lit **onze** champs voisins de
+`mCfg.ibl` et ne lit jamais `enabled`. Le correctif est un `if` en tête.
+
+**Ce que j'ai vérifié avant de l'appeler « un simple `if` »** — parce que ma fiche
+le disait déjà, et qu'une affirmation non mesurée m'a déjà coûté un chiffre cette
+semaine :
+
+- `mEnvironment` devient nul si on saute l'init. Ses **trois** déréférencements
+  dans `NkRender3D.cpp` sont **tous gardés** : `if (mEnv)` (:388),
+  `if (!mDevice || !mEnv) return` (:450), `mEnv && …` (:2496). **Aucun nu.**
+- `GetEnvironment()` (`NkRenderer.h:97`, API publique) rend déjà un pointeur qui
+  **peut** être nul (`mEnvironment.Reset()` :614) et a **0 appelant** dans l'arbre.
+- Les deux appelants de `InitEnvironment()` (:202 et :540) traitent `true` comme
+  « rien à faire » — un retour anticipé `true` est donc correct.
+
+⚠️ **Et une chose que la fiche ne disait pas** : **0 écriture** de `ibl.enabled`
+aujourd'hui. Personne ne le met à `false`, donc le `if` ne changera rien pour
+personne **tant qu'un banc ne l'exercera pas**. *Livrer le `if` sans le banc, ce
+serait ajouter une capacité dont on ne saura pas si elle marche.*
+
+### 2 · D2-D6 `NkDeviceCaps` — 19 littéraux à transformer en interrogations
+
+```
+DX11   6 sites : 1740 1741 1743 1744 1745 1747
+DX12   6 sites : 3005 3006 3008 3009 3010 3011
+GL     6 sites : 1029 1030 1031 1032 1033 1035
+VK     1 site  : 2466 (drawIndirect = true, le seul en dur de Vulkan)
+```
+
+📌 **Vulkan interroge déjà pour cinq des six** (`feats.tessellationShader`,
+`feats.geometryShader`, `feats.multiViewport`, `feats.independentBlend`,
+`feats.textureCompressionBC`). **Le patron existe** : c'est de la recopie
+disciplinée, pas de la conception.
+
+`NkSoftwareDevice.cpp` écrit des littéraux **honnêtes** (`false` pour
+`drawIndirect` :732 et `multiViewport` :733) — à laisser. ⚠️ Sauf
+`independentBlend = true` (:734), qui est une affirmation et pas une mesure : à
+examiner à part.
+
+### 3 · C5+B3 `vsync` — la machinerie existe, le fil n'est pas branché
+
+La vsync **fonctionne** au niveau RHI — mais elle est alimentée par
+`NkContextDesc`, pas par `NkRendererConfig` :
+
+```
+NkDirectX11Device.cpp:123   mVsync = dxCfg.vsync;               deja honore
+NkOpenglDevice.cpp:416      init.context.opengl.swapInterval    deja honore
+NkVulkanDevice.cpp:783      VK_PRESENT_MODE_FIFO_KHR            FORCE EN DUR
+```
+
+Manque : **le routage** dans `NkRendererImpl`, et **le choix du present mode**
+côté Vulkan — dont la liste des modes disponibles est déjà interrogée
+(`:776-778`) puis **ignorée**. DX11 et OpenGL n'ont rien à faire une fois le
+routage posé.
+
+**B3** (`NkSwapchainDesc::vsync`) reste **bloqué** tant que
+`NkIDevice::CreateSwapchain` (`:474`) rend `nullptr` en dur.
+
+### 4 · C1 `debugOverlay` — non mesuré, et c'est la réponse
+
+**Aucun sous-système d'overlay n'existe côté NKRenderer.**
+(`RenderInputDebugOverlay()` de NKEvent est autre chose : du débogage d'entrées.)
+C'est une **construction**, pas un branchement — je ne peux pas la chiffrer sans
+la concevoir, et je ne l'estime pas de tête.
+
+⚠️ **Elle est mal placée en position 4** : les positions 1 à 3 sont des
+branchements de quelques lignes, celle-ci est un chantier. Je la déplacerais
+après le groupe F.
+
+### 5 · F1-F5 chronométrage GPU — tout est à écrire, et rien n'est en trop
+
+```
+NkIDevice.h:410-421   les 4 virtuelles existent deja
+surcharges dans les backends ......................... 0
+vkCmdWriteTimestamp / D3D12_QUERY_TYPE_TIMESTAMP /
+D3D11_QUERY_TIMESTAMP / glQueryCounter dans l arbre ... 0
+```
+
+**API publique inchangée** — les quatre virtuelles sont déjà là, il n'y a que des
+surcharges à écrire. Mais il n'existe **aucune** ligne de code de requête
+temporelle dans le dépôt : pool, reset, résolution, conversion, tout est à faire,
+sur quatre backends.
+
+`GetTimestampPeriodNs()` rend `1.f`. La vraie valeur est à portée **partout** :
+`props.limits.timestampPeriod` (VK), `GetTimestampFrequency` (DX12), requête
+disjoint (DX11), `GL_TIMESTAMP` (GL). *C'est la ligne qui rend un nombre crédible
+et faux à l'instrument censé mesurer le GPU.*
+
+### 6 · B5, B6 `dof`, `motionBlur` — les shaders sont écrits, la passe manque
+
+Les deux ont leurs shaders pour **cinq backends** (DX11, DX12, GL, MSL, VK).
+⚠️ Et ils sont **versionnés en double** :
+`Resources/NKRenderer/Shaders/PostProcess/{DOF,MotionBlur}/` **et**
+`Kernel/Runtime/NKRenderer/src/NKRenderer/Shaders/PostProcess/{DOF,MotionBlur}/`.
+
+Manque : la passe C++ dans `NkPostProcessStack` — **exactement le travail que SSR
+vient de recevoir le 23/08**. Le patron existe et il est frais. C'est le meilleur
+rapport entre ce qui est déjà écrit et ce qui reste à écrire.
+
+### 7 · D1, B1 — le plus lourd, et les deux ne se ressemblent pas
+
+**D1 tessellation** — plomberie partielle, mesurée : `NK_PATCH_LIST` (DX12:3341,
+3355 ; GL:3222), `NK_TESS_CTRL` / `NK_TESS_EVAL` (GL:3237,3239),
+`patchControlPoints` (`NkDescs.h:687`), et **NkSL connaît déjà les étages**
+(`NkGLSLCompiler.cpp:35-37`, `NkSLCodeGenAdvanced.cpp:277-297`).
+**NON MESURÉ** : si le chemin est complet de bout en bout.
+
+**B1 bindless** — `isBindless` et `NkBindlessHeapDesc` ne vivent que dans **trois
+en-têtes** (`NkIDevice.h`, `NkDescs.h`, `NkTypes.h`). **Aucune implémentation de
+backend.** C'est de la **surface pure** : tout est à écrire, et c'est **le seul
+des sept qui change l'API publique**.
+
+---
+
+## Ce que je n'ai pas fait
+
+**Je n'ai touché à aucun backend.** D2→D6 et F1→F5 vivent où le chantier du
+retournement Y travaille en ce moment. Ce document classe, chiffre et écrit ;
+l'implémentation part quand la zone est libre.
