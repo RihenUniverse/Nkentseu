@@ -2057,3 +2057,112 @@ Et les deux bancs MSAA portent desormais la phrase juste :
 ```
   branches non fusionnees : RIEN CHERCHE, et ce n'est pas AUCUNE.
 ```
+
+---
+
+## `verif_chemins.sh` — aucun script n'écrit à un chemin partagé
+
+> **Un chemin partagé entre agents concurrents est une variable globale déguisée
+> en fichier temporaire.**
+
+Le 24/08, le commit `9b774ab8` du chantier rendu s'est retrouvé avec le **message
+d'un autre agent** et ses douze fichiers à lui. Les messages étaient composés dans
+un fichier au chemin fixe sous `/tmp`, partagé par tous les agents de la machine.
+Deux qui écrivent au même instant échangent leurs contenus — **et rien n'échoue**.
+Aucun code de retour, aucun journal, aucune trace.
+
+**Le même défaut vivait chez moi, à un pire endroit.** `epreuve_ignore_gpu.sh`
+écrivait sa sortie à un chemin fixe sous `/tmp` — et c'est le fichier que
+l'épreuve **greppe pour décider si un contrôle a rougi**, donc ce que
+`verif_controles.sh` inscrit ensuite au **journal des preuves**.
+
+### Pourquoi cette règle, et pas celle du libellé de commit
+
+Une règle *« le message décrit-il son contenu ? »* a été mesurée et **marche** :
+sujet dupliqué + fichiers disjoints, elle a retrouvé le cas seule, première de la
+liste, sur 2 195 commits. Mais :
+
+| | |
+|---|---|
+| elle voit | la **copie** d'un libellé |
+| elle ne voit pas | le **déplacement** — fichier écrasé avant le commit de la victime : aucun doublon, règle verte sur un vol réel |
+| elle arrive | **après** le dégât |
+
+La règle sur la cause **empêche** : le chemin partagé *est* le dégât, et il se
+voit avant d'avoir servi. *Décrite mais non construite, la règle du libellé reste
+en Q9 — c'est le bon statut.*
+
+### La règle, exacte, et le sens dans lequel elle a le droit de se tromper
+
+Une ligne compte si, après avoir écarté les lignes **entièrement** commentées,
+elle contient `/tmp/<nom>` **non précédé d'un caractère de chemin**.
+
+⚠️ **On n'écarte que les lignes dont le premier caractère non blanc ouvre un
+commentaire — jamais un commentaire de fin de ligne.** Ici, trop retirer ferait
+**manquer une vraie écriture**. C'est **l'inverse** du choix fait dans
+`verif_capacites.sh`, où trop retirer ne fait qu'ajouter des candidats à classer.
+
+> **Savoir dans quel sens on a le droit de se tromper est la moitié de la règle.**
+
+L'ancrage écarte `/data/local/tmp/` — chemin d'un **périphérique Android**. Sans
+lui, `Tools/nkdeploy.py` sortait à tort.
+
+### ⚠️ Mon chiffre de la veille était faux, et je le corrige avant qu'on me le demande
+
+J'avais annoncé au coordinateur **« un seul fichier sur 118 »**. Mon `grep`
+exigeait `(>|>>|=|\()` juste avant `/tmp/` : il manquait `mkdir -p /tmp/…` et
+`-o /tmp/…`. La vraie population : **deux fichiers à nous, sept lignes**, plus
+deux lignes de tiers vendorisé. *Un coût sous-mesuré est un coût faux, et il a
+servi à emporter une décision.*
+
+### Les deux parades contre le vert mensonger — et le canari a servi tout de suite
+
+**Le canari** : une ligne de l'en-tête porte un vrai chemin fixe et le jeton
+`NKCANARI-TMP` ; ne plus la retrouver rend **2**, jamais 0. Seules les *lignes*
+portant le jeton sont exclues du verdict, pas le fichier.
+
+📌 **Il a servi à la première seconde** : le tout premier lancement a rendu `2`
+parce que `verif_chemins.sh` n'était pas encore suivi par git, donc invisible à
+`git ls-files`. **Il a refusé de conclure au lieu de rendre un vert vide.**
+
+**Le plancher de lecture** : moins de 20 scripts examinés = l'outil ne lit plus le
+dépôt, et il le dit.
+
+### Le rouge de naissance, sur des cas réels
+
+```
+code 6 — 7 occurrences non classees
+  Kernel/Runtime/NKXR/tests/build_tests.sh      -> /tmp/nkxrtests   (4)
+  Kernel/System/NKLogger/tests/build_bench.sh   -> /tmp/nklogbench  (3)
+```
+
+Deux agents lançant ces bancs en même temps écrasent le même `.exe`.
+**Réparés, pas classés** — ils écrivent sous `Build/Tests/`, et la ligne de
+`NKLogger/ROADMAP.md` qui documentait le chemin suit.
+
+> **Un premier rouge qu'on classe au lieu de réparer apprend à l'équipe que le
+> fichier de classement sert à faire taire l'outil.**
+
+### La contre-épreuve s'est fait attraper par la règle qu'elle teste
+
+`verif_chemins.sh` a rougi sur `contre_epreuve_chemins.sh` : la chaîne du fantôme
+y est écrite en clair. **Deux sorties, une seule honnête** — cacher la chaîne (la
+construire par morceaux) apprendrait à la garde à ne pas voir sa propre épreuve.
+Classée `tolere` **avec sa raison**, et c'est le premier usage légitime de cette
+classe : le fantôme n'est jamais *exécuté*, seulement fabriqué, examiné, supprimé.
+
+### Sept épreuves, toutes vues
+
+| | attendu | vu |
+|---|---|---|
+| **N** chemin fixe non classé | ÉCHEC 6 | ✅ fichier **et** chemin nommés |
+| **O** `tolere` sans note | ÉCHEC 6 | ✅ |
+| **P** `tolere` avec note | VERT 0 | ✅ et la tolérance reste **comptée** |
+| **Q** `interdit` | ÉCHEC 6 | ✅ classer n'est pas réparer |
+| **R** canari retiré | ÉCHEC D'INSTRUMENT 2 | ✅ jamais un vert |
+| **T** plancher de lecture | ÉCHEC D'INSTRUMENT 2 | ✅ et le compte est dit |
+| **S** après retrait | VERT 0 | ✅ liste **octet pour octet** |
+
+**54 contrôles inventoriés, 40 ont déjà rougi, 14 jamais — le cliquet tient
+exactement à 14.** Les neuf nouveaux ont rougi **à la naissance**. *En inscrire un
+seul sans l'avoir vu rougir aurait abîmé le seul chiffre qui sert de cliquet.*
