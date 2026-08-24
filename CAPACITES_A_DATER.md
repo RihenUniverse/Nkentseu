@@ -1,6 +1,6 @@
-# Les 24 capacités `A-DATER` — de quoi trancher en dix minutes
+# Les 25 capacités `A-DATER` — de quoi trancher en dix minutes
 
-> **À qui c'est destiné.** À Rodolf, et à personne d'autre. Les 24 lignes classées
+> **À qui c'est destiné.** À Rodolf, et à personne d'autre. Les 25 lignes classées
 > `dette-datee | A-DATER` dans `config/capacites.list` portent une échéance qui
 > **lui appartient** : le vérificateur les nomme à chaque passage et refuse
 > d'inventer une date à sa place. Ce document existe parce que « les 24 dates »
@@ -9,7 +9,7 @@
 >
 > **Comment s'en servir.** Le document est trié par la **quatrième colonne** —
 > *si on l'abandonne* — du plus facile au plus difficile. Les **groupes A à C**
-> (12 lignes) se tranchent d'affilée par oui/non. Les **groupes D à F**
+> (13 lignes) se tranchent d'affilée par oui/non. Les **groupes D à F**
 > (12 lignes) demandent un vrai arbitrage, et c'est là qu'il faut réfléchir.
 > Chaque ligne porte une **recommandation** : la réponse attendue est
 > « oui » ou « non », jamais une date inventée depuis rien.
@@ -23,9 +23,17 @@
 | **il est** | un relevé d'appelants **comptés un par un** dans l'arbre, à la commande, avec fichier et ligne |
 | **il n'est pas** | un jugement sur la valeur produit d'une capacité. Cette part est à Rodolf, elle n'est pas mesurable ici. |
 
-⚠️ **Je n'ai daté aucune ligne et je n'ai pas touché au plafond du cliquet**
-(`# PLAFOND-A-DATER = 24`). *Un contrôle qui modifie sa propre donnée sans que
-personne ne le voie a cessé d'être un contrôle.*
+⚠️ **Je n'ai daté aucune ligne.** *Dater à la place de Rodolf serait produire un
+chiffre crédible et faux — précisément ce qu'on traque.*
+
+⚠️ **Le plafond du cliquet, lui, a bougé — et il faut le lire ici plutôt que dans
+un diff.** Le 23/08 il valait `# PLAFOND-A-DATER = 24` et je n'y avais pas touché.
+**Le 24/08 je l'ai relevé à 25**, délibérément, parce que la correction d'un défaut
+de mon propre détecteur a fait apparaître quinze capacités qu'il ne voyait pas —
+dont une que la règle (a) interdit de classer autrement. **Le raisonnement entier
+est en bas de ce document**, section « Pourquoi elles sont 25 et non plus 24 ».
+*Un contrôle qui modifie sa propre donnée sans que personne ne le voie a cessé
+d'être un contrôle : c'est pour ça que ce paragraphe existe.*
 
 **Ce que j'ai changé dans `config/capacites.list`, et rien d'autre : les notes
 des 24 lignes.** Elles portaient `non-examine` — la mention qui existe
@@ -34,9 +42,14 @@ jugement. Je les ai examinées : **laisser le mot serait une fausse déclaration
 dans le fichier dont le métier est de ne pas en porter**, et la politique du
 fichier demande explicitement à l'agent qui passe de corriger sa ligne. Chaque
 note dit maintenant le compte d'appelants, ce qui casse, et la recommandation.
-**Aucune classe, aucune date, aucun plafond n'a bougé** : les 24 restent
-`dette-datee | A-DATER`, `verif_capacites.sh` rend toujours `0`, et le cliquet
-lit toujours 24. *(Mesure : `non-examine` passe de 117 à 102 lignes.)*
+**Au 23/08, aucune classe, aucune date, aucun plafond n'avait bougé** : les 24
+restaient `dette-datee | A-DATER`, `verif_capacites.sh` rendait `0`, et le cliquet
+lisait 24. *(Mesure : `non-examine` passe de 117 à 102 lignes.)*
+**Au 24/08 : une classe a bougé** (`NkRendererConfig::vsync`, refusée en
+`vision-assumee` par le détecteur lui-même) **et le plafond avec elle, 24 → 25.**
+Quinze lignes se sont ajoutées au fichier, dont quatorze en `vision-assumee`.
+`verif_capacites.sh` rend toujours `0`. *(Mesure : `non-examine` remonte à 115 —
+les quinze nouvelles ne sont pas examinées une par une, et le mot le dit.)*
 
 ### La référence de la mesure, et son retard
 
@@ -267,6 +280,34 @@ obtenir quelque chose.** Rien ne casse à l'abandon, mais quelqu'un sera détrom
 > déjà, les shaders des deux backends existent : ce qui manque est la passe C++,
 > pas l'algorithme. C'est le plus « avancé » des trois post-traitements creux
 > (SSR / DOF / motion blur) — si tu n'en dates qu'un, date celui-ci.
+
+## C5 · `NkRendererConfig::vsync` — **la 25e, et elle n'existait pas hier**
+
+| | |
+|---|---|
+| **quoi** | « Le rendu attend-il le balayage de l'écran avant de présenter une image ? » — la synchronisation verticale, réglée depuis la config du *renderer*. |
+| **où** | `NkRendererConfig.h:369`. |
+| **qui s'en sert** | **0 lecture. 24 écritures**, dont **six écrivent `true` par la voie `rcfg`** dans du code livré : `Sandbox/src/DemoNkentseu/Base01/` `main9.cpp:178`, `main11.cpp:73`, `main12.cpp:72`, `main13.cpp:72`, `main14.cpp:72`, `main15.cpp:70`. Et `NkRendererImpl.cpp:1643` l'**écrit** aussi (`mCfg.vsync = e`) sans que personne ne le relise. |
+| **si on l'abandonne** | **Rien ne casse.** Les six démos continuent exactement comme aujourd'hui : elles n'ont jamais rien reçu. |
+
+⚠️ **Les homonymes sont nombreux, et EUX sont bien lus.** `dxCfg.vsync`
+(`NkDirectX11Device.cpp:123`, `NkDirectX12Device.cpp:110`), `desc.dx11/dx12.vsync`
+(NKCanvas), `context.config.vsync` (`NkContext.cpp:1395`), `winCfg.vsync` et
+`contextConfig.vsync` (`NkWindowConfig`, `NkContextDesc`). **La vsync du moteur
+fonctionne — par ces chemins-là.** Celui de `NkRendererConfig` est le seul qui ne
+mène nulle part.
+
+> 📌 **Recommandation : `abandonner`, ou honorer en même temps que
+> `NkRendererConfig::msaaSamples` (E1) et `NkRendererConfig::pipeline`.** Même
+> structure, même silence : trois champs de la config du *renderer* que du code
+> livré règle et que le *renderer* ne lit pas.
+
+⚠️ **Pourquoi cette ligne ne pouvait pas être classée `vision-assumee`.** La règle (a)
+l'interdit dès qu'un drapeau annonce `true` à du code, et **le détecteur a refusé
+le classement** que je lui avais donné. Il avait raison : six fichiers livrés
+écrivent `rcfg.vsync = true`. Les deux seules autres sorties étaient
+`implementee` (faux) et `morte-a-retirer` (une décision produit qui n'est pas la
+mienne). D'où le **+1 sur le cliquet**, expliqué ci-dessous.
 
 ## C4 · `NkDeviceCaps::shaderFloat16`
 
@@ -536,6 +577,61 @@ cliquet ne descend que dans le sens autorisé ; il n'a pas été touché par ce
 document.
 
 ---
+
+---
+
+## Pourquoi elles sont 25 et non plus 24 — le cliquet a été relevé, délibérément
+
+⚠️ **Le 23/08 j'ai écrit que je n'avais pas touché au plafond. Le 24/08 je l'ai
+relevé, de 24 à 25.** C'est un geste délibéré, il apparaît dans le diff de
+`config/capacites.list`, et voici sa raison entière.
+
+**Le cliquet repose sur une prémisse :** *« le stock est un héritage qui ne se
+renouvelle pas »*. Elle ne tenait que tant que le détecteur voyait **tout** le
+stock. **Il ne le voyait pas.**
+
+Le chantier rendu a trouvé un onzième paramètre déclaré non honoré —
+`NkRendererConfig::pipeline`. La première chose à faire n'était pas de le classer :
+c'était de vérifier que **mon détecteur l'attrapait**. Il ne l'attrapait pas. Deux
+défauts, mesurés et corrigés le 24/08 :
+
+1. **Les chaînes de caractères n'étaient pas amputées.** Le commentaire l'était —
+   la ligne au-dessus le dit explicitement, « une mention dans un commentaire n'est
+   pas une lecture ». Mais `logger.Info("[NkRender3D] Shadow pipeline create: …")`
+   portait le jeton `pipeline`, et ce jeton comptait comme une **lecture** du champ.
+   *La même faute que celle qu'ampute la ligne au-dessus, dans un second vêtement :
+   du texte pris pour du code.*
+2. **Le repli « ce fichier nomme le type » attribuait au champ les variables
+   locales homonymes.** `NkRender3D.cpp` nomme `NkRendererConfig` une fois et
+   déclare partout un `NkPipelineHandle pipeline` local. Chaque
+   `cmd->BindGraphicsPipeline(pipeline)` comptait comme une lecture du champ.
+
+**Et une seule lecture suffisait à clore le dossier** — c'est même une optimisation
+assumée du détecteur. Un champ creux devenait donc invisible à cause d'une variable
+locale homonyme dans un autre fichier.
+
+**Mesure de la correction : 128 candidats → 143.** Quinze capacités qui existaient
+déjà et que l'outil ne montrait pas :
+
+| | |
+|---|---|
+| `NkBufferBarrier::dstStage` · `::srcStage` | `NkTextureBarrier::dstStage` · `::srcStage` |
+| `NkDrawIndexedIndirectArgs::firstIndex` · `::firstInstance` · `::indexCount` · `::vertexOffset` | `NkDrawIndirectArgs::firstVertex` · `::vertexCount` |
+| `NkFramebufferDesc::layers` | `NkIDevice::mipLevel` |
+| `NkRendererConfig::hdr` · `::pipeline` | `NkRendererConfig::vsync` ← **la 25e** |
+
+Quatorze se classent `vision-assumee` sans difficulté. **La quinzième ne le peut
+pas** : la règle (a) interdit `vision` dès qu'un drapeau annonce `true` à du code,
+et six démos livrées écrivent `rcfg.vsync = true`.
+
+> **Le cliquet s'oppose à la dérive silencieuse, pas à la décision.** Ce +1 n'est
+> pas une capacité nouvelle : c'est de l'héritage qui était invisible. Le compter
+> comme une dérive reviendrait à préférer un chiffre stable à un chiffre vrai.
+
+⚠️ **Et ce que ça dit du chiffre 24 lui-même :** il n'a jamais mesuré « les
+capacités creuses du dépôt ». Il mesurait **les capacités creuses que mon outil
+savait voir**. La différence est de quinze, et personne ne pouvait la connaître
+avant de la chercher.
 
 ## Deux limites de ce relevé, dites aussi fort que le reste
 

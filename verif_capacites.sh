@@ -483,7 +483,33 @@ awk -v fchamps="$TMP/champs.txt" -v fvoies="$TMP/voies.txt" \
     # le commentaire de fin de ligne est ampute AVANT toute decision : une
     # mention dans un commentaire n est pas une lecture, et prendre l une pour
     # l autre est exactement « chercher un mot au lieu d un etat ».
-    code = txt; sub(/\/\/.*$/, "", code)
+    #
+    # ⚠️ DEFAUT DE CE DETECTEUR, MESURE LE 2026-08-24, ET IL LUI A FAIT MANQUER
+    # UN CAS ENTIER. Le commentaire etait ampute ; LA CHAINE DE CARACTERES, non.
+    # Resultat : la ligne
+    #     logger.Info("[NkRender3D] Shadow pipeline create: ...")
+    # portait le jeton « pipeline », et ce jeton etait compte comme une LECTURE
+    # de NkRendererConfig::pipeline. Le champ sortait donc lectures>0 et
+    # disparaissait de la liste des candidats -- alors qu il est ecrit par six
+    # presets et lu par personne.
+    # C EST EXACTEMENT LA MEME FAUTE QUE CELLE QU AMPUTE LA LIGNE AU-DESSUS,
+    # dans un second vetement : du TEXTE pris pour du CODE. Un nom dans une
+    # chaine n est pas plus une lecture qu un nom dans un commentaire.
+    # Les chaines partent donc EN PREMIER -- avant le « // », sinon un
+    # "http://..." ampute la moitie de sa propre ligne.
+    # ⚠️ LA REGLE EST SIMPLE ET SON IMPRECISION EST ASSUMEE : elle apparie les
+    # guillemets sans comprendre « \" ». Sur une ligne qui en contient, elle
+    # peut retirer un peu trop -- donc effacer une VRAIE lecture, donc AJOUTER
+    # un candidat a classer. Jamais en retirer un. C est la seule direction
+    # d erreur acceptable ici : un candidat de trop se classe une fois, un
+    # candidat manque ne se voit jamais.
+    code = txt
+    gsub(/"[^"]*"/, "", code)
+    sub(/\/\/.*$/, "", code)
+    # ligne de commentaire de bloc : « /* ... » ou une continuation « * ... ».
+    # champs.awk les saute deja a l extraction ; ne pas les sauter ICI faisait
+    # compter un nom de champ cite dans une doc comme une lecture.
+    if (txt ~ /^[[:space:]]*(\/\*|\*[^\/])/) code = ""
     nu = (code ~ /^[[:space:]]*$/)
 
     # les identifiants de la ligne, extraits UNE fois. Ce qui suit est en
@@ -554,6 +580,28 @@ awk -v fchamps="$TMP/champs.txt" -v fvoies="$TMP/voies.txt" \
           if (!att) { horstype[cle]++; continue }
           if (fic == ch_fic[cle] && num == ch_lig[cle]) { decl[cle]++; continue }
           if (nu) { comm[cle]++; continue }
+          # ---- LA VOIE D ACCES EST EXIGEE, PAS SEULEMENT PREFEREE -----------
+          # ⚠️ SECOND DEFAUT MESURE LE 2026-08-24, et c est celui qui comptait.
+          # Le repli `nomme[fic|s2]` dit : « ce fichier nomme le type, donc un
+          # jeton nu qui porte le nom du champ lui appartient ». C est FAUX des
+          # que le nom est banal. NkRender3D.cpp nomme NkRendererConfig (une
+          # fois) et declare partout une VARIABLE LOCALE `pipeline` :
+          #     NkPipelineHandle pipeline = mPBRPipeline;
+          #     cmd->BindGraphicsPipeline(pipeline);
+          # Chacune de ces lignes etait comptee comme une lecture -- et une
+          # seule suffit a clore le dossier. Un champ creux devenait invisible
+          # a cause d une variable locale homonyme dans un autre fichier.
+          #
+          # LA REGLE JUSTE EST CELLE DU LANGAGE : un membre ne se lit QUE par
+          # `x.nom`, `x->nom`, ou nu DANS UNE METHODE DE SA PROPRE CLASSE. Hors
+          # du fichier qui le declare, un jeton nu n est pas un acces au membre.
+          # Le fichier declarant garde l exemption : ses methodes en ligne
+          # ecrivent leurs membres nus, et les compter est juste.
+          #
+          # ⚠️ DIRECTION DE L ERREUR, ET c est pour ca qu on ose : cette regle ne
+          # peut qu AJOUTER des candidats, jamais en retirer. Un candidat de
+          # trop se classe une fois ; un candidat manque ne se voit jamais.
+          if (fic != ch_fic[cle] &&               code !~ ("[.][[:space:]]*" nom "([^A-Za-z0-9_]|$)") &&               code !~ ("->[[:space:]]*" nom "([^A-Za-z0-9_]|$)")) { horstype[cle]++; continue }
           # prise d adresse : ce n est pas une lecture, mais ce n est pas rien
           if (code ~ ("&[-A-Za-z0-9_.>()]*" nom "([^A-Za-z0-9_]|$)")) { adr[cle]++; continue }
           if (code ~ (nom "[[:space:]]*([+][+]|--)")) { ecr[cle]++; continue }
