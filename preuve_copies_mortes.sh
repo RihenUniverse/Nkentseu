@@ -85,6 +85,24 @@ try:
             declarees.append(chemin)
 except OSError:
     pass
+# ⚠️ PLANCHER DE LECTURE (27/08). L outil n en avait AUCUN, et le nettoyage du
+# jour l a mis a nu : une fois les copies supprimees, il a rendu
+#     « 0 fichier(s) examine(s) -- 0 PROUVE(S) MORT(S), 0 encore compile(s). »
+# et code 0. Or « 0 mort sur 0 examine » se lit « tout est propre » alors que ca
+# veut dire « je n ai rien regarde ». C est le defaut que ce depot traque depuis
+# le premier jour, dans l outil de preuve lui-meme.
+# Les trois autres verificateurs ont deja leur plancher (NB_MOTIFS, NB_HITS,
+# scripts examines) ; celui-ci n en avait pas.
+# La population VIDE doit donc etre DECLAREE pour etre acceptee -- une donnee,
+# visible dans un diff, comme les cliquets.
+vide_attendue = False
+try:
+    for l in io.open("config/copies_mortes_declarees.list", encoding="utf-8", errors="replace"):
+        if l.strip().startswith("# POPULATION-VIDE-ATTENDUE") and "oui" in l.lower():
+            vide_attendue = True
+except OSError:
+    pass
+
 for d in declarees:
     if d not in copies:
         if d in suivis:
@@ -92,6 +110,21 @@ for d in declarees:
         else:
             print("[copies] DECLARE MAIS NON SUIVI PAR GIT, ignore : %s" % d)
 copies.sort()
+
+if not copies:
+    if not vide_attendue:
+        print("[copies] ECHEC D INSTRUMENT : population VIDE, 0 fichier examine.")
+        print("[copies]   « 0 mort sur 0 examine » se lit « tout est propre », et veut dire")
+        print("[copies]   « je n ai rien regarde ». Deux causes, opposees :")
+        print("[copies]     - toutes les copies ont ete nettoyees   -> declare-le :")
+        print("[copies]       ajoute « # POPULATION-VIDE-ATTENDUE = oui » dans")
+        print("[copies]       config/copies_mortes_declarees.list, avec la raison ;")
+        print("[copies]     - le selecteur est casse                -> repare-le.")
+        print("[copies]   L outil ne peut pas distinguer les deux. C est a toi de le dire.")
+        sys.exit(2)
+    print("[copies] population VIDE, et c est DECLARE dans")
+    print("[copies]   config/copies_mortes_declarees.list. Rien n a ete examine :")
+    print("[copies]   ce passage ne prouve donc RIEN sur le depot, et ne pretend pas le faire.")
 
 # --- index des .jenga et de leurs motifs -----------------------------------
 jengas = {}
