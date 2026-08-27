@@ -49,3 +49,5 @@
 2026-08-24 | chem/interdit-reste-rouge | ce-chemins @ c2f48157 | [vu] code 6 : « interdit » reste ROUGE, ce n est pas une case pour classer sans reparer
 2026-08-24 | chem/canari-perdu | ce-chemins @ c2f48157 | [vu] code 2 : ECHEC D INSTRUMENT, et surtout PAS un vert
 2026-08-24 | chem/plancher-lecture | ce-chemins @ c2f48157 | [vu] code 2 : un outil qui ne lit presque plus rien ne conclut pas
+2026-08-27 | cap/temoin-D1 | temoins-cap @ 3d7697bd | [vu] le temoin D1 est NOMME
+2026-08-27 | cap/temoin-D2 | temoins-cap @ 3d7697bd | [vu] le temoin D2 est NOMME

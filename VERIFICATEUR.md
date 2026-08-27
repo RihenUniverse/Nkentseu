@@ -2516,3 +2516,127 @@ maintenant qu'il vaut `0.f` par construction et qu'il s'affiche à l'utilisateur
 
 **+40 % de champs à examiner pour au moins 17 lignes, dont dix d'une famille déjà
 avérée menteuse.** Ce n'est pas un +40 % qui trouverait deux lignes.
+
+---
+
+## 🔴 J'avais conclu « zéro appelant ». C'était faux, et le grep qui l'a produit mérite d'être gardé
+
+```bash
+grep -rn "CreateWithFallback" ... | grep -v NkDeviceFactory       # ce que j ai ecrit
+```
+
+Je voulais écarter **la définition**. J'ai écarté **la définition et tous les appels
+qualifiés** — puisqu'un appel s'écrit `NkDeviceFactory::CreateWithFallback(...)` et
+contient donc, par construction, le mot que je filtrais.
+
+> **Un filtre d'exclusion écrit sur le nom du TYPE supprime aussi les APPELS
+> qualifiés par ce type. Le filtre a retiré exactement la population cherchée.**
+
+**Remesure sur le nom qualifié, faite par moi :** `10` occurrences, moins la
+définition = **9 appelants**. Le chiffre du coordinateur. Je ne m'aligne pas
+dessus — je le retrouve.
+
+### Ce que ça dit du nom, et c'est la vraie leçon
+
+`Create` et `CreateWithFallback` sont **deux fonctions de la même fabrique aux
+contrats opposés**, et la seconde est en plus **homonyme** d'une fonction de
+NKCanvas. **Trois pièges empilés sur un seul nom.**
+
+> **Chercher un nom ne trouve pas seulement la déclaration : il peut trouver la
+> MAUVAISE déclaration.** C'est la famille du dépôt sous une forme neuve — et
+> celle-ci ne se vérifie pas au nom, elle se vérifie à l'expérience.
+
+### La portée réelle est d'UN appelant, pas de neuf — et je l'ai relue moi-même
+
+| appelant | bâti ? | comportement |
+|---|---|---|
+| `NkEditorRHIRenderer.h:98` | oui | ✅ **sûr** — `di.api` en tête de liste |
+| `NkRendererDemo.cpp` ×3 | **non** (`RendererSandbox.jenga:357`, commentée) | ✅ **sûr** — `logger.Warn("Backend demande indisponible … fallback auto")` **avant** le repli |
+| `NkRendererDemo copy.cpp` ×3 | non | fichier « copy », à verser au dossier des copies mortes |
+| 🔴 `NkRenderer2DDemo.cpp:75/79` | **oui** (`r2d01`, `:358`) | **silencieux** — liste figée, aucune tentative de `devInfo.api`, aucun avertissement |
+
+**Sur les deux cibles réellement bâties, une seule est silencieuse.** Le défaut
+n'est pas l'absence de solution : **deux patrons corrects existent déjà**, et
+l'appelant fautif n'applique ni l'un ni l'autre.
+
+📌 **Et le bon patron est commenté.** `NkRendererDemo.cpp` fait exactement ce qu'il
+faut — tenter, puis **avertir** — et sa cible ne se compile pas.
+*Une capacité morte peut aussi être une bonne pratique morte, et celle-là ne
+recrutera personne parce que personne ne la voit tourner.*
+
+Instruite dans `config/capacites.list` sous `NkDeviceFactory::CreateWithFallback`,
+détecteur **`HUM`** : ⚠️ **aucun de mes trois détecteurs ne peut la voir.** D2
+cherche un champ jamais lu — or `init.api` **est** lu, par l'autre fonction. Le
+défaut n'est pas dans le champ, il est dans **le contrat d'une fonction parmi deux
+homonymes de contrats opposés**.
+
+---
+
+## La garde « cohérence des capacités » — les trois questions, mesurées. Je ne la construis pas.
+
+Proposition : *si `GetCaps().X == true`, la fonction correspondante doit rendre un
+résultat.* Elle rougirait aujourd'hui sur `timestampQueries`. **Trois questions
+avant de construire, et les trois réponses sont mesurées.**
+
+### 1. Sur combien de capacités peut-on formuler « la fonction correspondante » sans deviner ?
+
+Apparié mécaniquement (jeton partagé ≥ 5 caractères, la règle de D1) les **66**
+champs de `NkDeviceCaps` contre les **76** virtuelles de `NkIDevice` :
+
+```
+ 0 fonction correspondante : 32
+ 1 fonction  (non ambigu)  :  4
+ 2 et plus   (deviner)     : 30
+```
+
+⚠️ **Et les 4 « non ambigus » sont TOUS FAUX** :
+
+```
+IsValid          -> IsValid                    pas une capacite
+width            -> GetSwapchainWidth          pas une capacite
+depthPitch       -> GetSwapchainDepthFormat    n est meme pas dans NkDeviceCaps
+depthClipControl -> GetSwapchainDepthFormat    jeton « depth » commun, AUCUN rapport
+```
+
+> **Zéro appariement juste sur 66.** Et le seul cas dont on sait qu'il est juste —
+> `timestampQueries` → `BeginTimestampQuery`, `EndTimestampQuery`,
+> `GetTimestampPeriodNs`, `GetTimestampResults` — tombe dans la case **« il
+> faudrait deviner laquelle »**, parce qu'il en a **quatre**.
+
+**C'est donc un contrôle ponctuel déguisé en règle**, exactement ce que la question
+cherchait à écarter.
+
+### 2. Rougirait-elle ailleurs que sur `timestampQueries` ?
+
+**Non mesurable en l'état** — pour le savoir il faudrait des appariements justes,
+et il n'y en a aucun. La seule instance connue reste celle qui a motivé la
+proposition. *Une garde qui n'attrape que le cas connu est un test, pas une garde.*
+
+### 3. Combien de faux rouges ?
+
+**Au moins un, et il est dans la fonction même qu'on viserait :**
+
+```cpp
+virtual bool GetTimestampResults(uint64 *outNs, uint32 count) {
+    return false;
+}
+```
+
+`false` est **aussi** la réponse légitime de « les requêtes ne sont pas encore
+prêtes ». Une capacité peut être vraie **et** sa fonction rendre vide sans mentir.
+La règle telle qu'énoncée rougirait sur ce cas correct — et je ne sais pas combien
+d'autres lui ressemblent.
+
+### Ce que je conclus, et ce que je fais
+
+**Je ne la construis pas.** Trois réponses sur trois vont contre : appariement
+impossible sans deviner, une seule instance connue, et au moins un faux rouge
+identifié dans la fonction visée elle-même.
+
+> **Je viens de voir un agent retirer sa propre garde pour cette raison exacte.
+> Construire celle-ci reviendrait à ajouter un treizième contrôle jamais rouge —
+> ou pire, un contrôle qui rougit à tort et qu'on désactive le vendredi.**
+
+Ce qui reste vrai et déjà instruit : `timestampQueries` est un cas **individuel**,
+il est dans `capacites.list`, et `gpuTimeMs` s'affiche à `0.00` sur 21 fichiers.
+*Le cas ne perd rien à ne pas devenir une règle.*
