@@ -237,6 +237,39 @@
 #   Non fait. Propose, chiffre, et laisse a l arbitrage.
 # =============================================================================
 
+# =============================================================================
+# ⚠️ CE QUE « ZERO CANDIDAT » NE VEUT PAS DIRE — limite structurelle, 27/08
+# =============================================================================
+#   Le cliquet ci-dessous descend quand une dette est honoree. Il descendra
+#   jusqu a zero un jour. LE JOUR OU IL VAUDRA ZERO, CE FICHIER NE DIRA PAS QUE
+#   LE DEPOT N A PLUS DE CAPACITE CREUSE. Il dira que MES TROIS DETECTEURS n en
+#   voient plus.
+#
+#   LA DIFFERENCE EST MESUREE, ET ELLE A UN NOM : init.api.
+#   NkDeviceFactory::CreateWithFallback ecrase le champ que son appelant a
+#   rempli. C est une capacite exprimable et non honoree, exactement comme les
+#   onze autres. AUCUN de mes detecteurs ne peut la voir :
+#     D2 cherche un champ JAMAIS LU -- or init.api EST lu, par NkDeviceFactory::
+#        Create, l autre fonction de la meme fabrique ;
+#     D1 cherche une virtuelle creuse APPARIEE a un drapeau -- il n y a ni l un
+#        ni l autre ;
+#     D3 compare des slots de shaders -- hors sujet.
+#
+#   LE DEFAUT N EST PAS DANS UN CHAMP, IL EST DANS LE CONTRAT D UNE FONCTION.
+#   Mes trois detecteurs cherchent tous des defauts de CHAMP ou de VIRTUELLE.
+#   Une famille entiere -- deux fonctions voisines aux contrats opposes -- leur
+#   est structurellement invisible, et ce n est pas une regle qui manque : c est
+#   la forme meme de ce qu ils savent regarder.
+#
+#   Elle est instruite dans ce fichier avec le detecteur « HUM » : trouvee par
+#   une personne. C est la seule ligne du fichier qu aucun outil n a produite, et
+#   sa colonne le dit pour qu on ne prenne pas le silence des outils pour une
+#   absence de defaut.
+#
+#   « Je n ai rien trouve » et « je ne sais pas regarder ca » rendent la meme
+#   sortie verte. Le cliquet mesure le premier ; il ne dit rien du second.
+# =============================================================================
+
 # PLAFOND-A-DATER = 24
 #
 # RELEVE DE 24 A 25 LE 2026-08-24 -- geste DELIBERE, et voici sa raison.
@@ -375,7 +408,7 @@ NkPostConfig::ssaoSamples                    | D2  | vision-assumee  |         |
 NkPostConfig::ssr                            | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER. La passe SSR a ete ecrite par le chantier rendu le 23/08 et son temoin est vert (+229,17 sur banc nu). Reste a confronter ce champ-ci a la passe livree.] C3. Examine le 23/08. 0 lecture, 6 ecritures dont 4 executees (MultiStyle.cpp:274 true, Demo/main.cpp:342/371/390 false) plus ForArchviz() :489, appele par MultiStyle.cpp:263. Abandon : rien ne casse, mais ssr.frag.gl.glsl et ssr.frag.vk.glsl sont ecrits et aucune passe C++ ne les monte. Le plus avance des trois post-traitements creux.
 NkRasterizerDesc::antialiasedLine            | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkRenderPassDesc::hasResolve                 | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER, avec NkRendererConfig::msaaSamples -- meme sujet.] B2. Examine le 23/08. 0 lecture, 1 ecriture (dans SetResolve(), NkDescs.h:620) - et SetResolve() a 0 appelant. Abandon : rien ne casse, mais c est acter que NKRHI ne sait pas resoudre un MSAA.
-NkRendererConfig::debugOverlay               | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER. NON MESURE : le cout, parce qu AUCUN sous-systeme d overlay n existe cote NKRenderer -- c est une construction, pas un branchement. (RenderInputDebugOverlay de NKEvent est autre chose : du debogage d entrees.)] C1. Examine le 23/08. 0 lecture, 1 ecriture (ForEditor(), :534) - et son appelant est REEL : NK3DModeler/Viewport/NkViewport3D.cpp:726. NK3DModeler demande un overlay a chaque lancement et ne l obtient jamais ; aucun sous-systeme d overlay n existe. Abandon : rien ne casse.
+NkRendererConfig::debugOverlay               | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER. MESURE DU 27/08, ET ELLE CORRIGE MON PROPRE CHIFFRAGE : j avais ecrit 'aucun sous-systeme d overlay n existe' -- FAUX. NkOverlayRenderer existe, est alloue par InitOverlay() (NkRendererImpl.cpp:418), expose par NkRenderer.h:92, et appele depuis 21 fichiers. J avais cherche le MOT debugOverlay au lieu de la CAPACITE overlay. Cout reel : 1 fichier, 0 backend, API inchangee. ⚠️ MAIS RIEN N EST ECRIT, ET C EST DELIBERE -- L ARBITRAGE APPARTIENT A RODOLF. L allocation est deja pilotee par le drapeau de sous-systeme NK_SS_OVERLAY (:245), pas par ce champ-ci. Trois lectures possibles : (A) debugOverlay IMPLIQUE NK_SS_OVERLAY ; (B) il fait DESSINER le panneau par le renderer ; (C) il est redondant et disparait. FAIT MESURE QUI CONTRAINT L ARBITRAGE : DrawStats est appele par 18 sites, TOUS dans les applications -- le renderer ne dessine JAMAIS le panneau. Et ForEditor() a UN SEUL appelant, NK3DModeler (NkViewport3D.cpp:726), qui dessine DEJA ses stats (NkDemo3D.cpp:10755). La lecture (B), celle que le nom suggere, donnerait donc DEUX PANNEAUX SUPERPOSES dans la seule application concernee. POURQUOI JE N ECRIS MEME PAS LA PART NON AMBIGUE : un simple logger.Warn sur 'debugOverlay=true sans NK_SS_OVERLAY' LIRAIT le champ. D2 cesserait alors de le detecter, la ligne quitterait la liste des candidats, et ce fichier dirait 'honoree' d un drapeau qui ne fait toujours rien. J aurais produit un FAUX VERT DE MA PROPRE MAIN, avec l outil ecrit pour les empecher -- et j aurais abime la seule mesure de progres du dispositif, celle qui vient de fonctionner sur B4. Question posee a Rodolf dans CAPACITES_A_DATER.md. Ma recommandation : A ou C, jamais B.]
 NkRendererConfig::hdr                        | D2  | vision-assumee  |         | Examine le 24/08 en meme temps que pipeline (meme struct, meme cause de detection tardive). 13 ecritures, 0 lecture : ForMobile() et For2D() posent hdr = false, NKARDemo aussi, et personne ne lit mCfg.hdr. Ne pas confondre avec NkSwapchainDesc::hdr, deja classe. non-examine dans le detail des appelants.
 NkRendererConfig::maxMeshes                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkRendererConfig::maxParticles               | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu

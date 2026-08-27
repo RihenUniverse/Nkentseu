@@ -2640,3 +2640,113 @@ identifié dans la fonction visée elle-même.
 Ce qui reste vrai et déjà instruit : `timestampQueries` est un cas **individuel**,
 il est dans `capacites.list`, et `gpuTimeMs` s'affiche à `0.00` sur 21 fichiers.
 *Le cas ne perd rien à ne pas devenir une règle.*
+
+---
+
+## Au catalogue : le filtre d'exclusion qui retire la population cherchée
+
+> **Un filtre d'exclusion écrit sur le nom du TYPE supprime aussi les APPELS
+> qualifiés par ce type.**
+
+```bash
+grep -rn "CreateWithFallback" ... | grep -v NkDeviceFactory
+#                                   ^ pour ecarter la DEFINITION
+```
+
+La définition s'écrit `NkIDevice *NkDeviceFactory::CreateWithFallback(...)`. Mais
+**un appel aussi** : `NkDeviceFactory::CreateWithFallback(devInfo, {...})`. Le
+filtre a retiré la définition **et les neuf appels** — c'est-à-dire exactement ce
+que la commande cherchait. Résultat rendu : *« zéro appelant »*. Réel : **neuf**.
+
+### Pourquoi elle est vicieuse, et pas seulement fausse
+
+| | |
+|---|---|
+| elle **ne fait pas d'erreur** | le grep fonctionne, il ne se plaint de rien |
+| elle rend **le vide**, pas du bruit | et le vide se lit « il n'y a rien », jamais « j'ai trop filtré » |
+| elle est **plus probable quand on est rigoureux** | c'est la volonté d'écarter la définition qui la crée |
+
+**La parade n'est pas un meilleur filtre, c'est un autre point d'appui** : chercher
+le **nom qualifié** (`Type::fonction`) et retrancher la définition **par sa forme**
+(elle porte un type de retour devant), au lieu de retrancher par un motif que la
+population partage.
+
+📌 **C'est la même famille que les quatre défauts du détecteur** — parenthèse dans
+un commentaire, jeton dans une chaîne, variable locale homonyme — sous une forme
+neuve : là, le texte était pris pour du code ; **ici, le filtre est pris pour un
+tri alors qu'il est une coupe**. Et elle frappera n'importe qui, dans n'importe
+quel dépôt, dès qu'un nom de type sert à la fois à déclarer et à appeler.
+
+---
+
+## C1 `debugOverlay` — la question pour Rodolf, et pourquoi je n'écris rien
+
+Chiffrage rappelé : **1 fichier, 0 backend, API inchangée.** Aucun conflit de zone.
+Et pourtant je ne câble rien. Voici la mesure qui décide, puis la question.
+
+### Ce qui est mesuré, et qui contraint toutes les lectures
+
+```
+NkOverlayRenderer            existe, alloue par InitOverlay() (NkRendererImpl.cpp:418)
+son allocation est pilotee   par le drapeau de sous-systeme NK_SS_OVERLAY (:245)
+mCfg.debugOverlay            0 lecture
+DrawStats                    appele par 18 sites, TOUS DANS LES APPLICATIONS
+le renderer                  ne dessine JAMAIS le panneau lui-meme
+ForEditor()                  1 seul appelant : NK3DModeler (NkViewport3D.cpp:726)
+NK3DModeler                  dessine DEJA ses stats (NkDemo3D.cpp:10755)
+```
+
+🔴 **La dernière ligne est celle qui tranche.** La lecture « naturelle » —
+*`debugOverlay = true` ⇒ le renderer dessine le panneau à chaque frame* — donnerait
+**deux panneaux superposés dans la seule application qui pose le drapeau.**
+
+### Les trois lectures, et ce que chacune coûte
+
+| | lecture | implique | risque mesuré |
+|---|---|---|---|
+| **A** | `debugOverlay` **implique** `NK_SS_OVERLAY` : poser le drapeau suffit à obtenir le sous-système | 1 ligne dans le calcul du masque | aucun régression connue ; **ne fait rien pour NK3DModeler**, qui a déjà `NK_SS_ALL` |
+| **B** | `debugOverlay` fait **dessiner** le panneau par le renderer | une passe de dessin nouvelle | 🔴 **double panneau** chez NK3DModeler, et chez les 18 sites s'ils l'activent |
+| **C** | `debugOverlay` est **redondant** → on le retire | 1 ligne en moins dans `ForEditor()` | on perd un point d'entrée documenté ; NK3DModeler ne perd **rien** |
+
+📌 **A et B ne s'excluent pas** : on peut vouloir que le drapeau alloue *et* dessine.
+Mais **B seule est celle qui casse quelque chose**, et elle est la lecture que le
+nom suggère.
+
+### ⚠️ Pourquoi je n'écris même pas la part « non ambiguë »
+
+Il existe un cas vrai dans les trois lectures : **`debugOverlay = true` sans
+`NK_SS_OVERLAY` est un vœu que rien n'exauce, et l'appelant ne peut pas le savoir.**
+J'ai failli câbler un simple avertissement pour ce cas-là.
+
+**Je ne l'ai pas fait, et c'est la raison qui compte :**
+
+> Un `logger.Warn` **lit** `mCfg.debugOverlay`. Dès cette lecture, D2 cesse de le
+> détecter, la ligne quitte la liste des candidats — **et le fichier dirait
+> « honorée » d'un drapeau qui ne fait toujours rien.**
+
+**J'aurais produit un faux vert de ma propre main, avec l'outil que ce chantier a
+écrit pour les empêcher.** C'est exactement ce qui vient d'arriver *dans le bon
+sens* avec B4 : le détecteur a vu la dette disparaître **parce qu'elle était
+réellement honorée**. Lui faire jouer la même scène sur un avertissement
+transformerait sa seule mesure de progrès en formalité.
+
+**Tout dépend donc de l'arbitrage, et je n'écris rien.** La ligne reste
+`dette-datee | A-DATER`, le cliquet la compte, et la question est posée.
+
+### La question, en une phrase
+
+> **`debugOverlay` doit-il ALLOUER l'overlay (A), le DESSINER (B), ou disparaître (C) ?**
+> — sachant que **B double le panneau de NK3DModeler**, seule application qui pose
+> le drapeau, et qu'elle dessine déjà le sien.
+
+*Ma recommandation, si elle t'est utile : **A + C** — `debugOverlay` implique
+`NK_SS_OVERLAY` et rien d'autre, ou il disparaît. **B** est le nom qui ment : le
+panneau appartient à l'application, pas au moteur, et 18 sites le prouvent.*
+
+### Deux choses trouvées en chemin, sans rapport avec l'arbitrage
+
+`Applications/Sandbox/src/DemoNkentseu/Base06/PBRGame.cpp:207-212` appelle
+`overlay->Begin(cmd, camera)`, `DrawGrid`, `DrawAxes`, `DrawStats(true, {10,10})`,
+`End` — **aucune de ces cinq méthodes n'existe** dans `NkOverlayRenderer.h`. Le
+fichier **n'a aucune cible `.jenga`** : du code mort écrit contre une API qui n'a
+jamais existé. À verser au dossier des copies mortes.
