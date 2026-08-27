@@ -60,6 +60,33 @@ def git(*a):
 suivis = git("ls-files")
 copies = [f for f in suivis if re.search(r" copy( \d+)?\.(h|hpp|cpp|inl|c)$", f)]
 
+# ⚠️ LA PREUVE EST BONNE, LA POPULATION EST UNE HEURISTIQUE DE NOM.
+# La ligne ci-dessus choisit les candidats par leur NOM. C est « chercher un nom
+# n est pas chercher un usage » — la faute la plus tenace de ce depot — logee
+# dans l outil ecrit pour la traquer. Mesure du 27/08 : PBRGame.cpp est mort par
+# la MEME preuve et invisible ici, parce qu il porte un nom normal.
+# Parade minimale : une population DECLAREE en plus du motif. La vraie parade
+# serait d abandonner le motif et de prouver tous les fichiers suivis
+# d Applications/ — cout non mesure, donc non faite.
+declarees = []
+try:
+    for l in io.open("config/copies_mortes_declarees.list", encoding="utf-8", errors="replace"):
+        l = l.strip()
+        if not l or l.startswith("#"):
+            continue
+        chemin = l.split("|")[0].strip()
+        if chemin:
+            declarees.append(chemin)
+except OSError:
+    pass
+for d in declarees:
+    if d not in copies:
+        if d in suivis:
+            copies.append(d)
+        else:
+            print("[copies] DECLARE MAIS NON SUIVI PAR GIT, ignore : %s" % d)
+copies.sort()
+
 # --- index des .jenga et de leurs motifs -----------------------------------
 jengas = {}
 for f in suivis:
@@ -173,8 +200,8 @@ print("%-62s %-8s %s" % ("-" * 62, "-" * 8, "-" * 40))
 for f, e, r in lignes:
     print("%-62s %-8s %s" % (f, e, r[:70]))
 print("")
-print("%d fichier(s) « copy » versionne(s) — %d PROUVE(S) MORT(S), %d encore compile(s)."
-      % (len(copies), len(morts), len(copies) - len(morts)))
+print("%d fichier(s) examine(s) (motif « copy » + %d declare(s)) — %d PROUVE(S) MORT(S), %d encore compile(s)."
+      % (len(copies), len(declarees), len(morts), len(copies) - len(morts)))
 print("Prouve mort = aucune citation hors commentaire, ET aucun joker du .jenga le")
 print("plus proche ne le couvre. Le doute penche vers « vivant ».")
 PYFIN

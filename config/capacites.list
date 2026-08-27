@@ -270,6 +270,66 @@
 #   sortie verte. Le cliquet mesure le premier ; il ne dit rien du second.
 # =============================================================================
 
+# =============================================================================
+# ⚠️ SECONDE LIMITE : « LU » N EST PAS « HONORE » — le contournement trivial
+# =============================================================================
+#   Le critere de D2 est « ce champ est-il LU ? ». Or JOURNALISER un champ est
+#   une lecture. Donc N IMPORTE LAQUELLE des dettes de ce fichier peut sortir de
+#   la liste des candidats par UNE LIGNE QUI NE FAIT RIEN :
+#       logger.Warn("debugOverlay demande sans NK_SS_OVERLAY : sans effet");
+#   Le champ devient « lu », le detecteur cesse de le voir, le cliquet descend,
+#   ET LE DRAPEAU NE FAIT TOUJOURS RIEN.
+#
+#   ⚠️ CE N EST PAS UN SCENARIO DE TRICHE. Le 27/08 j allais ecrire exactement
+#   cette ligne, pour une bonne raison (avertir d un voeu que rien n exauce). Le
+#   contournement le plus dangereux n est pas celui qu on cherche, c est celui
+#   qu on rencontre en travaillant bien.
+#
+# LA PARADE EVIDENTE A ETE MESUREE, ET ELLE N EST PAS CONSTRUITE
+#   « Une lecture dont le seul consommateur est un journal n est pas un
+#     honorement. » Trois mesures du 27/08 sur les 295 champs des trois
+#     en-tetes examines et les 238 229 lignes portant un acces membre :
+#
+#   1. MECANISABLE ?  200 champs ont au moins une lecture. Repartition :
+#        169 aucune lecture-journal | 31 MIXTES | 0 tout-en-journal
+#      Et sur 6 433 lignes portant un appel de journalisation, 1 133 (17,6 %)
+#      portent AUSSI un if/while/return/affectation. Lire « cette ligne est un
+#      journal » comme « cette ligne n est QU un journal » se trompe UNE FOIS
+#      SUR SIX.
+#   2. COMBIEN D « implementee » REDEVIENDRAIENT CANDIDATES ?  ZERO.
+#      Aucune des lignes classees implementee ne repose sur des lectures-journal
+#      (blendEnable 8 lectures dont 0 journal, format 109/3, location 61/5,
+#      semanticIdx 2/0, semanticName 2/0). Le classement historique ne repose PAS
+#      sur des lectures creuses -- c est la bonne nouvelle, et elle etait
+#      voulue dans l autre sens.
+#   3. PEUT-ELLE ROUGIR AUJOURD HUI ?  NON. ZERO champ n a toutes ses lectures
+#      en journal. La construire ajouterait un controle qui ne peut pas rougir,
+#      juste apres avoir fait descendre le cliquet des controles de 14 a 12.
+#
+#   ⚠️ ET ZERO NE VEUT PAS DIRE QUE LE TROU EST FERME : il veut dire que
+#   PERSONNE N EST ENCORE PASSE PAR LA. Le trou est reel et disponible.
+#
+# CE QUI RESTE VRAI QUAND ON A TOUT MESURE
+#   Deux limites nommees, cote a cote :
+#     init.api  -- mes detecteurs ne voient pas les defauts de CONTRAT ;
+#     « lu »    -- mes detecteurs ne distinguent pas une lecture UTILE d une
+#                  lecture VERS UN JOURNAL.
+#   « Je n ai rien trouve » et « je ne sais pas regarder ca » rendent la meme
+#   sortie verte. Le cliquet mesure le premier ; il ne dit rien du second.
+#
+# PISTE MESUREE, NON CONSTRUITE, POUR QUI REPRENDRA
+#   Plutot que de juger si une lecture est creuse -- ce que la mesure 1 dit
+#   impossible sans deviner --, NOMMER LES LIGNES DONT LE CANDIDAT A DISPARU.
+#   Aujourd hui l outil signale « un candidat SANS LIGNE » (echec) mais se tait
+#   sur « une ligne SANS CANDIDAT ». Or c est exactement ce que produit une
+#   dette honoree (B4, 145 -> 144 : la bonne nouvelle) ET ce que produirait un
+#   logger.Warn creux (la mauvaise). Les nommer ne juge rien : ca demande un
+#   regard le jour ou la population change. Il y en a DEUX aujourd hui, donc ca
+#   s exercerait des le premier passage. Cout estime : une dizaine de lignes.
+#   NON FAIT : ce n est pas une garde de plus qu on m a demandee, c est une
+#   mesure. Elle attend un arbitrage comme le reste.
+# =============================================================================
+
 # PLAFOND-A-DATER = 24
 #
 # RELEVE DE 24 A 25 LE 2026-08-24 -- geste DELIBERE, et voici sa raison.
