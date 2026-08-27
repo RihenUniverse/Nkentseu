@@ -51,3 +51,8 @@
 2026-08-24 | chem/plancher-lecture | ce-chemins @ c2f48157 | [vu] code 2 : un outil qui ne lit presque plus rien ne conclut pas
 2026-08-27 | cap/temoin-D1 | temoins-cap @ 3d7697bd | [vu] le temoin D1 est NOMME
 2026-08-27 | cap/temoin-D2 | temoins-cap @ 3d7697bd | [vu] le temoin D2 est NOMME
+2026-08-27 | cap/disparition-sans-reponse | disparition @ 003b18d0 | [vu] code 4 : une dette disparue sans reponse fait ROUGIR
+2026-08-27 | cap/disparition-symbole-nomme | disparition @ 003b18d0 | [vu] le symbole est NOMME
+2026-08-27 | cap/disparition-causes-dites | disparition @ 003b18d0 | [vu] la cause dangereuse est nommee (lecture creuse)
+2026-08-27 | cap/disparition-silence-legitime | disparition @ 003b18d0 | [vu] code 0 : une suppression de code ne fait PAS rougir
+2026-08-27 | cap/disparition-deja-tranchee | disparition @ 003b18d0 | [vu] code 0 : une disparition deja tranchee ne rougit pas

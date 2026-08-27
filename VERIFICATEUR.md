@@ -2750,3 +2750,133 @@ panneau appartient à l'application, pas au moteur, et 18 sites le prouvent.*
 `End` — **aucune de ces cinq méthodes n'existe** dans `NkOverlayRenderer.h`. Le
 fichier **n'a aucune cible `.jenga`** : du code mort écrit contre une API qui n'a
 jamais existé. À verser au dossier des copies mortes.
+
+---
+
+## La disparition d'une dette ne passe plus inaperçue
+
+⚠️ **Première correction, et elle est sur moi** : j'ai proposé ce mécanisme comme
+neuf en écrivant que l'outil *« se tait sur une ligne sans candidat »*. **C'est
+faux — il les nommait déjà.** J'ai décrit le comportement de mon propre outil sans
+le vérifier, dans le message même où je reprochais au dépôt de chercher des noms
+au lieu d'usages.
+
+Ce qui manquait vraiment était plus fin : le message disait *« il a été implémenté
+**ou** retiré »* — **deux causes opposées dans une seule phrase**, et il en
+manquait une troisième que personne n'avait nommée : **une lecture creuse ajoutée.**
+
+### La seule chose mécanisable sans deviner
+
+On ne peut pas juger la qualité d'une lecture — mesuré : **17,6 %** des lignes de
+journal portent aussi un `if`/`return`/affectation. **Mais on peut demander si le
+symbole est encore déclaré**, et ça sépare exactement ce qu'il fallait :
+
+| état | verdict | pourquoi |
+|---|---|---|
+| encore déclaré · plus détecté · `dette-datee` | 🔴 **ÉCHEC 4** | transition non examinée — honorée ? lecture creuse ? détecteur cassé ? |
+| encore déclaré · plus détecté · déjà tranché | info | quelqu'un a répondu |
+| **plus déclaré du tout** | info « **PÉRIMÉE** » | **le champ a été supprimé : ce n'est pas un défaut** |
+
+> **On ne peut pas juger la qualité d'une lecture, mais on peut refuser qu'une
+> disparition passe inaperçue.** Le contrôle ne tranche rien : il exige qu'un
+> humain regarde **l'instant** où une capacité quitte la liste.
+
+`epreuve_disparition.sh`, quatre épreuves, **toutes vues** : **X** dette disparue
+sans réponse → code 4, symbole nommé, les trois causes dites · **Y** symbole
+supprimé → info PÉRIMÉE, **code 0 : il se tait** · **Z** déjà tranché → info ·
+**W** retrait → identique.
+
+**59 contrôles inventoriés, 47 rouges, 12 jamais — le cliquet tient à 12.** Les
+cinq nouveaux ont rougi à la naissance.
+
+### ⚠️ Le comparateur des épreuves, réglé trois fois
+
+```
+v1  « git ne voit RIEN »              -> rougissait sur un arbre deja sale
+v2  differentiel sur TOUT l arbre     -> a rougi parce qu un AUTRE travail
+                                         a cree un fichier PENDANT la course
+v3  differentiel sur LES FICHIERS QUE L EPREUVE DECLARE TOUCHER
+```
+
+**La v2 m'a mordu pour de vrai** : un fichier que je créais en parallèle a été
+imputé à l'épreuve. *Dans un dépôt à plusieurs agents, comparer l'arbre entier
+revient à s'attribuer le travail des autres — en rouge.*
+
+---
+
+## Le coût de la vraie parade des copies mortes : ce n'est pas un coût, c'est une invalidité
+
+Mesuré, comme demandé — abandonner le motif de nom et prouver **tous** les fichiers
+suivis d'`Applications/` :
+
+```
+population    810 fichiers   (contre 28 aujourd hui)
+duree         6 min 41 s     (contre 13 s)
+resultat      449 PROUVES MORTS, dont 420 hors du motif « copy »
+```
+
+⚠️ **449 morts sur 810 — 55 %. Le chiffre se réfute tout seul, et je l'ai
+vérifié :**
+
+```
+Applications/ConquerorLab/include/Conqueror/ConquerorAIABI.h   declare MORT
+   -> inclus/cite par 13 autres fichiers source
+Applications/Common/NkBenchRoot.h                              declare MORT
+   -> inclus/cite par 3 autres
+```
+
+**La preuve de l'outil est « aucune citation dans un `.jenga`, aucun joker ».**
+Pour une **copie** — un fichier que personne n'inclut jamais — elle suffit. Pour un
+**en-tête ordinaire**, elle est fausse : *un header n'est pas cité dans un `.jenga`,
+il est inclus par du code.*
+
+> **Le critère qui prouve la mort d'une copie ne prouve pas la mort d'un fichier
+> ordinaire. La population et la preuve sont solidaires : élargir l'une invalide
+> l'autre.**
+
+**Réponse à la question posée** : ce n'est ni « quelques minutes » ni « une heure ».
+6 min 41 s serait acceptable ; **449 faux morts ne le sont pas.** La vraie parade
+n'est pas d'élargir la population, c'est d'**écrire une autre preuve** — et celle-là
+n'est pas mesurée.
+
+### L'intermédiaire, lui, est valide — et il est appliqué
+
+**Le motif porte désormais sur le CHEMIN, pas sur le nom de fichier.**
+`Applications/Pong copy/` est un **dossier** copie dont les **dix** sources portent
+des noms parfaitement normaux (`Apps.cpp`, `PongGame.h`…). Le motif appliqué au nom
+en voyait **zéro**.
+
+```
+avant   28 fichiers examines, 28 morts        13 s
+apres   38 fichiers examines, 35 morts        16 s
+```
+
+📌 **Et les 3 « encore compilés » sont le signe que la preuve reste dans son
+domaine** : elle discrimine encore. Sur les 810, elle ne discriminait plus.
+
+⚠️ **Le chiffre à remonter à Rodolf n'est donc plus 28 mais 35.**
+
+---
+
+## Comment chacun de mes outils choisit sa population
+
+| outil | population | comment |
+|---|---|---|
+| `verif_bancs.sh` | **découverte** | les `with project()` des `.jenga`, puis garde totale contre `bancs.list` |
+| `verif_capacites.sh` D1 | **déclarée** | `ENTETES_D1` — 1 en-tête nommé dans le script |
+| `verif_capacites.sh` D2 | **déclarée** | `ENTETES_D2` — 3 en-têtes nommés dans le script |
+| `verif_capacites.sh` D3 | **découverte** | `kStandardBindings` + les shaders de `Resources/` |
+| `verif_controles.sh` | **déclarée** | `controles.list`, garde totale |
+| `verif_chemins.sh` | **découverte** | `git ls-files` sur 5 extensions, moins les arbres exclus **déclarés** |
+| `preuve_copies_mortes.sh` | 🔴 **devinée** | motif de nom — **le seul des sept**, et c'est celui qui s'est fait prendre |
+
+**Un sur sept devinait, et c'est exactement celui qui a raté `PBRGame.cpp`.**
+
+⚠️ **Deux nuances que le tableau ne dit pas, et qu'il faut lire avec :**
+
+- **« Déclarée » n'est pas « complète ».** D1/D2 lisent **3 en-têtes choisis à la
+  main** — c'est la limite de périmètre déjà écrite (+141 champs, plancher de 17).
+  Déclarée veut dire *assumée*, pas *exhaustive*.
+- **`verif_chemins.sh` filtre par EXTENSION**, ce qui est un motif. Mesuré : **zéro
+  fichier suivi porte un shebang sans extension**, donc le trou est vide
+  aujourd'hui — mais il existe.

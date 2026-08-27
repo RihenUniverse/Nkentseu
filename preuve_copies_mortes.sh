@@ -58,7 +58,13 @@ def git(*a):
     return subprocess.run(["git"] + list(a), capture_output=True, text=True).stdout.splitlines()
 
 suivis = git("ls-files")
-copies = [f for f in suivis if re.search(r" copy( \d+)?\.(h|hpp|cpp|inl|c)$", f)]
+# ⚠️ LE MOTIF PORTE SUR LE CHEMIN, PAS SUR LE NOM DE FICHIER (27/08).
+# Mesure : Applications/Pong copy/ est un DOSSIER copie, et ses DIX sources
+# portent des noms parfaitement normaux (Apps.cpp, PongGame.h...). Le motif
+# applique au seul nom de fichier en voyait ZERO. Applique au chemin, il les
+# voit toutes les dix, et la PREUVE reste dans son domaine de validite : ce
+# sont bien des copies, personne ne les inclut.
+copies = [f for f in suivis if re.search(r" copy( \d+)?[/.]", f) and re.search(r"[.](h|hpp|cpp|inl|c)$", f)]
 
 # ⚠️ LA PREUVE EST BONNE, LA POPULATION EST UNE HEURISTIQUE DE NOM.
 # La ligne ci-dessus choisit les candidats par leur NOM. C est « chercher un nom
