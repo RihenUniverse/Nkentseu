@@ -2939,3 +2939,63 @@ v3  differentiel sur LES SEULS FICHIERS QUE L EPREUVE DECLARE TOUCHER
 et coûte plus cher : deux chantiers qui **partagent** un fichier de sortie se
 volent leurs mesures sans que rien n'échoue — c'est le même défaut que
 `/tmp/msg.txt`, vu depuis la lecture au lieu de l'écriture.
+
+---
+
+## C1 `debugOverlay` — lecture (A) câblée, et le banc vu **rouge avant livraison**
+
+**Décision de Rodolf (27/08)** : lecture **(A)** — `debugOverlay` **implique** le
+sous-système d'overlay.
+
+```cpp
+// NkRendererImpl.cpp:93, dans Initialize()
+if (mCfg.debugOverlay && !mCfg.Has(NK_SS_OVERLAY)) {
+    mCfg.subsystems = mCfg.subsystems | NK_SS_OVERLAY;
+}
+```
+
+### ⚠️ Un effet, pas une trace — et j'allais faire l'inverse
+
+En câblant C1, j'allais écrire `logger.Warn("debugOverlay demandé sans NK_SS_OVERLAY")`.
+Le critère de D2 est *« ce champ est-il **lu** ? »*, et **journaliser est une
+lecture** : le champ serait sorti de la liste des candidats, la dette aurait
+disparu du compteur, **et le drapeau n'aurait toujours rien fait.**
+
+> **La ligne posée change ce que le renderer ALLOUE.** C'est ce que le banc mesure,
+> et il ne regarde aucun message.
+
+### Le banc, et son rouge de naissance
+
+`NkDebugOverlayCheck` — avant/après sur `GetOverlay()`, `NK_SS_OVERLAY` **absent**
+des sous-systèmes dans les deux cas :
+
+```
+cablage retire (if (false)), reconstruit, relance :
+  [TEMOIN] pas d overlay. Le drapeau est mesurable.
+  [FAIL] cfg.debugOverlay = true  -> NkOverlayRenderer ALLOUE (l effet)
+  [OK]   cfg.debugOverlay = false -> pas d overlay (le temoin)
+  === Resultat : 1 OK / 1 FAIL ===        code 1
+
+cablage restaure, RECONSTRUIT, reverifie :
+  === Resultat : 2 OK / 0 FAIL ===        code 0
+```
+
+**Le témoin reste vert pendant que la mesure tombe** : le rouge porte sur l'effet
+du drapeau, pas sur le montage. *On ne laisse pas de binaire menteur derrière soi.*
+
+### 🔴 Et une faute de ma part sur la forme, réparée ici et non réécrite
+
+Le coordinateur avait demandé **trois commits séparés**. Le câblage de C1 et son
+banc sont partis dans le commit `6804518e`, **dont le message ne décrit que
+l'élargissement du détecteur**.
+
+**Cause** : un `git add -A` lancé alors que deux actions étaient en cours dans
+l'arbre. La commande a balayé un travail que je ne destinais pas à ce commit-là.
+
+> **Un message de commit qui sous-décrit son contenu est la même faute que le
+> libellé volé du 24/08 — sans voleur.** Le prochain qui cherchera d'où vient
+> `NkRendererImpl.cpp:93` le trouvera sous un titre qui parle d'autre chose.
+
+**Je ne réécris pas l'historique** : d'autres chantiers lisent cette branche.
+La réparation est additive, et c'est ce paragraphe. `6804518e` contient
+**l'élargissement du détecteur ET le câblage de C1 avec son banc.**
