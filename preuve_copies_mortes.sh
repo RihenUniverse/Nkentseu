@@ -35,6 +35,44 @@
 #   ./preuve_copies_mortes.sh            # le tableau
 #   ./preuve_copies_mortes.sh --morts    # seulement les chemins prouves morts
 #
+# =============================================================================
+# ⚠️ LE DOMAINE DE CETTE PREUVE, MESURE LE 27/08 — 736 FICHIERS SONT DEHORS
+# =============================================================================
+#   Cette preuve dit : « aucun .jenga ne le cite, aucun joker ne le couvre ».
+#   Elle ne peut donc rien dire d un fichier QUI N A JAMAIS EU VOCATION A ETRE
+#   COMPILE.
+#
+#   MESURE : 736 fichiers visuels ou documentaires sont suivis sous Applications/
+#   et Kernel/ (png, jpg, docx, pdf, html). SUR CES 736, LES 736 vivent dans un
+#   dossier qui ne contient AUCUNE source suivie. 18 dossiers, dont :
+#       237  Applications/NKCode/data/textures/icon
+#       237  Applications/NK3DModeler/data/textures/icon
+#       156  Applications/Songoo/Resources/Songoo/assets/animrihen
+#        16  Applications/Nogee/design
+#        15  Kernel/Runtime/NKGraph/references
+#         2  Applications/NkAnimaEditor/important
+#
+#   ⚠️ AUCUN N EST SUSPECT. Un fichier qu aucun .jenga ne mentionne n est pas
+#   forcement mort : il peut n avoir jamais eu vocation a etre compile. Des
+#   icones, des textures, des references de design, un dossier nomme
+#   « important ». Ce sont des ACTIFS, pas du code oublie.
+#
+#   CE QUE CA VEUT DIRE POUR QUI VOUDRA ELARGIR CET OUTIL : la tentation sera de
+#   lui donner plus de fichiers. Elle a deja ete mesuree et refusee une fois --
+#   passer aux 810 sources d Applications/ rendait 449 morts, dont un en-tete
+#   inclus par 13 fichiers. Passer aux ACTIFS serait pire : la preuve les
+#   declarerait TOUS morts, les 736, par construction.
+#
+#   LE 27/08, DIX-NEUF DE CES FICHIERS ONT FAILLI PARTIR AVEC DU CODE MORT. Ils
+#   etaient dans « Applications/Pong copy/ », un dossier prouve mort et supprime.
+#   La preuve portait sur ses SOURCES ; elle ne disait rien de ses captures. Elles
+#   vivent maintenant dans Applications/Pong/Captures/2026-05-16_bug_rendu/, avec
+#   un LISEZ-MOI qui dit ce qu on sait et ce qu on ne sait pas d elles.
+#
+#   « La population et la preuve sont solidaires. » Le domaine de celle-ci
+#   s arrete aux sources, et il s y arrete par construction, pas par oubli.
+# =============================================================================
+#
 # ⚠️ CE SCRIPT NE SUPPRIME RIEN, et c'est deliberе : supprimer 27 fichiers depuis
 #   une branche pendant que cinq agents travaillent fabrique des conflits qu'on
 #   resout mal. Il PROUVE ; la suppression se decide et se fait sur main.
