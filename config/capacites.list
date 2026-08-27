@@ -330,6 +330,61 @@
 #   mesure. Elle attend un arbitrage comme le reste.
 # =============================================================================
 
+# =============================================================================
+# ⚠️ TROISIEME LIMITE : LE PERIMETRE EST TROIS EN-TETES CHOISIS A LA MAIN
+# =============================================================================
+#   D1 lit UN en-tete (ENTETES_D1), D2 en lit TROIS (ENTETES_D2). Ces noms sont
+#   ecrits dans le script : c est une population DECLAREE, pas devinee -- et
+#   c est la bonne categorie. Mais DECLAREE N EST PAS COMPLETE.
+#
+#   MESURE DU 27/08 : gpuTimeMs vaut 0.f dans NkRendererTypes.h:669,
+#   NkRenderGraph.h:110 et NkIDevice.h:446, n est affecte NULLE PART, et est LU
+#   POUR ETRE AFFICHE (NkOverlayRenderer.cpp:50, « GPU:%.2fms »). Deux de ces
+#   trois en-tetes NE SONT PAS dans ENTETES_D2. Le detecteur ne l a jamais dit.
+#
+#   COUT DE L ELARGISSEMENT, MESURE : NkRendererTypes.h + NkRenderGraph.h =
+#   +141 champs a examiner (349 -> 490, +40 %), 115 noms distincts.
+#   RENDEMENT, MESURE : 19 de ces 115 ne sont accedes par « . » ni « -> » NULLE
+#   PART ; moins deux membres prives = 17 candidats reels AU MINIMUM.
+#   ⚠️ 17 EST UN PLANCHER : l index ne distingue pas lecture et ecriture, donc un
+#   champ ECRIT ET JAMAIS LU -- la forme la plus courante des neuf capacites
+#   creuses d origine -- N Y FIGURE PAS. Le vrai nombre est plus grand.
+#   Et 10 des 17 sont des compteurs de stats de rendu (cullTimeMs, geomTimeMs,
+#   postTimeMs, shadowTimeMs, pipelineSwitches, shaderSwitches, textureBinds,
+#   shadowCasters, lightsActive, culled) : les FRERES de gpuTimeMs.
+#
+#   NON FAIT : c est un +40 % sur l outil, donc un arbitrage de Rodolf.
+#
+# =============================================================================
+# ⚠️ QUATRIEME LIMITE : UN FILTRE PAR EXTENSION EST UN MOTIF
+# =============================================================================
+#   verif_chemins.sh construit sa population avec
+#       git ls-files '*.sh' '*.py' '*.bat' '*.ps1' '*.cmd'
+#   C est une DECOUVERTE (git fait foi, pas une devinette de nom), mais le filtre
+#   d extension EST un motif : un script executable sans extension -- un fichier
+#   nomme « deploy » avec un shebang -- lui echapperait entierement.
+#
+#   MESURE DU 27/08 : ZERO fichier suivi porte un shebang sans extension.
+#   LE TROU EST DONC VIDE AUJOURD HUI. Il n est pas ferme.
+#
+#   ⚠️ UN TROU VIDE QU ON A MESURE N EST PAS UN TROU FERME. La difference est
+#   qu on sait qu il est vide -- et qu on saura le jour ou il ne le sera plus,
+#   seulement si quelqu un remesure. Personne ne le fera si ce n est pas ecrit.
+#
+# =============================================================================
+# CE QUE LES QUATRE DISENT ENSEMBLE, ET QU AUCUNE NE DIT SEULE
+# =============================================================================
+#   1. CONTRAT              init.api -- un defaut qui n est pas dans un CHAMP
+#   2. LECTURE-VERS-JOURNAL « lu » n est pas « honore »
+#   3. PERIMETRE            trois en-tetes choisis a la main
+#   4. EXTENSION            un filtre d extension reste un motif
+#
+#   LE CLIQUET MESURE CE QUE LES DETECTEURS VOIENT, PAS CE QUE LE DEPOT CONTIENT.
+#   Les quatre limites bornent le premier ; aucune ne borne le second, et c est
+#   precisement pour ca qu elles sont ecrites ICI, contre le chiffre, et non dans
+#   un document que celui qui lit le chiffre n ouvrira pas.
+# =============================================================================
+
 # PLAFOND-A-DATER = 24
 #
 # RELEVE DE 24 A 25 LE 2026-08-24 -- geste DELIBERE, et voici sa raison.

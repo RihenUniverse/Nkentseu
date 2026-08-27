@@ -2880,3 +2880,62 @@ domaine** : elle discrimine encore. Sur les 810, elle ne discriminait plus.
 - **`verif_chemins.sh` filtre par EXTENSION**, ce qui est un motif. Mesuré : **zéro
   fichier suivi porte un shebang sans extension**, donc le trou est vide
   aujourd'hui — mais il existe.
+
+---
+
+# Les trois familles du 27/08, au catalogue
+
+Elles ne parlent pas de ce dépôt : elles frapperont n'importe qui, dans n'importe
+quel projet. C'est pour ça qu'elles sont regroupées ici plutôt que laissées dans
+le récit de la journée qui les a produites.
+
+## 1. La population et la preuve sont solidaires
+
+> **Élargir la population d'un outil sans réécrire sa preuve n'est pas une
+> amélioration, c'est une invalidation.**
+
+`preuve_copies_mortes.sh` prouve la mort par *« aucune citation dans un `.jenga`,
+aucun joker »*. Sur une **copie** — un fichier que personne n'inclut jamais — la
+preuve tient. Passée à tout `Applications/` : **449 morts sur 810**, dont
+`ConquerorAIABI.h` **inclus par 13 fichiers**. *Un en-tête n'est pas cité dans un
+`.jenga`, il est inclus par du code.*
+
+**Le signe qui ne trompe pas** : une preuve sortie de son domaine **cesse de
+discriminer**. 28 fichiers → 28 morts (0 vivant, mais population homogène) ;
+810 → 449 morts et 361 vivants **avec des faux des deux côtés**. Quand le tri
+devient un tas, la preuve a changé de question.
+
+## 2. Un filtre d'exclusion écrit sur le nom du type supprime les appels qualifiés
+
+> **Le filtre retire exactement la population cherchée, sans erreur et sans bruit.**
+
+```bash
+grep -rn "CreateWithFallback" ... | grep -v NkDeviceFactory   # ecarter la DEFINITION
+```
+
+La définition s'écrit `NkIDevice *NkDeviceFactory::CreateWithFallback(...)` — **et
+l'appel aussi**. Résultat rendu : *« zéro appelant »*. Réel : **neuf**.
+
+⚠️ **Elle est plus probable quand on est rigoureux** : c'est la volonté d'écarter
+la définition qui la crée. Et elle rend **le vide**, qui se lit « il n'y a rien »,
+jamais « j'ai trop filtré ». **Parade** : chercher le nom **qualifié**, et
+retrancher la définition **par sa forme**, jamais par un motif que la population
+partage.
+
+## 3. Comparer l'arbre entier s'attribue le travail des autres
+
+> **Dans un dépôt à plusieurs agents, une épreuve qui vérifie « git ne voit rien »
+> rougit sur le travail de quelqu'un d'autre.**
+
+Réglé trois fois avant d'être juste :
+
+```
+v1  « git ne voit RIEN »          -> rougit sur un arbre deja sale
+v2  differentiel sur TOUT l arbre -> rougit sur un fichier cree PENDANT la course
+v3  differentiel sur LES SEULS FICHIERS QUE L EPREUVE DECLARE TOUCHER
+```
+
+**Une épreuve répond de ce qu'ELLE change.** Le corollaire vaut dans l'autre sens
+et coûte plus cher : deux chantiers qui **partagent** un fichier de sortie se
+volent leurs mesures sans que rien n'échoue — c'est le même défaut que
+`/tmp/msg.txt`, vu depuis la lecture au lieu de l'écriture.

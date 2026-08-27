@@ -908,3 +908,45 @@ théorique : c'est un chiffre faux montré à un utilisateur sur 21 sites d'appe
 périmètre est une **donnée déclarée**, pas un oubli — mais il a un angle mort, et
 le voici chiffré : **l'élargir coûterait +141 champs à examiner (349 → 490,
 +40 %)**. *Proposé, chiffré, non fait.*
+
+---
+
+## ⚠️ Le compte des fichiers morts passe de 28 à 35 — et personne n'a écrit dix fichiers
+
+**Rien n'est apparu.** Le compte a changé parce que **l'outil regardait au mauvais
+endroit**, et voici exactement lequel.
+
+`preuve_copies_mortes.sh` choisissait ses candidats par un motif appliqué au **nom
+de fichier** :
+
+```python
+re.search(r" copy( \d+)?\.(h|hpp|cpp|inl|c)$", f)     # le NOM
+```
+
+Or `Applications/Pong copy/` est un **dossier** copie — et ses **dix** sources
+portent des noms parfaitement normaux : `Apps.cpp`, `PongGame.h`,
+`Renderer/NkRasterizer.h`… **Le motif appliqué au nom en voyait zéro.**
+
+Le motif porte désormais sur le **chemin** :
+
+```
+avant   28 fichiers examines   28 prouves morts   13 s
+apres   38 fichiers examines   35 prouves morts   16 s
+```
+
+| | |
+|---|---|
+| **+10** | les sources de `Applications/Pong copy/`, invisibles jusqu'ici |
+| **+1** | `PBRGame.cpp`, déclaré à la main (nom normal, mort quand même) |
+| **−4** | 3 fichiers désormais « encore compilés » + l'arithmétique du recouvrement |
+
+📌 **Les 3 « encore compilés » sont la bonne nouvelle** : ils prouvent que la
+preuve **discrimine toujours**. Un outil qui déclare tout mort ne prouve plus rien.
+
+> **Ces 35 fichiers étaient déjà morts hier. Seul le regard a changé.**
+
+⚠️ **Et la vraie parade a été mesurée puis refusée** : prouver les **810** fichiers
+d'`Applications/` prend 6 min 41 s — acceptable — mais rend **449 morts**, dont
+`ConquerorAIABI.h` qui est **inclus par 13 fichiers**. La preuve de l'outil ne
+tient que sur des copies. *Élargir la population sans réécrire la preuve n'est pas
+une amélioration, c'est une invalidation.*
