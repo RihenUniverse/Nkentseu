@@ -934,8 +934,40 @@ while IFS='|' read -r det sym ou promesse val note; do
   fi
 done < "$TMP/detectes.txt"
 
+# -- UNE DISPARITION NE DIT PAS POURQUOI ELLE A EU LIEU (27/08) ---------------
+# Le message d origine disait « il a ete implemente ou retire » : DEUX causes
+# opposees dans une seule phrase, et aucune n etait distinguee.
+#   IMPLEMENTE  la capacite est honoree -> excellente nouvelle (B4 : 145 -> 144)
+#   RETIRE      le champ n existe plus  -> la ligne est perimee, a supprimer
+#   ⚠️ ET UNE TROISIEME, QUE PERSONNE NE VOYAIT : une LECTURE CREUSE ajoutee.
+#      Le critere de D2 est « ce champ est-il lu ? », et JOURNALISER est une
+#      lecture. Un logger.Warn suffit a faire sortir n importe quelle dette de la
+#      liste des candidats sans rien honorer du tout.
+# On ne peut pas juger la qualite d une lecture -- mesure du 27/08 : sur 6433
+# lignes de journal, 17,6 % portent AUSSI un if/return/affectation, donc la
+# distinction se trompe une fois sur six. MAIS ON PEUT REFUSER QU UNE DISPARITION
+# PASSE INAPERCUE.
+# La seule chose mecanisable sans deviner : le symbole est-il ENCORE DECLARE ?
+awk -F'|' '{ print $1 "::" $2 }' "$TMP/champs.txt" "$TMP/virtuelles.txt" 2>/dev/null | sort -u > "$TMP/declares.txt"
+
+declare -a ORPH_A_EXAMINER=() ORPH_TRANCHEE=() ORPH_PERIMEE=()
 for cle in "${CL_ORDRE[@]}"; do
-  [ -z "${VU[$cle]:-}" ] && ORPHELINES+=("$cle")
+  [ -n "${VU[$cle]:-}" ] && continue
+  ORPHELINES+=("$cle")
+  det="${cle%%|*}"; sym="${cle#*|}"
+  # D3 et HUM ne tirent pas leurs symboles des en-tetes : hors mecanisme.
+  case "$det" in D3|HUM) continue ;; esac
+  if grep -qxF -- "$sym" "$TMP/declares.txt"; then
+    # le symbole EXISTE toujours et n est plus candidat : quelqu un doit dire pourquoi
+    if [ "${CL_CLASSE[$cle]}" = "dette-datee" ]; then
+      ORPH_A_EXAMINER+=("$cle")
+    else
+      ORPH_TRANCHEE+=("$cle")
+    fi
+  else
+    # le symbole a disparu du code : la ligne est perimee, ce n est pas un defaut
+    ORPH_PERIMEE+=("$cle")
+  fi
 done
 
 # -- LE CLIQUET SE SERRE, IL NE SE DESSERRE PAS ------------------------------
@@ -974,10 +1006,37 @@ fi
 
 RC=0
 
-if [ "${#ORPHELINES[@]}" -gt 0 ]; then
-  dire "[cap]     info ${#ORPHELINES[@]} ligne(s) dont le symbole n'est plus detecte —"
-  dire "[cap]          il a ete implemente ou retire. Information, jamais un echec :"
-  for c in "${ORPHELINES[@]}"; do dire "[cap]          - ${c#*|}   (${c%%|*})"; done
+if [ "${#ORPH_TRANCHEE[@]}" -gt 0 ]; then
+  dire "[cap]     info ${#ORPH_TRANCHEE[@]} ligne(s) dont le symbole n'est plus detecte, et qui"
+  dire "[cap]          PORTENT DEJA une reponse (implementee, vision-assumee, morte) :"
+  for c in "${ORPH_TRANCHEE[@]}"; do dire "[cap]          - ${c#*|}   (${c%%|*}, ${CL_CLASSE[$c]})"; done
+fi
+if [ "${#ORPH_PERIMEE[@]}" -gt 0 ]; then
+  dire "[cap]     info ${#ORPH_PERIMEE[@]} ligne(s) PERIMEE(S) : le symbole n'est plus declare du tout."
+  dire "[cap]          Le champ a ete supprime du code. La ligne peut partir — ce n'est"
+  dire "[cap]          PAS un defaut, et c'est pourquoi ceci reste une information."
+  for c in "${ORPH_PERIMEE[@]}"; do dire "[cap]          - ${c#*|}   (${c%%|*})"; done
+fi
+if [ "${#ORPH_A_EXAMINER[@]}" -gt 0 ]; then
+  dire2 ""
+  dire2 "[cap]     ECHEC : ${#ORPH_A_EXAMINER[@]} DETTE(S) ONT DISPARU DE LA DETECTION SANS REPONSE."
+  for c in "${ORPH_A_EXAMINER[@]}"; do dire2 "[cap]       - ${c#*|}   (${c%%|*})"; done
+  dire2 "[cap]     Le symbole est TOUJOURS DECLARE, la ligne dit toujours « dette-datee »,"
+  dire2 "[cap]     et le detecteur ne le voit plus. Trois causes possibles, et elles"
+  dire2 "[cap]     n'ont pas du tout le meme sens :"
+  dire2 "[cap]       - la capacite a ete HONOREE           -> reclasse « implementee »,"
+  dire2 "[cap]         et la note doit dire OU est la lecture. C'est une bonne nouvelle."
+  dire2 "[cap]       - une LECTURE CREUSE a ete ajoutee    -> un logger.Warn suffit a faire"
+  dire2 "[cap]         sortir une dette de la liste sans rien honorer. Le drapeau ne fait"
+  dire2 "[cap]         toujours rien, et le cliquet aurait descendu pour rien."
+  dire2 "[cap]       - le detecteur s'est casse            -> voir les temoins D1/D2."
+  dire2 "[cap]     ⚠️ ON NE PEUT PAS JUGER LA QUALITE D'UNE LECTURE — mesure du 27/08 :"
+  dire2 "[cap]     17,6 % des lignes de journal portent AUSSI un if/return/affectation."
+  dire2 "[cap]     MAIS ON PEUT REFUSER QU'UNE DISPARITION PASSE INAPERCUE. Ce controle"
+  dire2 "[cap]     ne tranche rien : il exige qu'un humain regarde le moment ou la"
+  dire2 "[cap]     capacite quitte la liste. Un faux vert n'est dangereux que tant que"
+  dire2 "[cap]     personne ne voit l'instant ou il nait."
+  RC=4
 fi
 
 if [ "${#NON_CLASSES[@]}" -gt 0 ]; then
