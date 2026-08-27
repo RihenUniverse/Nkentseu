@@ -67,6 +67,7 @@ epreuve_script() {
     ce-controles) dire "./contre_epreuve_controles.sh" ;;
     ce-chemins)   dire "./contre_epreuve_chemins.sh" ;;
     temoins-cap)  dire "./epreuve_temoins_cap.sh" ;;
+    disparition)  dire "./epreuve_disparition.sh" ;;
     *)            printf '%s\n' "" ;;
   esac
 }
@@ -75,7 +76,7 @@ ENREGISTRER=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --enregistrer) ENREGISTRER="${2:-}"; shift 2 ;;
-    --epreuves)    dire "ce-bancs  ce-capacites  ignore-gpu  msaa-contrat  ce-controles  ce-chemins  temoins-cap"; exit 0 ;;
+    --epreuves)    dire "ce-bancs  ce-capacites  ignore-gpu  msaa-contrat  ce-controles  ce-chemins  temoins-cap  disparition"; exit 0 ;;
     -h|--help)     sed -n '2,48p' "$0"; exit 0 ;;
     *) dire2 "[ctl] option inconnue : $1"; exit 2 ;;
   esac

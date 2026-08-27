@@ -42,6 +42,7 @@
 #     ce-controles    ./contre_epreuve_controles.sh
 #     ce-chemins      ./contre_epreuve_chemins.sh
 #     temoins-cap     ./epreuve_temoins_cap.sh
+#     disparition     ./epreuve_disparition.sh
 #     aucune          PERSONNE NE SAIT LE FAIRE ROUGIR AUJOURD'HUI. Ce n'est pas
 #                     une case a remplir plus tard : c'est le resultat le plus
 #                     utile de ce fichier. Motif vide.
@@ -133,3 +134,10 @@ chem/tolerance-comptee           | verif_chemins.sh | qu une tolerance disparais
 chem/interdit-reste-rouge        | verif_chemins.sh | que « interdit » serve de case pour classer sans reparer | ce-chemins | reste ROUGE, ce n est pas une case pour classer sans reparer
 chem/canari-perdu                | verif_chemins.sh | un detecteur qui ne lit plus les fichiers et rend vert | ce-chemins | ECHEC D INSTRUMENT, et surtout PAS un vert
 chem/plancher-lecture            | verif_chemins.sh | conclure en n ayant presque rien lu | ce-chemins | un outil qui ne lit presque plus rien ne conclut pas
+# --- la disparition d une dette (27/08) : on ne juge pas la lecture, on refuse
+#     qu une disparition passe inapercue ----------------------------------------
+cap/disparition-sans-reponse     | verif_capacites.sh | qu une dette quitte la liste des candidats sans que personne ne dise pourquoi -- une LECTURE CREUSE (un logger.Warn suffit) sortirait n importe quelle dette et ferait descendre le cliquet pour rien | disparition | code 4 : une dette disparue sans reponse fait ROUGIR
+cap/disparition-symbole-nomme    | verif_capacites.sh | compter une disparition sans NOMMER le symbole concerne | disparition | le symbole est NOMME
+cap/disparition-causes-dites     | verif_capacites.sh | signaler une disparition sans dire que la cause dangereuse (lecture creuse) est possible | disparition | la cause dangereuse est nommee (lecture creuse)
+cap/disparition-silence-legitime | verif_capacites.sh | crier quand un champ est SUPPRIME du code -- un controle qui rougit a chaque suppression est desactive dans la semaine | disparition | une suppression de code ne fait PAS rougir
+cap/disparition-deja-tranchee    | verif_capacites.sh | rougir sur une disparition dont quelqu un a deja rendu compte (implementee, vision-assumee) | disparition | une disparition deja tranchee ne rougit pas
