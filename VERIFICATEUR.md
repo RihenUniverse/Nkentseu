@@ -2356,3 +2356,163 @@ deux cases.*
 
 **Je n'ai écrit aucune épreuve.** Le tri était la demande ; les épreuves sont le
 travail suivant, et il se décide sur ce tableau.
+
+---
+
+## Sur quel backend mes bancs GPU tournent-ils vraiment ?
+
+Signalement du chantier de cartographie : *`CreateWithFallback` ignore `init.api`,
+donc `--backend=` est sans effet, en silence*. **Un banc qui croit mesurer Vulkan et
+mesure OpenGL rend un vert parfaitement faux.** Vérifié avant tout le reste.
+
+**Ce que je mesure, et ça écarte l'alarme sur ce chemin-ci :**
+
+```
+NkDeviceFactory::Create        LIT init.api, le pose, appelle CreateForApi  -> honore
+NkDeviceFactory::CreateForApi  switch, une classe par cas, nullptr sinon    -> AUCUN repli
+NkDeviceFactory::CreateWithFallback   ecrase effectiveInit.api a chaque tour -> ignore, oui
+                                      MAIS : 0 appelant dans tout l arbre
+```
+
+Les occurrences trouvées de `CreateWithFallback` sont toutes celles de
+**`NkContextFactory::CreateWithFallback`** — une autre fonction, dans NKCanvas.
+*Ce n'est pas la même, et le dire évite qu'on corrige la mauvaise.*
+
+Mes deux bancs appellent `Create`, pas `CreateWithFallback`. **Ils tournaient bien
+sur ce qu'ils annonçaient.**
+
+### ⚠️ Mais ils l'annonçaient sans le lire, et ça, c'est un vrai défaut
+
+```cpp
+printf("--- peripherique : %s ---", NkGraphicsApiName(NkGraphicsApi::NK_GFX_API_VULKAN));
+                                                      ^ ce qu il a DEMANDE
+```
+
+**C'était vrai par accident.** Le jour où un repli apparaîtrait, le banc écrirait
+« Vulkan » en mesurant autre chose — et son rouge, ou son vert, porterait sur un
+backend qu'il n'aurait jamais nommé.
+
+`NkIDevice::GetApi()` existe (`NkIDevice.h:193`, virtuelle pure, surchargée par
+chaque backend). **Les deux bancs le lisent maintenant**, et **refusent de mesurer**
+si l'API obtenue diffère de celle demandée — `IGNORÉ`, pas `ÉCHEC` : un backend
+qui n'est pas celui demandé n'est pas un défaut du contrat.
+
+> **Un banc qui affirme son backend sans le lire est vrai jusqu'au jour où il ne
+> l'est plus, et ce jour-là il ne le dira pas.**
+
+---
+
+## 🔴 Le bout de la chaîne — mesuré en couple, et la formule était trop simple
+
+*Une défense redondante est invisible à une mutation à un seul défaut ; elle ne se
+mesure qu'en couple.* J'avais écrit *« six sont sauvés par un autre contrôle »* et
+*« deux ruptures simultanées donnent un vert »*. **La seconde moitié était fausse,
+et la mesure le dit.**
+
+Méthode : neutraliser **plusieurs** contrôles à la fois, forcer la condition
+défavorable, lire le code de sortie.
+
+| ruptures simultanées | résultat | ce qui rattrape |
+|---|---|---|
+| en-têtes | **2** | plancher `NB_MOTIFS` |
+| en-têtes + `NB_MOTIFS` | **2** | plancher `NB_HITS` |
+| en-têtes + `NB_MOTIFS` + `NB_HITS` | **2** | **témoins D1 + D2** |
+| corpus + `NB_HITS` + témoins | **4** | **D3** — qui ne lit pas le corpus |
+| détecteur muet + témoins | **0 — VERT** | *rien* |
+
+**Deux résultats que je n'attendais pas :**
+
+📌 **La profondeur dépend du point de rupture, pas du nombre.** Par le chemin des
+préconditions il faut **quatre** ruptures simultanées pour atteindre le vert. Par
+le chemin des témoins, **deux** suffisent. Dire « il faut deux ruptures » était
+exact pour un chemin et faux pour l'autre.
+
+📌 **D3 est une redondance que personne n'a conçue.** Il lit `Resources/` et
+`NkResources.h`, **pas** le corpus C++ : quand le corpus disparaît, D3 détecte
+encore 7 candidats et fait rougir la passe. *Une sécurité qu'on n'a pas voulue est
+une sécurité qu'on peut retirer sans le savoir.*
+
+> **Les six « rattrapés » ne sont donc ni six sécurités ni une seule : ce sont
+> deux points de rupture distincts** — les témoins D1/D2, et D3. Et un seul des
+> deux a été écrit pour ça.
+
+---
+
+## Les trois formes de verdict jamais exécutées — tranchées, et deux sont exercées
+
+**`code+presence:` → exercée**, sur `NkMsaaContractCheck`, motif `16 combinaisons`.
+*Non redondant avec le code de sortie, et c'est le point* : si quelqu'un ramenait
+les 16 combinaisons à trois exemples, les cas passeraient encore, le code resterait
+`0`, **et le banc ne serait plus exhaustif sans que personne ne le voie**. C'est
+exactement ce que le code de sortie ne peut pas dire.
+
+**`code+absence:` → exercée**, sur `NkSLCheck`, motif `success=0`. C'est le marqueur
+de **son propre défaut historique** : il rendait `0` inconditionnellement avec
+`success=0` dans sa sortie. Le code de sortie a été corrigé le 22/08 ; **rien ne
+gardait contre la rechute**. Mesure du 27/08 : `success=0` apparaît **0 fois**.
+
+**Les deux ont été vues rouges**, en inversant leur motif :
+
+```
+presence sur motif absent  -> ECHEC : « motif de succes attendu ABSENT »
+absence  sur motif present -> ECHEC : « motif interdit trouve (/16 combinaisons/) »
+```
+
+⚠️ **Ces deux rouges ne sont PAS journalisés** : ils viennent d'une manipulation
+manuelle, pas d'une épreuve enregistrée. *Le journal ne consigne que ce qu'une
+épreuve a produit* — les inscrire à la main serait exactement ce que le journal
+existe pour rendre impossible. Ils restent donc « jamais rouges » **au journal**,
+et leur épreuve est un travail à part.
+
+**`sans-verdict` → gardée, non exercée, et voici pourquoi.** Elle encode une
+politique — *un banc qui ne sait pas se juger compte INDÉTERMINÉ, jamais vert* —
+pour un état où ce dépôt **a déjà été** (`NkSLCheck`, avant le 22/08). La retirer
+retirerait une garde contre un état déjà vécu. **Lui coller un banc de production
+pour la faire tourner serait pire** : ce serait déclarer qu'un banc ne sait pas se
+juger alors qu'il sait, pour satisfaire un compteur. Elle sera exercée par une
+épreuve, sur un banc fantôme, jamais sur un banc réel.
+
+---
+
+## Ce que je compte, et la définition — pour que le désaccord se rencontre
+
+Deux comptages divergent avec le chantier de cartographie. **Je ne m'aligne pas et
+je ne défends pas : j'écris ma définition.**
+
+| | ma définition | ma mesure |
+|---|---|---|
+| `timestampQueries` | **sites d'écriture** `mCaps.timestampQueries` dans `Kernel/**/*.cpp`, hors `Build/` | **3** — DX12:3022 et GL:1034 (`= true` en dur), VK:2473 (`props.limits.timestampComputeAndGraphics`) |
+| | ⚠️ **je ne compte pas** les backends qui ne l'écrivent PAS | DX11 et Software ne l'écrivent jamais : le champ reste `false` par défaut |
+| `gpuTimeMs` affiché | **fichiers** contenant un appel à `GetOverlay()`, dans `Applications/` et `Engine/` | **21 fichiers** |
+| | ⚠️ **je ne compte pas des applications** | les 18 démos Sandbox sont **un seul** projet `.jenga` |
+
+> **« 4 backends » et « 3 sites d'écriture » peuvent être vrais ensemble** : un
+> backend qui n'écrit rien *déclare* quand même la valeur par défaut. **« 15
+> applications » et « 21 fichiers » aussi.** Ce ne sont pas deux erreurs, ce sont
+> deux unités.
+
+---
+
+## Le rendement de l'élargissement de périmètre — chiffré, pas seulement le coût
+
+**Coût** : `NkRendererTypes.h` + `NkRenderGraph.h` = **+141 champs** à examiner
+(349 → 490, **+40 %**), **115 noms distincts**.
+
+**Rendement, mesuré** : parmi ces 115, **19 ne sont accédés par `.` ou `->` nulle
+part** dans `Kernel/`, `Engine/`, `Applications/`. Deux sont des membres privés
+(`mCompiled`, `mNextResId`), probablement utilisés nus dans leur propre classe →
+**17 candidats réels au minimum**.
+
+⚠️ **17 est un PLANCHER, pas une estimation.** Mon index ne distingue pas lecture
+et écriture : un champ **écrit et jamais lu** — la forme la plus courante des neuf
+capacités creuses d'origine — **n'apparaît pas dans ces 19**. Le vrai nombre est
+plus grand ; je ne sais pas de combien.
+
+📌 **Et la famille est cohérente : 10 des 17 sont des compteurs de statistiques de
+rendu** — `cullTimeMs`, `geomTimeMs`, `postTimeMs`, `shadowTimeMs`,
+`pipelineSwitches`, `shaderSwitches`, `textureBinds`, `shadowCasters`,
+`lightsActive`, `culled`. **Ce sont les frères de `gpuTimeMs`**, dont on sait
+maintenant qu'il vaut `0.f` par construction et qu'il s'affiche à l'utilisateur.
+
+**+40 % de champs à examiner pour au moins 17 lignes, dont dix d'une famille déjà
+avérée menteuse.** Ce n'est pas un +40 % qui trouverait deux lignes.

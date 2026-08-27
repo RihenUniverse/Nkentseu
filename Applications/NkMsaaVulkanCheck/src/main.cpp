@@ -269,7 +269,26 @@ int main() {
 		return kIgnore;
 	}
 
-	printf("\n--- peripherique : %s ---\n", NkGraphicsApiName(NkGraphicsApi::NK_GFX_API_VULKAN));
+	// ---- TEMOIN D IDENTITE DU BACKEND, AVANT TOUTE MESURE --------------------
+	// DEFAUT DE CE BANC, TROUVE LE 27/08 SUR SIGNALEMENT DU CHANTIER DE
+	// CARTOGRAPHIE. Il imprimait le nom de l API DEMANDEE, pas de celle OBTENUE.
+	// C etait vrai par accident : NkDeviceFactory::Create honore bien init.api,
+	// et CreateForApi ne se replie JAMAIS (switch, une classe par cas, nullptr
+	// sinon). Mais un banc qui AFFIRME son backend sans le LIRE affirmerait
+	// « Vulkan » le jour ou un repli apparaitrait, en mesurant autre chose.
+	// « Un banc qui mesure autre chose que ce qu il annonce est pire qu un banc
+	// absent. » Il le LIT maintenant, et il REFUSE de mesurer si ca ne
+	// correspond pas -- IGNORE, pas ECHEC : ce n est pas un defaut du contrat.
+	const NkGraphicsApi obtenue = dev->GetApi();
+	if (obtenue != NkGraphicsApi::NK_GFX_API_VULKAN) {
+		printf("\n[IGNORE] j ai demande Vulkan et j ai obtenu %s.\n", NkGraphicsApiName(obtenue));
+		printf("         Ce banc ne mesure QUE ToVkSamples ; sur un autre backend il\n");
+		printf("         mesurerait autre chose en pretendant mesurer Vulkan.\n");
+		printf("         Il se tait. Code %d, IGNORE -- ni succes, ni echec.\n", kIgnore);
+		NkDeviceFactory::Destroy(dev);
+		return kIgnore;
+	}
+	printf("\n--- peripherique : %s (LU sur le device, pas suppose) ---\n", NkGraphicsApiName(obtenue));
 	const NkDeviceCaps &caps = dev->GetCaps();
 	printf("    drapeaux MSAA de cette carte : 2x=%s 4x=%s 8x=%s 16x=%s   MaxSamples()=%u\n",
 		   caps.msaa2x ? "oui" : "non", caps.msaa4x ? "oui" : "non", caps.msaa8x ? "oui" : "non",

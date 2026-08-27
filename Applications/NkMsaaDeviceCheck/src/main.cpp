@@ -179,7 +179,19 @@ int main() {
 		return kIgnore;
 	}
 
-	printf("\n--- peripherique : %s ---\n", NkGraphicsApiName(retenue));
+	// TEMOIN D IDENTITE : on LIT l API du device obtenu au lieu de croire celle
+	// qu on a demandee. Meme correctif que dans NkMsaaVulkanCheck le 27/08 --
+	// ici le banc BALAIE plusieurs backends, donc l ecart serait encore plus
+	// facile a ne pas voir. La valeur LUE fait foi dans tout le rapport.
+	const NkGraphicsApi obtenue = dev->GetApi();
+	if (obtenue != retenue) {
+		printf("\n[IGNORE] j ai retenu %s et le device dit %s.\n", NkGraphicsApiName(retenue), NkGraphicsApiName(obtenue));
+		printf("         Un banc qui mesure autre chose que ce qu il annonce est pire\n");
+		printf("         qu un banc absent. Il se tait. Code %d, IGNORE.\n", kIgnore);
+		NkDeviceFactory::Destroy(dev);
+		return kIgnore;
+	}
+	printf("\n--- peripherique : %s (LU sur le device, pas suppose) ---\n", NkGraphicsApiName(obtenue));
 	const NkDeviceCaps &caps = dev->GetCaps();
 	printf("    drapeaux MSAA de cette carte : 2x=%s 4x=%s 8x=%s 16x=%s   MaxSamples()=%u\n",
 		   caps.msaa2x ? "oui" : "non", caps.msaa4x ? "oui" : "non", caps.msaa8x ? "oui" : "non",
