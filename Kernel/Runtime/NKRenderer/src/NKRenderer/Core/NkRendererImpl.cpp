@@ -70,6 +70,31 @@ namespace nkentseu {
 				return false;
 			}
 			logger.Info("[NkRendererImpl] Initialize start (api={0})\n", (int)mCfg.api);
+			// ── C1 : `debugOverlay` IMPLIQUE le sous-systeme d overlay (2026-08-27) ──
+			// ARBITRAGE DE RODOLF, lecture (A) sur trois proposees.
+			// Le champ etait declare, documente, et n avait AUCUNE lecture : le poser
+			// a true ne faisait rien. L allocation de NkOverlayRenderer etait pilotee
+			// par le seul drapeau de sous-systeme NK_SS_OVERLAY.
+			//
+			// POURQUOI (A) ET PAS (B) « le renderer DESSINE le panneau ». Mesure du
+			// 27/08 : DrawStats est appele par 18 sites, TOUS dans les applications,
+			// et le renderer ne dessine JAMAIS le panneau lui-meme. ForEditor() a un
+			// seul appelant, NK3DModeler, qui dessine DEJA ses stats
+			// (NkDemo3D.cpp:10755). (B) lui aurait donne DEUX panneaux superposes.
+			// Le panneau appartient a l application, pas au moteur.
+			//
+			// ⚠️ ET IL FALLAIT UN EFFET, PAS UNE TRACE. Un logger.Warn « debugOverlay
+			// demande sans NK_SS_OVERLAY » aurait suffi a faire sortir ce champ de la
+			// liste des candidats du detecteur -- « lu » -- SANS RIEN HONORER. La
+			// ligne ci-dessous CHANGE CE QUE LE RENDERER ALLOUE, et le banc
+			// NkDebugOverlayCheck le mesure par un avant/apres sur GetOverlay() :
+			// sans NK_SS_OVERLAY, le drapeau a false rend nullptr et le drapeau a
+			// true rend un overlay. Un effet, pas une trace.
+			if (mCfg.debugOverlay && !mCfg.Has(NK_SS_OVERLAY)) {
+				mCfg.subsystems = mCfg.subsystems | NK_SS_OVERLAY;
+				logger.Info("[NkRendererImpl] cfg.debugOverlay=true : NK_SS_OVERLAY ajoute "
+							"aux sous-systemes (l overlay sera alloue).\n");
+			}
 
 			// ── CORRECTIF course CPU/GPU (2026-07-28) : la PROFONDEUR DES RINGS DOIT
 			//    ÊTRE CELLE DU DEVICE, pas une valeur de config indépendante. ────────

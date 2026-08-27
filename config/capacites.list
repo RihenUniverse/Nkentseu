@@ -331,29 +331,28 @@
 # =============================================================================
 
 # =============================================================================
-# ⚠️ TROISIEME LIMITE : LE PERIMETRE EST TROIS EN-TETES CHOISIS A LA MAIN
+# 🟢 TROISIEME LIMITE : LEVEE LE 27/08 — le perimetre n est plus trois en-tetes
 # =============================================================================
-#   D1 lit UN en-tete (ENTETES_D1), D2 en lit TROIS (ENTETES_D2). Ces noms sont
-#   ecrits dans le script : c est une population DECLAREE, pas devinee -- et
-#   c est la bonne categorie. Mais DECLAREE N EST PAS COMPLETE.
+#   ELLE DISAIT : « D2 lit TROIS en-tetes choisis a la main ; declaree n est pas
+#   complete ». Elle citait gpuTimeMs, declare a 0.f dans NkRendererTypes.h:669
+#   et NkRenderGraph.h:110 -- deux fichiers hors perimetre -- affecte nulle part,
+#   et lu pour etre affiche.
 #
-#   MESURE DU 27/08 : gpuTimeMs vaut 0.f dans NkRendererTypes.h:669,
-#   NkRenderGraph.h:110 et NkIDevice.h:446, n est affecte NULLE PART, et est LU
-#   POUR ETRE AFFICHE (NkOverlayRenderer.cpp:50, « GPU:%.2fms »). Deux de ces
-#   trois en-tetes NE SONT PAS dans ENTETES_D2. Le detecteur ne l a jamais dit.
+#   RODOLF A AUTORISE L ELARGISSEMENT. ENTETES_D2 en compte CINQ. Mesure :
+#       143 -> 184 candidats, 41 apparus, ZERO disparu.
+#       chiffrage annonce : 17 AU PLANCHER   |   reel : 41
+#   gpuTimeMs est desormais detecte, classe, et porte sa note.
 #
-#   COUT DE L ELARGISSEMENT, MESURE : NkRendererTypes.h + NkRenderGraph.h =
-#   +141 champs a examiner (349 -> 490, +40 %), 115 noms distincts.
-#   RENDEMENT, MESURE : 19 de ces 115 ne sont accedes par « . » ni « -> » NULLE
-#   PART ; moins deux membres prives = 17 candidats reels AU MINIMUM.
-#   ⚠️ 17 EST UN PLANCHER : l index ne distingue pas lecture et ecriture, donc un
-#   champ ECRIT ET JAMAIS LU -- la forme la plus courante des neuf capacites
-#   creuses d origine -- N Y FIGURE PAS. Le vrai nombre est plus grand.
-#   Et 10 des 17 sont des compteurs de stats de rendu (cullTimeMs, geomTimeMs,
-#   postTimeMs, shadowTimeMs, pipelineSwitches, shaderSwitches, textureBinds,
-#   shadowCasters, lightsActive, culled) : les FRERES de gpuTimeMs.
+#   ⚠️ CE QUI RESTE VRAI, ET QU IL NE FAUT PAS LIRE COMME UNE VICTOIRE : le
+#   perimetre est toujours UNE LISTE ECRITE A LA MAIN, simplement plus longue.
+#   Cinq en-tetes ne sont pas « tous les en-tetes ». La limite n a pas disparu :
+#   ELLE A ETE DEPLACEE, et son cout de deplacement est maintenant connu
+#   (+40 % de champs pour +41 candidats, soit un rendement bien meilleur que
+#   l estimation prudente).
 #
-#   NON FAIT : c est un +40 % sur l outil, donc un arbitrage de Rodolf.
+#   ELLE EST GARDEE ICI, BARREE ET DATEE, PLUTOT QUE SUPPRIMEE. Une limite levee
+#   qu on efface laisse croire qu elle n a jamais existe ; celui qui voudra
+#   elargir une sixieme fois doit trouver le cout de la cinquieme.
 #
 # =============================================================================
 # ⚠️ QUATRIEME LIMITE : UN FILTRE PAR EXTENSION EST UN MOTIF
@@ -372,20 +371,54 @@
 #   seulement si quelqu un remesure. Personne ne le fera si ce n est pas ecrit.
 #
 # =============================================================================
-# CE QUE LES QUATRE DISENT ENSEMBLE, ET QU AUCUNE NE DIT SEULE
+# CE QUE LES TROIS DISENT ENSEMBLE, ET QU AUCUNE NE DIT SEULE
 # =============================================================================
 #   1. CONTRAT              init.api -- un defaut qui n est pas dans un CHAMP
 #   2. LECTURE-VERS-JOURNAL « lu » n est pas « honore »
-#   3. PERIMETRE            trois en-tetes choisis a la main
-#   4. EXTENSION            un filtre d extension reste un motif
+#   3. EXTENSION            un filtre d extension reste un motif
+#   (la limite de PERIMETRE a ete LEVEE le 27/08 : elle est gardee plus haut,
+#    barree et datee, avec le cout mesure de son deplacement.)
 #
 #   LE CLIQUET MESURE CE QUE LES DETECTEURS VOIENT, PAS CE QUE LE DEPOT CONTIENT.
-#   Les quatre limites bornent le premier ; aucune ne borne le second, et c est
+#   Les trois limites bornent le premier ; aucune ne borne le second, et c est
 #   precisement pour ca qu elles sont ecrites ICI, contre le chiffre, et non dans
 #   un document que celui qui lit le chiffre n ouvrira pas.
 # =============================================================================
 
-# PLAFOND-A-DATER = 24
+# =============================================================================
+# 27/08 - LE CLIQUET MONTE DE 24 A 26, ET CE N EST PAS UNE AGGRAVATION
+# =============================================================================
+#   ⚠️ LE RAISONNEMENT AVANT LE CHIFFRE, parce qu un compteur qui vient de
+#   descendre a 24 et qui remonte se lit comme une regression. Ce n en est pas
+#   une : AUCUNE DETTE NOUVELLE N A ETE CREEE. C est le CHAMP DE VISION qui a
+#   change.
+#
+#   Rodolf a autorise le 27/08 l elargissement du perimetre de D2 : deux
+#   en-tetes de plus, NkRendererTypes.h et NkRenderGraph.h. Mesure :
+#       143 candidats -> 184.   41 apparus, ZERO disparu.
+#   Chiffrage annonce avant la decision : « 17 candidats AU PLANCHER, et 17 est
+#   un plancher parce que l index ne distinguait pas lecture et ecriture ».
+#   Reel : 41. Le plancher etait un plancher.
+#
+#   LE DETAIL DU 24 -> 26 :
+#     +1  NkRendererStats::gpuTimeMs -- LA capacite qui a motive l elargissement.
+#         Vaut 0.f, AFFECTEE NULLE PART, et LUE POUR ETRE AFFICHEE
+#         (NkOverlayRenderer.cpp:50, « GPU:%.2fms », 21 fichiers d application).
+#     +2  NkDrawCall3D::receiveShadow et NkLight2DDesc::castShadow -- la regle (a)
+#         a REFUSE « vision-assumee » : du code livre leur ecrit `true`.
+#     -1  NkRendererConfig::debugOverlay -- HONOREE le meme jour (C1, lecture A).
+#
+#   CES TROIS DETTES EXISTAIENT HIER. Personne ne les voyait, parce que le
+#   detecteur ne lisait pas les fichiers ou elles vivent. Le chiffre monte parce
+#   qu on regarde plus loin, pas parce que le depot s est degrade.
+#
+#   ⚠️ ET C EST EXACTEMENT CE QUE LES LIMITES ECRITES SOUS CE BLOC DISENT :
+#   LE CLIQUET MESURE CE QUE LES DETECTEURS VOIENT, PAS CE QUE LE DEPOT CONTIENT.
+#   Le voir monter en elargissant la vue est la preuve que la phrase est vraie,
+#   pas un accident.
+# =============================================================================
+
+# PLAFOND-A-DATER = 26
 #
 # RELEVE DE 24 A 25 LE 2026-08-24 -- geste DELIBERE, et voici sa raison.
 #   Le cliquet repose sur une premisse : « le stock est un HERITAGE qui ne se
@@ -427,6 +460,11 @@
 FrameStats::cpuSubmitTimeMs                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 FrameStats::gpuMemoryUsedBytes               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 FrameStats::pipelineChanges                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+GraphResource::finalState                    | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+GraphResource::firstReader                   | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+GraphResource::lastWriter                    | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+GraphResource::lifeBegin                     | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+GraphResource::lifeEnd                       | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
 NkAttachmentDesc::storeOp                    | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkBindlessHeapDesc::debugName                | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkBindlessHeapDesc::maxSampledTextures       | D2  | vision-assumee  |         | non-examine - jamais-mentionne
@@ -485,7 +523,12 @@ NkDeviceCaps::textureCompressionBC           | D2  | dette-datee     | A-DATER |
 NkDeviceCaps::textureCompressionETC2         | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkDeviceCaps::timestampQueries               | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER, et haut dans la liste. Le chronometrage GPU est l INSTRUMENT DE MESURE du GPU, et ce projet entier repose sur la mesure.] F1, et les cinq du chronometrage GPU se tranchent ENSEMBLE. Examine le 23/08. 0 lecture, 3 ecritures (DX12:3022, GL:1034 true en dur ; VK:2473 requete reelle). DX11 et Software ne l ecrivent pas. Abandon (false) : rien ne casse, personne ne le lit.
 NkDeviceCaps::variableRateShading            | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDeviceFactory::CreateWithFallback          | HUM | dette-datee     | A-DATER | EXPRIMABLE, NON HONORE PAR CE CHEMIN-LA. NkDeviceFactory::Create LIT init.api et appelle CreateForApi, qui ne se replie jamais. CreateWithFallback, DANS LA MEME FABRIQUE, fait 'effectiveInit.api = api' A CHAQUE TOUR DE BOUCLE : le champ que l appelant a rempli est ecrase avant d avoir servi. Preuve qui ne depend d aucun comptage : a argument identique, en ne changeant QUE l ordre de la liste, le backend obtenu passe d OpenGL a Vulkan (mesure du chantier de cartographie). PORTEE REELLE, ET ELLE EST PETITE : 9 appelants, mais UN SEUL est a la fois BATI et SILENCIEUX -- NkRenderer2DDemo.cpp:75 et :79 (cible r2d01, RendererSandbox.jenga:358) : liste figee, aucune tentative de devInfo.api, aucun avertissement. NkEditorRHIRenderer.h:98 est SUR (il met di.api en tete de liste et filtre avant). Les 3 sites de NkRendererDemo.cpp sont SURS (logger.Warn 'Backend demande indisponible ... fallback auto' AVANT le repli) mais leur cible est COMMENTEE (RendererSandbox.jenga:357) : LE BON PATRON EXISTE ET NE SE COMPILE PAS -- une bonne pratique morte ne recrute personne. Les 3 sites de 'NkRendererDemo copy.cpp' : fichier nomme copy, non bati, a verser au dossier des copies mortes. ⚠️ AUCUN DE MES TROIS DETECTEURS NE PEUT LA VOIR : D2 cherche un champ jamais lu, or init.api EST lu -- par l autre fonction. Le defaut n est pas dans le champ, il est dans le CONTRAT D UNE FONCTION parmi deux homonymes de contrats opposes. Trouvee par une personne, pas par un outil, et c est pourquoi la colonne detecteur dit HUMAIN. MA PROPRE ERREUR SUR CETTE LIGNE, gardee ici : j avais conclu '0 appelant' avec un 'grep -v NkDeviceFactory' -- un filtre d exclusion ecrit sur le nom du TYPE supprime aussi tous les APPELS QUALIFIES par ce type. Remesure sur le nom qualifie : 10 occurrences, moins la definition = 9 appelants. ARBITRAGE : hors de mon perimetre. Correction attendue chez qui tient NkRenderer2DDemo -- appliquer l un des deux patrons qui existent DEJA dans le depot.
 NkDispatchIndirectArgs::groupsX              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkDrawCall3D::aoStrength                     | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkDrawCall3D::lightLayerMask                 | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkDrawCall3D::receiveShadow                  | D2  | dette-datee     | A-DATER | Detecte le 27/08 par l elargissement du perimetre. « vision-assumee » REFUSE par la regle (a) et le detecteur a raison : ce drapeau est ecrit a `true` par du code livre, donc il PROMET a l execution. Non examine ligne a ligne : le classement en dette est ce que la regle impose, pas un examen.
+NkDrawCall3D::sortKey                        | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
 NkDrawIndexedIndirectArgs::firstIndex        | D2  | vision-assumee  |         | non-examine - jamais-mentionne ; detecte le 24/08 seulement
 NkDrawIndexedIndirectArgs::firstInstance     | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu ; detecte le 24/08 seulement
 NkDrawIndexedIndirectArgs::indexCount        | D2  | vision-assumee  |         | non-examine - jamais-mentionne ; detecte le 24/08 seulement
@@ -508,7 +551,23 @@ NkIDevice::GetTimestampPeriodNs              | D1  | dette-datee     | A-DATER |
 NkIDevice::GetTimestampResults               | D1  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER, avec le groupe F. Rend false en dur : au moins ce faux-la est HONNETE, contrairement a F5.] F4, groupe du chronometrage GPU. Examine le 23/08. return false en dur, 0 surcharge, 0 appelant. Abandon : rien. Note de forme : false ne distingue pas pas-encore-pret de pas-implemente - un appelant correct reessaierait en boucle, pour toujours.
 NkIDevice::arrayLayer                        | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkIDevice::mipLevel                          | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu ; detecte le 24/08 seulement
+NkInfiniteGridParams::axisXColor             | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkInfiniteGridParams::axisZColor             | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkInfiniteGridParams::cellColor              | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkInfiniteGridParams::lineColor              | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkLight2DDesc::castShadow                    | D2  | dette-datee     | A-DATER | Detecte le 27/08 par l elargissement du perimetre. « vision-assumee » REFUSE par la regle (a) et le detecteur a raison : ce drapeau est ecrit a `true` par du code livre, donc il PROMET a l execution. Non examine ligne a ligne : le classement en dette est ce que la regle impose, pas un examen.
+NkLight2DDesc::cookieIdx                     | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkLight2DDesc::intensity                     | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkLightDesc::attenuationMode                 | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
 NkMappedMemory::depthPitch                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkPassBuilder::asyncCompute                  | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkPassColorAttachment::clearRGBA             | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkPassColorAttachment::loadOp                | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkPassColorAttachment::resId                 | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkPassColorAttachment::storeOp               | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkPassDepthAttachment::stencilLoad           | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkPassDepthAttachment::stencilStore          | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkPassDepthAttachment::storeOp               | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
 NkPostConfig::bloomPasses                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkPostConfig::contrast                       | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkPostConfig::dof                            | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER -- outil de CINEMA, et NKScena est l application de cinema de Rihen. MESURE : les shaders existent pour CINQ backends (DX11, DX12, GL, MSL, VK), versionnes en DOUBLE (Resources/NKRenderer/Shaders et Kernel/Runtime/NKRenderer/src/NKRenderer/Shaders). Manque : la passe C++ dans NkPostProcessStack, exactement comme pour SSR.] B5. Examine le 23/08. 0 lecture, 1 ecriture (ForCinematic(), :469) - et ForCinematic() a 0 appelant. Abandon : rien a l execution, mais il faut assumer que Shaders/PostProcess/DOF/ existe et qu aucune passe ne le monte (NkPostProcessStack ne construit que Tonemap, Bloom, SSAO, SSAOBlur, AutoExposure, TAA, FXAA).
@@ -522,8 +581,9 @@ NkPostConfig::motionBlurShutter              | D2  | vision-assumee  |         |
 NkPostConfig::ssaoSamples                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkPostConfig::ssr                            | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER. La passe SSR a ete ecrite par le chantier rendu le 23/08 et son temoin est vert (+229,17 sur banc nu). Reste a confronter ce champ-ci a la passe livree.] C3. Examine le 23/08. 0 lecture, 6 ecritures dont 4 executees (MultiStyle.cpp:274 true, Demo/main.cpp:342/371/390 false) plus ForArchviz() :489, appele par MultiStyle.cpp:263. Abandon : rien ne casse, mais ssr.frag.gl.glsl et ssr.frag.vk.glsl sont ecrits et aucune passe C++ ne les monte. Le plus avance des trois post-traitements creux.
 NkRasterizerDesc::antialiasedLine            | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkRenderGraph::mNextResId                    | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
 NkRenderPassDesc::hasResolve                 | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER, avec NkRendererConfig::msaaSamples -- meme sujet.] B2. Examine le 23/08. 0 lecture, 1 ecriture (dans SetResolve(), NkDescs.h:620) - et SetResolve() a 0 appelant. Abandon : rien ne casse, mais c est acter que NKRHI ne sait pas resoudre un MSAA.
-NkRendererConfig::debugOverlay               | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER. MESURE DU 27/08, ET ELLE CORRIGE MON PROPRE CHIFFRAGE : j avais ecrit 'aucun sous-systeme d overlay n existe' -- FAUX. NkOverlayRenderer existe, est alloue par InitOverlay() (NkRendererImpl.cpp:418), expose par NkRenderer.h:92, et appele depuis 21 fichiers. J avais cherche le MOT debugOverlay au lieu de la CAPACITE overlay. Cout reel : 1 fichier, 0 backend, API inchangee. ⚠️ MAIS RIEN N EST ECRIT, ET C EST DELIBERE -- L ARBITRAGE APPARTIENT A RODOLF. L allocation est deja pilotee par le drapeau de sous-systeme NK_SS_OVERLAY (:245), pas par ce champ-ci. Trois lectures possibles : (A) debugOverlay IMPLIQUE NK_SS_OVERLAY ; (B) il fait DESSINER le panneau par le renderer ; (C) il est redondant et disparait. FAIT MESURE QUI CONTRAINT L ARBITRAGE : DrawStats est appele par 18 sites, TOUS dans les applications -- le renderer ne dessine JAMAIS le panneau. Et ForEditor() a UN SEUL appelant, NK3DModeler (NkViewport3D.cpp:726), qui dessine DEJA ses stats (NkDemo3D.cpp:10755). La lecture (B), celle que le nom suggere, donnerait donc DEUX PANNEAUX SUPERPOSES dans la seule application concernee. POURQUOI JE N ECRIS MEME PAS LA PART NON AMBIGUE : un simple logger.Warn sur 'debugOverlay=true sans NK_SS_OVERLAY' LIRAIT le champ. D2 cesserait alors de le detecter, la ligne quitterait la liste des candidats, et ce fichier dirait 'honoree' d un drapeau qui ne fait toujours rien. J aurais produit un FAUX VERT DE MA PROPRE MAIN, avec l outil ecrit pour les empecher -- et j aurais abime la seule mesure de progres du dispositif, celle qui vient de fonctionner sur B4. Question posee a Rodolf dans CAPACITES_A_DATER.md. Ma recommandation : A ou C, jamais B.]
+NkRendererConfig::debugOverlay               | D2  | implementee     |         | 🟢 HONOREE LE 27/08 -- ARBITRAGE DE RODOLF, lecture (A) sur trois proposees : debugOverlay IMPLIQUE le sous-systeme d overlay. LECTURE REELLE : NkRendererImpl.cpp:93, 'if (mCfg.debugOverlay && !mCfg.Has(NK_SS_OVERLAY)) { mCfg.subsystems |= NK_SS_OVERLAY; }'. ⚠️ ET C EST UN EFFET, PAS UNE TRACE : la ligne CHANGE CE QUE LE RENDERER ALLOUE. J avais failli ecrire un logger.Warn a la place, qui aurait suffi a faire sortir ce champ de la liste des candidats -- « lu » -- SANS RIEN HONORER. EXERCEE PAR UN BANC : Applications/NkDebugOverlayCheck (mode complet, code+ignore:77), avant/apres sur GetOverlay() avec NK_SS_OVERLAY ABSENT dans les deux cas : false -> nullptr (temoin), true -> overlay alloue (mesure). 📌 LA DISPARITION DE CE SYMBOLE DE LA LISTE DES CANDIDATS A ETE ATTRAPEE PAR LE CONTROLE ECRIT LE MEME JOUR (cap/disparition-sans-reponse) : il a rougi, exige une reponse, et c est cette note. (B) « le renderer DESSINE le panneau » a ete ECARTEE : DrawStats est appele par 18 sites applicatifs et NK3DModeler dessine deja le sien -- (B) lui aurait donne deux panneaux superposes.
 NkRendererConfig::hdr                        | D2  | vision-assumee  |         | Examine le 24/08 en meme temps que pipeline (meme struct, meme cause de detection tardive). 13 ecritures, 0 lecture : ForMobile() et For2D() posent hdr = false, NKARDemo aussi, et personne ne lit mCfg.hdr. Ne pas confondre avec NkSwapchainDesc::hdr, deja classe. non-examine dans le detail des appelants.
 NkRendererConfig::maxMeshes                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkRendererConfig::maxParticles               | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
@@ -533,6 +593,19 @@ NkRendererConfig::validation                 | D2  | vision-assumee  |         |
 NkRendererConfig::voxelAOEnabled             | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER. En attendant, le commentaire de contrat du champ est FAUX : il promet 'false = sous-systeme NON alloue (gratuit)', or NkRendererImpl.cpp:226 alloue INCONDITIONNELLEMENT.] C2. Examine le 23/08. 0 lecture, 2 ecritures LIVREES (NkAnimaEditor/AnimBridge.cpp:691 false, Sandbox/Demo/main.cpp:214 true). LE COMMENTAIRE DU CHAMP EST FAUX AUJOURD HUI : il promet 'false = sous-systeme NON alloue (gratuit)', or NkRendererImpl.cpp:226 alloue INCONDITIONNELLEMENT - NkAnimaEditor demande l economie et la paie.
 NkRendererConfig::vsync                      | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER, avec B3. MESURE : la machinerie vsync EXISTE et fonctionne cote RHI, mais elle est alimentee par NkContextDesc (dxCfg.vsync :123, init.context.opengl.swapInterval :416), PAS par NkRendererConfig. Manque : le routage dans NkRendererImpl, et le choix du present mode Vulkan (VK_PRESENT_MODE_FIFO_KHR force en dur, NkVulkanDevice.cpp:783).] C5 de CAPACITES_A_DATER.md. Examine le 24/08. 0 lecture, 24 ecritures dont SIX qui ecrivent 'true' par la voie rcfg (Sandbox/DemoNkentseu/Base01 main9:178, main11:73, main12:72, main13:72, main14:72, main15:70). C EST POURQUOI 'vision-assumee' EST REFUSE ICI, et le detecteur a raison : un 'true' ecrit par du code livre est une promesse, pas une intention. ATTENTION AUX HOMONYMES, tres nombreux et EUX bien lus : dxCfg.vsync (NkDirectX11Device.cpp:123, NkDirectX12Device.cpp:110), desc.dx11/dx12.vsync (NKCanvas), context.config.vsync (NkContext.cpp:1395), winCfg/contextConfig.vsync (NkWindowConfig, NkContextDesc). Le champ de NkRendererConfig n a aucun lecteur -- y compris NkRendererImpl.cpp:1643 qui l ECRIT (mCfg.vsync = e) sans que personne ne le relise. Abandon : rien ne casse, les six demos continuent comme aujourd hui puisqu elles n ont jamais rien recu.
 NkRendererConfig::wireframe                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkRendererStats::cullTimeMs                  | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkRendererStats::culled                      | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkRendererStats::geomTimeMs                  | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkRendererStats::gpuTimeMs                   | D2  | dette-datee     | A-DATER | EXAMINE le 27/08, et c est LA capacite qui a fait decider l elargissement. gpuTimeMs vaut 0.f, n est AFFECTE NULLE PART dans tout le depot, et est LU POUR ETRE AFFICHE : NkOverlayRenderer.cpp:50 imprime « GPU:%.2fms » depuis ce champ, et 21 fichiers d application appellent GetOverlay(). Un chiffre faux montre a un utilisateur. Il est declare a 0.f dans TROIS structures (NkRendererTypes.h:669, NkRenderGraph.h:110, NkIDevice.h:446). ⚠️ MON DETECTEUR NE L A JAMAIS DIT parce qu il ne LISAIT PAS ces en-tetes -- limite de PERIMETRE, levee le 27/08. Trouve par le chantier de cartographie, pas par moi. SE REGLE AVEC F1-F5 (le chronometrage GPU) : tant qu aucun backend ne sait produire un timestamp, ce champ ne peut valoir autre chose que 0.
+NkRendererStats::lightsActive                | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkRendererStats::pipelineSwitches            | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkRendererStats::postTimeMs                  | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkRendererStats::shaderSwitches              | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkRendererStats::shadowCasters               | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkRendererStats::shadowTimeMs                | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkRendererStats::textureBinds                | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkRendererStats::triangles                   | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkRendererStats::vertices                    | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
 NkResources::NK_BIND_PP_INPUT                | D3  | implementee     |         | idem : aucun shader QUALIFIE ne declare set=3, mais les passes plein ecran GL declarent leur entree en 'layout(binding=0)' (tSrc, tHDR, tLDR, tCurrent). Le set 3 n'existe que du cote Vulkan/DX.
 NkResources::NK_BIND_TEX_NORMAL              | D3  | implementee     |         | le detecteur ne voit que les declarations QUALIFIEES par un set. La lecture existe : les shaders GL declarent 'sampler2D tNormal' en 'layout(binding=2)' sans set (OpenGL n'a pas de descriptor sets). Verifie a la main le 22/08.
 NkSamplerDesc::borderColor                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
@@ -548,6 +621,8 @@ NkShadowConfig::depthBias                    | D2  | vision-assumee  |         |
 NkShadowConfig::normalBias                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkShadowConfig::poissonSamples               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkShadowConfig::softness                     | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkSphere::center                             | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
+NkSphere::radius                             | D2  | vision-assumee  |         | non-examine - detecte le 27/08 par l elargissement du perimetre (NkRendererTypes.h + NkRenderGraph.h)
 NkStencilOpState::compareMask                | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkStencilOpState::reference                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkStencilOpState::writeMask                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
@@ -566,7 +641,6 @@ NkSwapchainDesc::vsync                       | D2  | dette-datee     | A-DATER |
 NkVertexAttribute::format                    | D2  | implementee     |         | LIMITE NOMMEE DU DETECTEUR, MESUREE LE 27/08 : la voie d acces n est pas resolue quand le backend ecrit 'auto &a = d.vertexLayout.attributes[i]' -- le TYPE n apparait nulle part sur la ligne, donc 'a' n est jamais enregistre comme voie de ce type. Meme forme que NkBlendAttachment::blendEnable (A1). LECTURES REELLES : 7 dans NKRHI via 'a.format'.
 NkVertexAttribute::location                  | D2  | implementee     |         | LIMITE NOMMEE DU DETECTEUR, MESUREE LE 27/08 : la voie d acces n est pas resolue quand le backend ecrit 'auto &a = d.vertexLayout.attributes[i]' -- le TYPE n apparait nulle part sur la ligne, donc 'a' n est jamais enregistre comme voie de ce type. Meme forme que NkBlendAttachment::blendEnable (A1). LECTURES REELLES : 13 dans NKRHI via 'a.location'.
 NkVertexAttribute::semanticIdx               | D2  | implementee     |         | LIMITE NOMMEE DU DETECTEUR, MESUREE LE 27/08 : la voie d acces n est pas resolue quand le backend ecrit 'auto &a = d.vertexLayout.attributes[i]' -- le TYPE n apparait nulle part sur la ligne, donc 'a' n est jamais enregistre comme voie de ce type. Meme forme que NkBlendAttachment::blendEnable (A1). LECTURES REELLES : 2 dans NKRHI via 'a.semanticIdx' (DX11:1298, DX12:1708).
+NkVertexAttribute::semanticName              | D2  | implementee     |         | LIMITE NOMMEE DU DETECTEUR, MESUREE LE 27/08 : la voie d acces n est pas resolue quand le backend ecrit 'auto &a = d.vertexLayout.attributes[i]' -- le TYPE n apparait nulle part sur la ligne, donc 'a' n est jamais enregistre comme voie de ce type. Meme forme que NkBlendAttachment::blendEnable (A1). LECTURES REELLES : NkDirectX11Device.cpp:1297 et NkDirectX12Device.cpp:1707.
 NkVertexSoftware::clipW                      | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkVertexSoftware::clipZ                      | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
-NkVertexAttribute::semanticName              | D2  | implementee     |         | LIMITE NOMMEE DU DETECTEUR, MESUREE LE 27/08 : la voie d acces n est pas resolue quand le backend ecrit 'auto &a = d.vertexLayout.attributes[i]' -- le TYPE n apparait nulle part sur la ligne, donc 'a' n est jamais enregistre comme voie de ce type. Meme forme que NkBlendAttachment::blendEnable (A1). LECTURES REELLES : NkDirectX11Device.cpp:1297 et NkDirectX12Device.cpp:1707.
-NkDeviceFactory::CreateWithFallback          | HUM | dette-datee     | A-DATER | EXPRIMABLE, NON HONORE PAR CE CHEMIN-LA. NkDeviceFactory::Create LIT init.api et appelle CreateForApi, qui ne se replie jamais. CreateWithFallback, DANS LA MEME FABRIQUE, fait 'effectiveInit.api = api' A CHAQUE TOUR DE BOUCLE : le champ que l appelant a rempli est ecrase avant d avoir servi. Preuve qui ne depend d aucun comptage : a argument identique, en ne changeant QUE l ordre de la liste, le backend obtenu passe d OpenGL a Vulkan (mesure du chantier de cartographie). PORTEE REELLE, ET ELLE EST PETITE : 9 appelants, mais UN SEUL est a la fois BATI et SILENCIEUX -- NkRenderer2DDemo.cpp:75 et :79 (cible r2d01, RendererSandbox.jenga:358) : liste figee, aucune tentative de devInfo.api, aucun avertissement. NkEditorRHIRenderer.h:98 est SUR (il met di.api en tete de liste et filtre avant). Les 3 sites de NkRendererDemo.cpp sont SURS (logger.Warn 'Backend demande indisponible ... fallback auto' AVANT le repli) mais leur cible est COMMENTEE (RendererSandbox.jenga:357) : LE BON PATRON EXISTE ET NE SE COMPILE PAS -- une bonne pratique morte ne recrute personne. Les 3 sites de 'NkRendererDemo copy.cpp' : fichier nomme copy, non bati, a verser au dossier des copies mortes. ⚠️ AUCUN DE MES TROIS DETECTEURS NE PEUT LA VOIR : D2 cherche un champ jamais lu, or init.api EST lu -- par l autre fonction. Le defaut n est pas dans le champ, il est dans le CONTRAT D UNE FONCTION parmi deux homonymes de contrats opposes. Trouvee par une personne, pas par un outil, et c est pourquoi la colonne detecteur dit HUMAIN. MA PROPRE ERREUR SUR CETTE LIGNE, gardee ici : j avais conclu '0 appelant' avec un 'grep -v NkDeviceFactory' -- un filtre d exclusion ecrit sur le nom du TYPE supprime aussi tous les APPELS QUALIFIES par ce type. Remesure sur le nom qualifie : 10 occurrences, moins la definition = 9 appelants. ARBITRAGE : hors de mon perimetre. Correction attendue chez qui tient NkRenderer2DDemo -- appliquer l un des deux patrons qui existent DEJA dans le depot.

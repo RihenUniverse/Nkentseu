@@ -99,6 +99,16 @@ ENTETES_D2=(
   "Kernel/Runtime/NKRHI/src/NKRHI/Core/NkDescs.h"
   "Kernel/Runtime/NKRHI/src/NKRHI/Core/NkIDevice.h"
   "Kernel/Runtime/NKRenderer/src/NKRenderer/Core/NkRendererConfig.h"
+  # ELARGISSEMENT DU 2026-08-27, decide par Rodolf sur chiffrage.
+  # Ces deux en-tetes portent gpuTimeMs -- declare a 0.f, affecte NULLE PART, et
+  # LU POUR ETRE AFFICHE (NkOverlayRenderer.cpp:50, « GPU:%.2fms »). Le detecteur
+  # ne l a jamais dit parce qu il ne les LISAIT PAS : limite de PERIMETRE, pas de
+  # regle. Cout mesure : +141 champs (349 -> 490, +40 %). Rendement mesure :
+  # 17 candidats AU PLANCHER, dont 10 freres de gpuTimeMs (cullTimeMs, postTimeMs,
+  # shaderSwitches...). Plancher, parce que l index de mesure ne distinguait pas
+  # lecture et ecriture : un champ ECRIT ET JAMAIS LU n y figurait pas.
+  "Kernel/Runtime/NKRenderer/src/NKRenderer/Core/NkRendererTypes.h"
+  "Kernel/Runtime/NKRenderer/src/NKRenderer/Core/NkRenderGraph.h"
 )
 ENTETES_D1=( "Kernel/Runtime/NKRHI/src/NKRHI/Core/NkIDevice.h" )
 
