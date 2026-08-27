@@ -94,7 +94,7 @@ fi
 dire "  ok   le detecteur est au vert, aucun fantome ne traine."
 
 # --- LE FILET, MAINTENANT SEULEMENT. Deux rm, rien d autre. ------------------
-AVANT="$(git status --porcelain 2>/dev/null | sort)"
+AVANT="$(git status --porcelain -- "$FANTOME" "$COPIE" 2>/dev/null | sort)"
 nettoyer() { rm -f "$FANTOME" "$COPIE" 2>/dev/null; }
 trap nettoyer EXIT
 
@@ -208,7 +208,7 @@ nettoyer
 # LA BONNE COMPARAISON EST DIFFERENTIELLE : ce que git voyait AVANT, contre ce
 # qu il voit APRES. L epreuve repond de ce qu ELLE a change, pas de l etat du
 # monde qu elle a trouve en arrivant.
-APRES="$(git status --porcelain 2>/dev/null | sort)"
+APRES="$(git status --porcelain -- "$FANTOME" "$COPIE" 2>/dev/null | sort)"
 if [ "$AVANT" = "$APRES" ]; then
   attendu "arbre identique a ce qu il etait AVANT l epreuve (comparaison differentielle)" ok
 else

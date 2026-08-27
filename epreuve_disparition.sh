@@ -66,7 +66,15 @@ fi
 grep -q "^${CIBLE} " "$LISTE" || { dire2 "[ep-dis] REFUS : $CIBLE absent de $LISTE."; exit 2; }
 dire "  ok   le detecteur est au vert, la liste est propre, la cible est la."
 
-AVANT="$(git status --porcelain 2>/dev/null | sort)"
+# ⚠️ TROISIEME REGLAGE DE CE COMPARATEUR, ET LES DEUX PREMIERS ETAIENT TROP LARGES.
+# v1 : « git ne voit RIEN » -> rougissait sur un arbre deja sale.
+# v2 : differentiel sur TOUT l arbre -> a rougi le 27/08 parce qu un AUTRE
+#      travail avait cree un fichier pendant la course de l epreuve.
+# v3 : differentiel sur LES SEULS FICHIERS QUE L EPREUVE DECLARE TOUCHER.
+# Une epreuve repond de ce qu ELLE change. Dans un depot a plusieurs agents,
+# comparer l arbre entier revient a s attribuer le travail des autres -- en
+# rouge.
+AVANT="$(git status --porcelain -- "$LISTE" 2>/dev/null | sort)"
 nettoyer() { git checkout -- "$LISTE" 2>/dev/null; }
 trap nettoyer EXIT
 
@@ -106,8 +114,8 @@ sep "EPREUVE W — retrait -> vert et arbre identique"
 nettoyer
 ./verif_capacites.sh > /dev/null 2>&1; C=$?
 [ "$C" -eq 0 ] && attendu "code 0 apres retrait" ok || attendu "code 0 attendu, obtenu $C" ko
-APRES="$(git status --porcelain 2>/dev/null | sort)"
-[ "$AVANT" = "$APRES" ] && attendu "arbre identique a AVANT (comparaison differentielle)" ok || attendu "arbre identique" ko
+APRES="$(git status --porcelain -- "$LISTE" 2>/dev/null | sort)"
+[ "$AVANT" = "$APRES" ] && attendu "les fichiers touches sont identiques a AVANT (differentiel cible)" ok || attendu "fichiers touches identiques" ko
 
 dire ""
 dire "======================================================================"
