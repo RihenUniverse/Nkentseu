@@ -361,6 +361,22 @@ namespace nkentseu {
 		}
 
 		bool NkRendererImpl::InitEnvironment() {
+			// ── B4 : le drapeau que personne ne lisait (2026-08-27) ───────────────
+			// NkIBLConfig::enabled etait declare, documente, et n avait AUCUNE
+			// lecture dans tout le depot : les ONZE autres champs de NkIBLConfig
+			// sont lus juste en dessous, lui seul ne l etait pas. Regler
+			// cfg.ibl.enabled = false ne faisait rien -- l IBL se construisait quand
+			// meme, avec ses convolutions et ses cubemaps.
+			// Verifie avant d ecrire cette ligne : les trois dereferencements de
+			// mEnv dans NkRender3D.cpp sont TOUS gardes (:388, :450, :2496), et
+			// GetEnvironment() rend deja un pointeur qui peut etre nul (:614).
+			// Rendre `true` et non `false` est deliberé : « IBL desactive » n est pas
+			// un echec d initialisation, c est le resultat demande.
+			if (!mCfg.ibl.enabled) {
+				logger.Info("[NkRendererImpl] IBL desactive par cfg.ibl.enabled=false : "
+							"NkEnvironmentSystem NON alloue.\n");
+				return true;
+			}
 			if (mEnvironment)
 				return true;
 			mEnvironment.Reset(AllocOwned<NkEnvironmentSystem>());
