@@ -84,13 +84,13 @@ bancs/ignore-section             | verif_bancs.sh | compter un IGNORE sans le NO
 bancs/ignore-avertissement       | verif_bancs.sh | laisser lire « OK » comme « tout est verifie » | ignore-gpu | avertissement sous le verdict : present
 bancs/ignore-raison-lue-A        | verif_bancs.sh | fabriquer la raison d'un IGNORE au lieu de la LIRE dans la sortie du banc (cas : aucune carte) | ignore-gpu | raison propre au defaut A : trouvee
 bancs/ignore-raison-lue-B        | verif_bancs.sh | fabriquer la raison d'un IGNORE au lieu de la LIRE (cas : temoin refuse) | ignore-gpu | raison propre au defaut B : trouvee
-bancs/precond-sous-modules       | verif_bancs.sh | juger le depot depuis un arbre sans sous-modules | aucune |
-bancs/precond-liste-absente      | verif_bancs.sh | juger sans config/bancs.list | aucune |
-bancs/instr-temoin-inventaire    | verif_bancs.sh | conclure quand l'inventaire des projets ne lit plus le workspace | aucune |
-bancs/verdict-absence-motif      | verif_bancs.sh | code 0 alors qu'un motif interdit est present dans la sortie | aucune |
-bancs/verdict-presence-motif     | verif_bancs.sh | code 0 alors qu'un motif exige est absent de la sortie | aucune |
-bancs/sans-verdict-jamais-vert   | verif_bancs.sh | prendre le code de sortie d'un banc « sans-verdict » pour un verdict | aucune |
-bancs/delai-banc-muet            | verif_bancs.sh | attendre indefiniment un banc qui ne rend jamais la main | aucune |
+bancs/precond-sous-modules       | verif_bancs.sh | [TRI 27/08 : NON MESURE -- l eprouver exigerait de vider un sous-module. Presume FAUX ROUGE, sur la mesure du 22/08 citee dans le code : un worktree aux sous-modules vides rend 9 bancs en echec de construction.] juger le depot depuis un arbre sans sous-modules | aucune |
+bancs/precond-liste-absente      | verif_bancs.sh | [TRI 27/08 : FAUX ROUGE, MESURE. Neutralise + liste retiree -> code 3, rattrape par la garde de classement (125 projets NON CLASSES).] juger sans config/bancs.list | aucune |
+bancs/instr-temoin-inventaire    | verif_bancs.sh | [TRI 27/08 : FAUX ROUGE, MESURE. Neutralise + inventaire muet -> code 1, rattrape par 'declares banc mais HORS du workspace'. ⚠️ J avais raisonne FAUX VERT ; la mesure m a contredit.] conclure quand l'inventaire des projets ne lit plus le workspace | aucune |
+bancs/verdict-absence-motif      | verif_bancs.sh | [TRI 27/08 : JAMAIS EXECUTE. AUCUN banc de bancs.list n utilise 'code+absence:'. Ce n est pas 'jamais rouge', c est du code qu aucune donnee n atteint. Une epreuve invasive porterait sur du code mort : le geste juste est de l exercer ou de le retirer.] code 0 alors qu'un motif interdit est present dans la sortie | aucune |
+bancs/verdict-presence-motif     | verif_bancs.sh | [TRI 27/08 : JAMAIS EXECUTE. AUCUN banc n utilise 'code+presence:'. Meme remarque.] code 0 alors qu'un motif exige est absent de la sortie | aucune |
+bancs/sans-verdict-jamais-vert   | verif_bancs.sh | [TRI 27/08 : JAMAIS EXECUTE. AUCUN banc n est classe 'sans-verdict'. Meme remarque.] prendre le code de sortie d'un banc « sans-verdict » pour un verdict | aucune |
+bancs/delai-banc-muet            | verif_bancs.sh | [TRI 27/08 : NI VERT NI ROUGE -- la passe PEND. Un banc muet sans delai ne produit pas un faux vert : il produit une absence de verdict, que quelqu un finit par voir. Troisieme etat, non prevu par la question.] attendre indefiniment un banc qui ne rend jamais la main | aucune |
 
 # --- verif_capacites.sh -----------------------------------------------------
 cap/detection-D1                 | verif_capacites.sh | une virtuelle creuse APPARIEE a un drapeau qui promet true | ce-capacites | D1 nomme NkIDevice::GetNkCapFantomeLevel
@@ -101,13 +101,13 @@ cap/date-vide-reste-rouge        | verif_capacites.sh | une « dette-datee » sa
 cap/cliquet-rompu                | verif_capacites.sh | que le stock d'echeances non fixees MONTE en silence | ce-capacites | l'outil dit CLIQUET ROMPU, et nomme le plafond
 cap/cliquet-absent               | verif_capacites.sh | un cliquet absent lu comme un cliquet satisfait | ce-capacites | sans directive de plafond : ECHEC D'INSTRUMENT (code 2), pas un vert
 cap/retour-au-vert-en-classant   | verif_capacites.sh | revenir au vert en desactivant l'outil plutot qu'en classant | ce-capacites | on revient au vert en CLASSANT, pas en desactivant
-cap/autocontrole-format-awk      | verif_capacites.sh | une chaine de format awk non fermee -> une section VIDE lue « rien a signaler » | aucune |
-cap/precond-entete-introuvable   | verif_capacites.sh | conclure quand un en-tete examine a ete deplace | aucune |
-cap/precond-liste-absente        | verif_capacites.sh | conclure sans config/capacites.list | aucune |
-cap/instr-nb-motifs              | verif_capacites.sh | conclure quand l'extraction ne lit plus les en-tetes | aucune |
-cap/instr-nb-hits                | verif_capacites.sh | conclure quand grep n'a rien lu du corpus | aucune |
-cap/temoin-D1                    | verif_capacites.sh | confondre « rien a signaler » et « je ne detecte plus » (D1) | aucune |
-cap/temoin-D2                    | verif_capacites.sh | confondre « rien a signaler » et « je ne detecte plus » (D2) | aucune |
+cap/autocontrole-format-awk      | verif_capacites.sh | [TRI 27/08 : FAUX VERT PRESUME, NON MESURE. Le script le documente lui-meme : une chaine de format awk cassee vide sa section, et une section vide se lit 'rien a signaler'. Le mesurer demande de casser un awk a dessein -- faisable, non fait.] une chaine de format awk non fermee -> une section VIDE lue « rien a signaler » | aucune |
+cap/precond-entete-introuvable   | verif_capacites.sh | [TRI 27/08 : FAUX ROUGE, MESURE. Neutralise + en-tetes inexistants -> code 2, rattrape par le plancher NB_MOTIFS ('0 symbole extrait').] conclure quand un en-tete examine a ete deplace | aucune |
+cap/precond-liste-absente        | verif_capacites.sh | [TRI 27/08 : FAUX ROUGE, MESURE. Neutralise + liste retiree -> code 2, rattrape par le controle du cliquet absent.] conclure sans config/capacites.list | aucune |
+cap/instr-nb-motifs              | verif_capacites.sh | [TRI 27/08 : FAUX ROUGE, MESURE. Neutralise + extraction vide -> code 2, rattrape par le plancher NB_HITS ('0 occurrence sur tout le corpus').] conclure quand l'extraction ne lit plus les en-tetes | aucune |
+cap/instr-nb-hits                | verif_capacites.sh | [TRI 27/08 : FAUX ROUGE, MESURE. Neutralise + corpus vide -> code 2, rattrape par le TEMOIN D2. Dernier maillon avant le vert.] conclure quand grep n'a rien lu du corpus | aucune |
+cap/temoin-D1                    | verif_capacites.sh | [TRI 27/08 : 🔴 FAUX VERT, MESURE. Detecteur rendu muet + les deux temoins neutralises -> CODE 0, '0 candidat, tous classes'. Rien d autre ne rattrape. EPREUVE INVASIVE OBLIGATOIRE.] confondre « rien a signaler » et « je ne detecte plus » (D1) | aucune |
+cap/temoin-D2                    | verif_capacites.sh | [TRI 27/08 : 🔴 FAUX VERT, MESURE. Meme mesure que D1 : code 0, vert, sur un detecteur qui ne detecte plus rien. EPREUVE INVASIVE OBLIGATOIRE.] confondre « rien a signaler » et « je ne detecte plus » (D2) | aucune |
 
 # --- les bancs du contrat d'echantillonnage (ils sont a moi) -----------------
 msaa/contrat-suit-les-drapeaux   | NkMsaaContractCheck | un `case` qui ignore le drapeau correspondant | msaa-contrat | [FAIL] SupportsSamples(2/4/8/16) == le drapeau correspondant

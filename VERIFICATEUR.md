@@ -2253,3 +2253,106 @@ réécrire** parce qu'ils s'étendent sur plusieurs lignes.
 **Rien n'est construit.** La faute d'origine — *stderr jeté, code 2 lu comme « 0
 candidat »* — reste sans garde mécanique, et c'est dit plutôt que masqué par une
 fonction qui aurait l'air d'en être une.
+
+---
+
+## Le tri des 14 contrôles jamais rouges — mesuré, et il ne donne pas 14 sur 14
+
+**La question posée** : *lequel de ces 14, s'il était cassé, produirait un FAUX
+VERT ?* Faux vert → épreuve invasive obligatoire. Faux rouge → il crie tout seul.
+
+⚠️ **Je l'ai mesuré au lieu de le raisonner**, et j'ai bien fait : *trois de mes
+classements a priori ont été renversés par la mesure*. Méthode — pour chaque
+contrôle : une copie du script à la racine, **ce seul contrôle neutralisé**, la
+condition défavorable forcée, et on lit le code de sortie.
+
+| # | contrôle | mesure | verdict |
+|---|---|---|---|
+| 1 | `bancs/precond-sous-modules` | **non mesuré** | présumé faux rouge |
+| 2 | `bancs/precond-liste-absente` | code **3** | faux rouge |
+| 3 | `bancs/instr-temoin-inventaire` | code **1** | faux rouge |
+| 4 | `bancs/verdict-absence-motif` | — | **jamais exécuté** |
+| 5 | `bancs/verdict-presence-motif` | — | **jamais exécuté** |
+| 6 | `bancs/sans-verdict-jamais-vert` | — | **jamais exécuté** |
+| 7 | `bancs/delai-banc-muet` | **non mesuré** | ni vert ni rouge : **la passe pend** |
+| 8 | `cap/autocontrole-format-awk` | **non mesuré** | **faux vert présumé** |
+| 9 | `cap/precond-entete-introuvable` | code **2** | faux rouge |
+| 10 | `cap/precond-liste-absente` | code **2** | faux rouge |
+| 11 | `cap/instr-nb-motifs` | code **2** | faux rouge |
+| 12 | `cap/instr-nb-hits` | code **2** | faux rouge |
+| 13 | `cap/temoin-D1` | **code 0 — VERT** | 🔴 **FAUX VERT** |
+| 14 | `cap/temoin-D2` | **code 0 — VERT** | 🔴 **FAUX VERT** |
+
+### 🔴 Les deux seuls faux verts mesurés, et ils sont au bout de la chaîne
+
+```
+detecteur rendu muet + les deux temoins neutralises
+  -> code 0
+  -> « 0 candidat(s) detecte(s), 145 ligne(s) de classement »
+  -> « ok   0 candidat(s), tous classes »
+```
+
+**Rien d'autre ne rattrape.** Les témoins D1/D2 sont le dernier maillon entre un
+détecteur qui ne détecte plus rien et un verdict vert. *C'est exactement ce pour
+quoi ils ont été écrits, et c'est la première fois qu'on le mesure.*
+
+### ⚠️ Ce que la mesure a renversé, et pourquoi ça compte
+
+**Six des quatorze sont sauvés par un AUTRE contrôle**, pas par eux-mêmes :
+
+```
+ 2  liste absente        -> rattrape par la garde de classement (125 non classes)
+ 3  inventaire muet      -> rattrape par « declares banc mais HORS du workspace »
+ 9  en-tetes absents     -> rattrape par le plancher NB_MOTIFS
+10  liste cap. absente   -> rattrape par le controle du cliquet absent
+11  extraction vide      -> rattrape par le plancher NB_HITS
+12  corpus vide          -> rattrape par le TEMOIN D2
+```
+
+> **C'est une chaîne, et elle a un bout.** Chaque maillon rattrape le précédent,
+> jusqu'au témoin — qui ne rattrape plus rien parce qu'il est le dernier.
+
+⚠️ **Et cette sûreté-là est fragile, il faut le dire** : elle ne tient que tant
+que le maillon voisin tient. **Deux ruptures simultanées donnent un vert**, et ma
+mesure ne teste qu'une rupture à la fois. *« Rattrapé par un autre contrôle » est
+un résultat, pas une garantie.*
+
+📌 **J'avais raisonné `instr-temoin-inventaire` en faux vert.** La mesure dit code
+1. Si j'avais rendu le tri sans le mesurer, j'aurais réclamé une épreuve invasive
+pour un contrôle qui crie déjà.
+
+### Une catégorie que la question ne prévoyait pas : trois contrôles **jamais exécutés**
+
+`code+absence:`, `code+presence:` et `sans-verdict` sont trois formes de verdict
+que `verif_bancs.sh` sait traiter. **Aucun banc ne les utilise** :
+
+```
+verdicts reellement declares dans bancs.list :
+    11 x  code
+     2 x  code+ignore:77
+```
+
+**Ce n'est pas « jamais rouge », c'est du code qu'aucune donnée n'atteint.** Une
+épreuve invasive porterait sur du code mort. Le geste juste est différent :
+**l'exercer** (déclarer un banc qui l'utilise) **ou le retirer**. C'est un
+arbitrage, pas une épreuve.
+
+### Et un troisième état pour `delai-banc-muet`
+
+Un banc muet sans délai ne produit **ni** un faux vert **ni** un cri : **la passe
+pend**. Personne ne lit « OK », donc ce n'est pas le mensonge visé ; mais personne
+ne lit rien du tout. *Je le classe à part plutôt que de le forcer dans l'une des
+deux cases.*
+
+### Ce que je recommande, et ce que je ne fais pas
+
+| priorité | contrôles | geste |
+|---|---|---|
+| **1** | `cap/temoin-D1`, `cap/temoin-D2` | **épreuve invasive** — seuls faux verts mesurés |
+| **2** | `cap/autocontrole-format-awk` | **le mesurer d'abord** : faux vert seulement *présumé* |
+| **3** | 4, 5, 6 | **arbitrage** : les exercer ou les retirer, pas les éprouver |
+| **4** | 1, 7 | non mesurés — les mesurer avant de décider |
+| — | 2, 3, 9, 10, 11, 12 | **le cliquet suffit**, avec la réserve de la double rupture |
+
+**Je n'ai écrit aucune épreuve.** Le tri était la demande ; les épreuves sont le
+travail suivant, et il se décide sur ce tableau.
