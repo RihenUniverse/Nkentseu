@@ -842,3 +842,69 @@ des sept qui change l'API publique**.
 **Je n'ai touché à aucun backend.** D2→D6 et F1→F5 vivent où le chantier du
 retournement Y travaille en ce moment. Ce document classe, chiffre et écrit ;
 l'implémentation part quand la zone est libre.
+
+---
+
+## 🔴 Correction du 27/08 — deux chiffrages de la veille étaient faux, dont un entièrement
+
+Le chantier rendu a mesuré deux faits que j'avais manqués. **Les deux touchent le
+tableau ci-dessus**, et l'un d'eux l'invalide sur une ligne entière.
+
+### C1 `debugOverlay` — j'avais écrit « aucun sous-système n'existe ». C'est faux.
+
+**`NkOverlayRenderer` existe** : `Tools/Overlay/NkOverlayRenderer.{h,cpp}`,
+instancié par `NkRendererImpl::InitOverlay()` (`:418-431`), exposé par l'API
+publique `NkRenderer.h:92 GetOverlay()`, et appelé depuis **21 fichiers
+d'application** (NK3DModeler, NKARDemo, NKXRDemo, et 18 démos Sandbox).
+
+> ⚠️ **J'ai cherché le MOT `debugOverlay`, pas la CAPACITÉ « overlay ».** C'est la
+> faute que ce chantier traque depuis le premier jour — *chercher un nom n'est pas
+> chercher un usage* — et je l'ai commise dans un chiffrage destiné à Rodolf.
+
+**Ce que C1 est réellement** : le sous-système est déjà là et déjà piloté — par le
+drapeau de sous-système `NK_SS_OVERLAY` (`NkRendererImpl.cpp:245`), **pas** par
+`mCfg.debugOverlay`. `debugOverlay` est donc un **second interrupteur redondant que
+personne ne lit**. `ForEditor()` pose les deux ; l'overlay marche, et `debugOverlay`
+n'y est pour rien.
+
+| | |
+|---|---|
+| fichiers | **1** (`NkRendererImpl.cpp`) |
+| backends | **0** |
+| API publique | **inchangée** |
+| ⚠️ préalable | **une question de conception, pas de code** : que veut dire `debugOverlay` à côté de `NK_SS_OVERLAY` ? Piloter l'**affichage** du panneau pendant que le drapeau pilote l'**existence** du renderer — ou disparaître comme redondant. |
+
+**Elle n'est donc pas mal placée en position 4 : elle est même moins chère que je
+ne le disais.** Ce qui coûte, c'est l'arbitrage, pas l'implémentation.
+
+### F1-F5 — le fait du chantier rendu est confirmé, et il est pire qu'une dette
+
+```
+gpuTimeMs declare a 0.f dans TROIS structures :
+    NkRendererTypes.h:669      NkRenderGraph.h:110      NkIDevice.h:446
+affecte quelque part ................................. NULLE PART
+lu pour etre AFFICHE ....... NkOverlayRenderer.cpp:50  (« GPU:%.2fms »)
+                             NkRenderGraph.cpp:792 et 795
+```
+
+> **Trois champs qui valent zéro par construction, lus pour être montrés à un
+> utilisateur.** `GPU:0.00ms` s'affiche, et rien dans le dépôt ne peut le rendre
+> autre chose.
+
+**Mesure de mon côté, et elle diffère de la sienne** — je le dis plutôt que de
+recopier son chiffre : `mCaps.timestampQueries` est écrit par **trois** backends,
+pas quatre — `DX12:3022` et `GL:1034` en dur à `true`, `VK:2473` par vraie
+interrogation. DX11 et Software ne l'écrivent jamais (il reste `false`). Et je
+compte **21 fichiers** d'application, là où il compte 15 applications : *nous ne
+comptons pas la même chose, et aucun des deux chiffres n'annule l'autre.*
+
+⚠️ **Ce que ça change au classement de F1-F5** : rien sur le coût (8 à 10 fichiers,
+4 backends, API inchangée), **tout sur l'urgence**. Ce n'était pas une dette
+théorique : c'est un chiffre faux montré à un utilisateur sur 21 sites d'appel.
+
+### Pourquoi mon détecteur ne l'avait pas vu — une limite de périmètre, pas de règle
+
+`NkRendererTypes.h` et `NkRenderGraph.h` **ne sont pas dans `ENTETES_D2`**. Le
+périmètre est une **donnée déclarée**, pas un oubli — mais il a un angle mort, et
+le voici chiffré : **l'élargir coûterait +141 champs à examiner (349 → 490,
++40 %)**. *Proposé, chiffré, non fait.*

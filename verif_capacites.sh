@@ -179,11 +179,25 @@ BEGIN { prof = 0; attente = "" }
   if (prof < 1) next
   st = pile[prof]; if (st == "") next
   if (ligne ~ /^[[:space:]]*(static|virtual|return|\/\/|\/\*|\*)/) next
-  if (ligne ~ /\(/) next
-  if (match(ligne, /^[[:space:]]*[A-Za-z_][A-Za-z0-9_:<>, \t*&]*[ \t*&]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[^=]/)) {
-    d = ligne; sub(/[[:space:]]*=.*$/, "", d)
+  # QUATRIEME DEFAUT DU 2026-08-24, ET IL EST UNE COUCHE PLUS TOT QUE LES TROIS
+  # AUTRES : ici on ne classe pas mal, ON N EXTRAIT PAS DU TOUT.
+  # Le test « une parenthese => c est une fonction, pas un champ » portait sur la
+  # ligne BRUTE. Or la ligne
+  #     bool validation = false; // active validation layer (Vulkan)
+  # porte sa parenthese DANS SON COMMENTAIRE. Le champ etait rejete a
+  # l extraction : jamais candidat, pas « mal classe ». NkRendererConfig::validation
+  # a 0 lecture, 0 ecriture, 0 mention dans tout le depot, et le detecteur ne l a
+  # jamais nomme.
+  # MESURE : 12 declarations perdues ainsi dans les trois en-tetes examines.
+  # Meme faute que les trois autres du jour -- DU TEXTE PRIS POUR DU CODE --
+  # appliquee cette fois a un test de STRUCTURE. Meme parade : amputer le
+  # commentaire AVANT de decider quoi que ce soit.
+  sanscom = ligne; sub(/\/\/.*$/, "", sanscom)
+  if (sanscom ~ /\(/) next
+  if (match(sanscom, /^[[:space:]]*[A-Za-z_][A-Za-z0-9_:<>, \t*&]*[ \t*&]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[^=]/)) {
+    d = sanscom; sub(/[[:space:]]*=.*$/, "", d)
     nom = d; sub(/^.*[ \t*&]/, "", nom); if (nom == "") next
-    val = ligne; sub(/^[^=]*=[[:space:]]*/, "", val); sub(/;.*$/, "", val)
+    val = sanscom; sub(/^[^=]*=[[:space:]]*/, "", val); sub(/;.*$/, "", val)
     gsub(/[[:space:]]+$/, "", val)
     printf "%s|%s|%s|%d|%s\n", st, nom, FILENAME, FNR, val
   }

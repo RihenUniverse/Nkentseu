@@ -183,6 +183,60 @@
 #   que la question ne se reperde pas.
 # =============================================================================
 
+# =============================================================================
+# 27/08 - QUATRIEME DEFAUT DU DETECTEUR, ET IL EST UNE COUCHE PLUS TOT
+# =============================================================================
+#   Le chantier rendu compte 11 champs non lus dans NkRendererConfig ; j en
+#   comptais 9. On m a demande de verifier si son releve voit ce que le mien
+#   manque, comme la fois des chaines de caracteres. IL LE VOYAIT.
+#
+#   CAUSE, MESUREE : champs.awk rejetait toute ligne portant une parenthese --
+#   « une parenthese, donc c est une fonction, pas un champ ». Le test portait
+#   sur la ligne BRUTE. Or
+#       bool validation = false; // active validation layer (Vulkan)
+#   porte sa parenthese DANS SON COMMENTAIRE. Le champ etait rejete a
+#   L EXTRACTION : jamais candidat, pas « mal classe ».
+#   MESURE : 12 declarations perdues ainsi dans les trois en-tetes examines,
+#   6 d entre elles reellement non lues. Corrige : le commentaire est ampute
+#   AVANT le test de structure. 139 -> 145 candidats, 0 disparu.
+#   C est la meme faute que les trois du 24/08 -- DU TEXTE PRIS POUR DU CODE --
+#   appliquee cette fois a un test de STRUCTURE et non a un comptage.
+#
+# UNE LIMITE QUI A UN NOM ET UNE SIGNATURE : `auto &a = conteneur[i]`
+# =============================================================================
+#   La voie d acces n est pas resolue quand un backend ecrit
+#       auto &a = d.vertexLayout.attributes[i];
+#   Le TYPE n apparait nulle part sur la ligne, donc `a` n est jamais enregistre
+#   comme voie de NkVertexAttribute, et tous ses champs ressortent « non lus ».
+#   CINQ SYMBOLES ONT ETE ACCUSES A TORT PAR CE SEUL MOTIF, et ils sont
+#   maintenant reclasses « implementee » avec leurs lectures citees :
+#     NkVertexAttribute::format (7), ::location (13), ::semanticIdx (2),
+#     ::semanticName (2), NkBlendAttachment::blendEnable (6 sur 5 backends).
+#   ⚠️ Un balayage systematique de ce motif sur les 145 candidats N EST PAS FAIT.
+#   Non mesure. La limite est nommee pour qu on ne la redecouvre pas.
+#
+# LE CLIQUET : 25, ET LES DEUX MOUVEMENTS QUI S ANNULENT
+# =============================================================================
+#   -1  NkBlendAttachment::blendEnable QUITTE le stock : ce n etait pas une
+#       dette, c etait une erreur de mon detecteur (6 lectures reelles).
+#   +1  NkPostConfig::hbao ENTRE : invisible jusqu au 27/08 (parenthese dans son
+#       commentaire), 3 ecritures dont un `= true` livre, 0 lecture. La regle (a)
+#       REFUSE « vision-assumee » pour lui, et elle a raison.
+#   Net : 25 -> 25. Le chiffre ne bouge pas, LA COMPOSITION SI, et l ecrire est
+#   le seul moyen qu un lecteur ne prenne pas la stabilite pour de l inaction.
+#
+# UNE LIMITE DE PERIMETRE, MESUREE, ET NON CORRIGEE
+# =============================================================================
+#   `gpuTimeMs` vaut 0.f dans TROIS structures (NkRendererTypes.h:669,
+#   NkRenderGraph.h:110, NkIDevice.h:446), n est affecte NULLE PART, et est LU
+#   POUR ETRE AFFICHE (NkOverlayRenderer.cpp:50, NkRenderGraph.cpp:792 et 795).
+#   Mon detecteur ne l a jamais signale : NkRendererTypes.h et NkRenderGraph.h
+#   NE SONT PAS dans ENTETES_D2. Ce n est pas un bug de la regle, c est le
+#   perimetre -- qui est une DONNEE declaree, pas un oubli.
+#   COUT MESURE DE L ELARGISSEMENT : +141 champs a examiner (349 -> 490, +40 %).
+#   Non fait. Propose, chiffre, et laisse a l arbitrage.
+# =============================================================================
+
 # PLAFOND-A-DATER = 25
 #
 # RELEVE DE 24 A 25 LE 2026-08-24 -- geste DELIBERE, et voici sa raison.
@@ -221,6 +275,7 @@
 #   pas.
 
 # =============================================================================
+
 FrameStats::cpuSubmitTimeMs                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 FrameStats::gpuMemoryUsedBytes               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 FrameStats::pipelineChanges                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
@@ -232,7 +287,7 @@ NkBindlessHeapDesc::maxStorageBuffers        | D2  | vision-assumee  |         |
 NkBindlessHeapDesc::maxStorageTextures       | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkBindlessHeapDesc::maxUniformBuffers        | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkBlendAttachment::alphaOp                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
-NkBlendAttachment::blendEnable               | D2  | dette-datee     | A-DATER | A1 de CAPACITES_A_DATER.md. LE DETECTEUR S EST TROMPE : 6 LECTURES sur 5 backends (DX11:1357, DX12:1761, GL Internal:283 et 296, SW:2163, VK:1749). D2 ne resout pas la voie d acces quand le backend ecrit 'auto &a = d.blend.attachments[i]' - le type n apparait pas dans la ligne. Recommandation : reclasser implementee. L abandonner supprimerait la transparence sur les 5 backends.
+NkBlendAttachment::blendEnable               | D2  | implementee     |         | LIMITE NOMMEE DU DETECTEUR, MESUREE LE 27/08 : la voie d acces n est pas resolue quand le backend ecrit 'auto &a = d.vertexLayout.attributes[i]' -- le TYPE n apparait nulle part sur la ligne, donc 'a' n est jamais enregistre comme voie de ce type. Meme forme que NkBlendAttachment::blendEnable (A1). LECTURES REELLES : 6 sur 5 backends (DX11:1357, DX12:1761, GL Internal:283 et 296, SW:2163, VK:1749). A1 de CAPACITES_A_DATER.md : ce n etait pas une dette, c etait une erreur de mon detecteur. Sortie du stock A-DATER le 27/08, cliquet 25 -> 24.
 NkBlendAttachment::colorOp                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkBlendAttachment::colorWriteMask            | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkBlendAttachment::dstAlpha                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
@@ -240,8 +295,10 @@ NkBlendAttachment::dstColor                  | D2  | vision-assumee  |         |
 NkBlendAttachment::srcAlpha                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkBlendAttachment::srcColor                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkClusterConfig::maxLightsPerCluster         | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkClusterConfig::sliceCount                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne ; detecte le 27/08 seulement (parenthese dans le commentaire de fin de ligne : declaration rejetee a l EXTRACTION)
 NkClusterConfig::tilesX                      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkClusterConfig::tilesY                      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkComputePassDesc::hintDispatchCount         | D2  | vision-assumee  |         | non-examine - jamais-mentionne ; detecte le 27/08 seulement (meme cause)
 NkDescriptorSetLayoutDesc::isBindless        | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER (gros). MESURE : isBindless et NkBindlessHeapDesc ne vivent que dans TROIS EN-TETES (NkIDevice.h, NkDescs.h, NkTypes.h) -- AUCUNE implementation de backend. C est de la surface pure : tout est a ecrire.] B1. Examine le 23/08. 0 lecture, 1 ecriture (dans AddBindless(), NkDescs.h:773) - et AddBindless() a 0 appelant. Abandon : RIEN.
 NkDeviceCaps::bindlessTextures               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkDeviceCaps::conservativeRasterization      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
@@ -311,6 +368,7 @@ NkPostConfig::dofAperture                    | D2  | vision-assumee  |         |
 NkPostConfig::dofFocusDist                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkPostConfig::filmGrain                      | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkPostConfig::filmGrainStr                   | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkPostConfig::hbao                           | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER -- meme famille que ssr, dof et motionBlur, et Rodolf a tranche 'tout implementer'. Les shaders HBAO ne sont PAS mesures ici.] Detecte le 27/08 seulement : sa declaration portait une parenthese dans son commentaire de fin de ligne ('// upgrade vers HBAO (qualite > SSAO)'), et l extraction la rejetait. 3 ecritures dont Sandbox/DemoNkentseu/Base06/MultiStyle.cpp:273 (= true), 0 lecture. 'vision-assumee' REFUSE par le detecteur, regle (a) : un drapeau qui annonce true a du code livre n est pas une intention.
 NkPostConfig::motionBlur                     | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER -- outil de CINEMA (NKScena). Meme mesure que dof : shaders presents sur 5 backends, en double ; passe C++ absente.] B6. Examine le 23/08. 0 lecture, 1 ecriture (ForCinematic(), :470), sans appelant. Meme reserve qu en B5 : les shaders MotionBlur GL et VK sont ecrits et versionnes en double, et rien ne les compile.
 NkPostConfig::motionBlurShutter              | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkPostConfig::ssaoSamples                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
@@ -323,9 +381,12 @@ NkRendererConfig::maxMeshes                  | D2  | vision-assumee  |         |
 NkRendererConfig::maxParticles               | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkRendererConfig::msaaSamples                | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER, avec hasResolve. Voir aussi le banc NkMsaaVulkanCheck : trois backends sur quatre n interrogeaient pas la carte pour le MSAA (deja corrige sur feat/rendu-temps-reel, 9b774ab8).] E1. Examine le 23/08. 0 lecture ET 0 ecriture - pas une seule dans l arbre. ATTENTION AUX HOMONYMES : les msaaSamples reellement honores sont ceux de NkContextDesc/NkOpenGLDesc (NKCanvas, NKWindow) et de Noge::NkCamera ; les desc.opengl.msaaSamples = 4 des demos ne touchent PAS ce champ. Abandon : rien ne casse a l execution, mais c est un choix d architecture - on retire l unique point d entree entier documente du MSAA cote NKRenderer, que NkMsaaContractCheck:19 et NkMsaaDeviceCheck:215 designent nommement.
 NkRendererConfig::pipeline                   | D2  | vision-assumee  |         | EXAMINE le 24/08, apres que le chantier rendu l a trouve, et il avait raison. 6 ecritures (les 6 presets de NkRendererConfig.h), 0 lecture. LE CHAMP QUI COMMANDE VRAIMENT EST L AUTRE : NkRendererImpl.cpp:829 lit 'mCfg.deferred', pas 'mCfg.pipeline'. Or ForFilm() (:459) et ForArchviz() (:484) posent pipeline = NK_DEFERRED et ne touchent PAS deferred (declare false, :410). Consequence mesurable : qui demande ForFilm() obtient du FORWARD pendant que sa config dit DEFERRED. ⚠️ POURQUOI IL A ECHAPPE AU DETECTEUR JUSQU AU 24/08 -- deux defauts de MON outil, corriges le meme jour : (1) les chaines de caracteres n etaient pas amputees, donc le jeton 'pipeline' d un logger.Info() de NkRender3D.cpp comptait comme une lecture ; (2) le repli 'ce fichier nomme le type' attribuait au champ les variables locales homonymes du meme fichier. Une seule lecture suffisait a clore le dossier. ⚠️ ET LA REGLE (a) NE LE VOIT TOUJOURS PAS : elle ne reconnait comme promesse que '= true'. Ici la promesse est faite par une VALEUR D ENUM differente du defaut declare. C est le meme mensonge dans un autre vetement, et le classement ci-contre est provisoire pour cette raison. Recommandation a Rodolf : honorer pipeline (le lire au lieu de deferred) ou l abandonner -- mais pas le laisser annoncer NK_DEFERRED sans effet.
+NkRendererConfig::validation                 | D2  | vision-assumee  |         | non-examine - jamais-mentionne ; detecte le 27/08 seulement. 0 lecture, 0 ecriture, 0 mention dans TOUT le depot : le drapeau qui active la validation layer Vulkan n est nomme nulle part ailleurs que dans sa propre declaration.
 NkRendererConfig::voxelAOEnabled             | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER. En attendant, le commentaire de contrat du champ est FAUX : il promet 'false = sous-systeme NON alloue (gratuit)', or NkRendererImpl.cpp:226 alloue INCONDITIONNELLEMENT.] C2. Examine le 23/08. 0 lecture, 2 ecritures LIVREES (NkAnimaEditor/AnimBridge.cpp:691 false, Sandbox/Demo/main.cpp:214 true). LE COMMENTAIRE DU CHAMP EST FAUX AUJOURD HUI : il promet 'false = sous-systeme NON alloue (gratuit)', or NkRendererImpl.cpp:226 alloue INCONDITIONNELLEMENT - NkAnimaEditor demande l economie et la paie.
 NkRendererConfig::vsync                      | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER, avec B3. MESURE : la machinerie vsync EXISTE et fonctionne cote RHI, mais elle est alimentee par NkContextDesc (dxCfg.vsync :123, init.context.opengl.swapInterval :416), PAS par NkRendererConfig. Manque : le routage dans NkRendererImpl, et le choix du present mode Vulkan (VK_PRESENT_MODE_FIFO_KHR force en dur, NkVulkanDevice.cpp:783).] C5 de CAPACITES_A_DATER.md. Examine le 24/08. 0 lecture, 24 ecritures dont SIX qui ecrivent 'true' par la voie rcfg (Sandbox/DemoNkentseu/Base01 main9:178, main11:73, main12:72, main13:72, main14:72, main15:70). C EST POURQUOI 'vision-assumee' EST REFUSE ICI, et le detecteur a raison : un 'true' ecrit par du code livre est une promesse, pas une intention. ATTENTION AUX HOMONYMES, tres nombreux et EUX bien lus : dxCfg.vsync (NkDirectX11Device.cpp:123, NkDirectX12Device.cpp:110), desc.dx11/dx12.vsync (NKCanvas), context.config.vsync (NkContext.cpp:1395), winCfg/contextConfig.vsync (NkWindowConfig, NkContextDesc). Le champ de NkRendererConfig n a aucun lecteur -- y compris NkRendererImpl.cpp:1643 qui l ECRIT (mCfg.vsync = e) sans que personne ne le relise. Abandon : rien ne casse, les six demos continuent comme aujourd hui puisqu elles n ont jamais rien recu.
 NkRendererConfig::wireframe                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
+NkResources::NK_BIND_PP_INPUT                | D3  | implementee     |         | idem : aucun shader QUALIFIE ne declare set=3, mais les passes plein ecran GL declarent leur entree en 'layout(binding=0)' (tSrc, tHDR, tLDR, tCurrent). Le set 3 n'existe que du cote Vulkan/DX.
+NkResources::NK_BIND_TEX_NORMAL              | D3  | implementee     |         | le detecteur ne voit que les declarations QUALIFIEES par un set. La lecture existe : les shaders GL declarent 'sampler2D tNormal' en 'layout(binding=2)' sans set (OpenGL n'a pas de descriptor sets). Verifie a la main le 22/08.
 NkSamplerDesc::borderColor                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkShaderStageDesc::dxilData                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkShaderStageDesc::dxilSize                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
@@ -334,6 +395,7 @@ NkShaderStageDesc::metalIRData               | D2  | vision-assumee  |         |
 NkShaderStageDesc::metalIRSize               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkShaderStageDesc::mslSource                 | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkShaderStageDesc::swFragFn                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkShaderStageDesc::swVertFn                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne ; detecte le 27/08 seulement (meme cause). Les deux seules occurrences hors declaration sont des lignes COMMENTEES (NkDescs.cpp:13, NkSoftwareDevice.cpp:1023).
 NkShadowConfig::depthBias                    | D2  | vision-assumee  |         | non-examine - jamais-mentionne
 NkShadowConfig::normalBias                   | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkShadowConfig::poissonSamples               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
@@ -353,10 +415,9 @@ NkSwapchainDesc::hdr                         | D2  | vision-assumee  |         |
 NkSwapchainDesc::imageCount                  | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkSwapchainDesc::samples                     | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkSwapchainDesc::vsync                       | D2  | dette-datee     | A-DATER | [ARBITRAGE 24/08 : IMPLEMENTER, avec C5. Point d entree mort tant que NkIDevice::CreateSwapchain rend nullptr en dur.] B3. Examine le 23/08. 0 lecture, 0 ecriture. Point d entree mort : NkIDevice::CreateSwapchain (NkIDevice.h:474) rend nullptr en dur, 0 surcharge, 0 appelant. Abandon : RIEN.
-NkVertexAttribute::format                    | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
-NkVertexAttribute::location                  | D2  | vision-assumee  |         | non-examine - jamais-mentionne
-NkVertexAttribute::semanticIdx               | D2  | vision-assumee  |         | non-examine - jamais-mentionne
+NkVertexAttribute::format                    | D2  | implementee     |         | LIMITE NOMMEE DU DETECTEUR, MESUREE LE 27/08 : la voie d acces n est pas resolue quand le backend ecrit 'auto &a = d.vertexLayout.attributes[i]' -- le TYPE n apparait nulle part sur la ligne, donc 'a' n est jamais enregistre comme voie de ce type. Meme forme que NkBlendAttachment::blendEnable (A1). LECTURES REELLES : 7 dans NKRHI via 'a.format'.
+NkVertexAttribute::location                  | D2  | implementee     |         | LIMITE NOMMEE DU DETECTEUR, MESUREE LE 27/08 : la voie d acces n est pas resolue quand le backend ecrit 'auto &a = d.vertexLayout.attributes[i]' -- le TYPE n apparait nulle part sur la ligne, donc 'a' n est jamais enregistre comme voie de ce type. Meme forme que NkBlendAttachment::blendEnable (A1). LECTURES REELLES : 13 dans NKRHI via 'a.location'.
+NkVertexAttribute::semanticIdx               | D2  | implementee     |         | LIMITE NOMMEE DU DETECTEUR, MESUREE LE 27/08 : la voie d acces n est pas resolue quand le backend ecrit 'auto &a = d.vertexLayout.attributes[i]' -- le TYPE n apparait nulle part sur la ligne, donc 'a' n est jamais enregistre comme voie de ce type. Meme forme que NkBlendAttachment::blendEnable (A1). LECTURES REELLES : 2 dans NKRHI via 'a.semanticIdx' (DX11:1298, DX12:1708).
 NkVertexSoftware::clipW                      | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
 NkVertexSoftware::clipZ                      | D2  | vision-assumee  |         | non-examine - ecrit-jamais-lu
-NkResources::NK_BIND_TEX_NORMAL              | D3  | implementee     |         | le detecteur ne voit que les declarations QUALIFIEES par un set. La lecture existe : les shaders GL declarent 'sampler2D tNormal' en 'layout(binding=2)' sans set (OpenGL n'a pas de descriptor sets). Verifie a la main le 22/08.
-NkResources::NK_BIND_PP_INPUT                | D3  | implementee     |         | idem : aucun shader QUALIFIE ne declare set=3, mais les passes plein ecran GL declarent leur entree en 'layout(binding=0)' (tSrc, tHDR, tLDR, tCurrent). Le set 3 n'existe que du cote Vulkan/DX.
+NkVertexAttribute::semanticName              | D2  | implementee     |         | LIMITE NOMMEE DU DETECTEUR, MESUREE LE 27/08 : la voie d acces n est pas resolue quand le backend ecrit 'auto &a = d.vertexLayout.attributes[i]' -- le TYPE n apparait nulle part sur la ligne, donc 'a' n est jamais enregistre comme voie de ce type. Meme forme que NkBlendAttachment::blendEnable (A1). LECTURES REELLES : NkDirectX11Device.cpp:1297 et NkDirectX12Device.cpp:1707.
