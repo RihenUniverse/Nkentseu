@@ -262,6 +262,27 @@ grep -rhoP 'mCaps\.\K[A-Za-z_][A-Za-z0-9_]*(?=[ \t]*=[^=])' Kernel Engine --incl
 # =============================================================================
 # 3bis. EXTRACTION D3 — ce que le C++ LIE contre ce que les shaders ECHANTILLONNENT
 # =============================================================================
+# 🔴 AVANT DE TOUCHER A D3, LIRE CECI (mesure du 27/08).
+#
+#   D3 EST AUSSI UNE SECURITE, ET PERSONNE NE L A VOULUE.
+#
+#   Il ne lit PAS le corpus C++ (Kernel/Engine/Applications). Il lit Resources/
+#   et NkResources.h. Consequence mesuree en neutralisant trois controles a la
+#   fois : quand le corpus disparait — grep muet, plancher NB_HITS neutralise,
+#   temoins D1/D2 neutralises — D1 et D2 ne detectent plus RIEN, et c est D3,
+#   seul, qui detecte encore 7 candidats et fait rougir la passe (code 4).
+#
+#   ⚠️ DONC : « D3 fait doublon avec D1/D2 » est FAUX, et le nettoyer en croyant
+#   retirer un doublon retirerait le SECOND des deux seuls points de rupture du
+#   dispositif. Les six controles qui se rattrapent l un l autre ne reposent pas
+#   sur six securites : ils reposent sur DEUX — les temoins D1/D2, et D3. Un seul
+#   des deux a ete ecrit pour ca.
+#
+#   « Une securite qu on n a pas voulue est une securite qu on peut retirer sans
+#     le savoir. » C est pour ca que cette note vit ICI et pas seulement dans
+#   VERIFICATEUR.md : celui qui supprimera D3 lira ce fichier, pas le document.
+#
+# =============================================================================
 # D3 etait refuse le 22/08 au soir, et la raison etait mesuree : cote C++,
 # l'index de set n'existait DANS AUCUNE DECLARATION — il vivait dans un
 # commentaire de NkResources.h et dans un nom de membre. Comparer les deux cotes
