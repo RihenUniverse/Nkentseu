@@ -1,4 +1,5 @@
 // =============================================================================
+// AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // NkSLCompiler.cpp  — v4.0
 //
 // CORRECTIONS v4.0 :
@@ -10,6 +11,7 @@
 //   6. FillShaderDesc() compatible nouveaux targets
 // =============================================================================
 #include "NKSL/Compiler/NkSLCompiler.h"
+#include "NKCore/Text/NkSnprintf.h"
 #include "NKSL/Compiler/NkGLSLCompiler.h" // NkGLSLToSPIRV (glslang in-tree via NKGLSlang)
 #include "NKSL/Frontend/NkSLLexer.h"
 #include "NKSL/Frontend/NkSLParser.h"
@@ -794,10 +796,10 @@ namespace nkentseu {
 
 							// Inclure avec traçage de numéros de lignes (#line)
 							char lineBuf[64];
-							snprintf(lineBuf, sizeof(lineBuf), "#line 1 \"%s\"\n", fullPath.CStr());
+							nkentseu::NkSnprintf(lineBuf, sizeof(lineBuf), "#line 1 \"%s\"\n", fullPath.CStr());
 							result += NkString(lineBuf);
 							result += Preprocess(incSrc, baseDir, errors, includedFiles);
-							snprintf(lineBuf, sizeof(lineBuf), "#line %u \"%s\"\n", line + 1,
+							nkentseu::NkSnprintf(lineBuf, sizeof(lineBuf), "#line %u \"%s\"\n", line + 1,
 									 filename.Empty() ? "shader" : filename.CStr());
 							result += NkString(lineBuf);
 						} else {
