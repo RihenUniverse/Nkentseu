@@ -1,4 +1,5 @@
 /**
+ * AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
  * @File    NkXMLParser.cpp
  * @Brief   Parser XML complet — tokenizer récursif + DOM.
  * @Author  TEUGUIA TADJUIDJE Rodolf Séderis

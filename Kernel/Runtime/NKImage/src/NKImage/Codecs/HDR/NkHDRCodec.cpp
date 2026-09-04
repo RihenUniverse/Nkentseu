@@ -1,4 +1,5 @@
 /**
+ * AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
  * @File    NkHDRCodec.cpp
  * @Brief   Codec Radiance HDR (.hdr/.rgbe) production-ready.
  * @Author  TEUGUIA TADJUIDJE Rodolf Séderis
