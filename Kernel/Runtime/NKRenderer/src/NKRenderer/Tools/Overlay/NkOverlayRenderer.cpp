@@ -1,8 +1,9 @@
 // NkOverlayRenderer.cpp — NKRenderer v4.0
+// AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 #include "NkOverlayRenderer.h"
 #include "NKRenderer/Tools/Text/NkTextRenderer.h"
 #include "NKRenderer/Tools/Render2D/NkRender2D.h"
-#include <cstdio>
+#include "NKCore/Text/NkSnprintf.h"
 #include <cstdarg>
 // Suppress Win32 GDI macro after all headers
 #ifdef DrawText
@@ -46,7 +47,7 @@ namespace nkentseu {
 			if (!mTxt || !mFont.IsValid())
 				return;
 			char buf[256];
-			snprintf(buf, sizeof(buf), "Draw:%u  Tris:%u  GPU:%.2fms  CPU:%.2fms  Batches:%u", s.drawCalls, s.triangles,
+			nkentseu::NkSnprintf(buf, sizeof(buf), "Draw:%u  Tris:%u  GPU:%.2fms  CPU:%.2fms  Batches:%u", s.drawCalls, s.triangles,
 					 s.gpuTimeMs, s.cpuTimeMs, s.batchCount);
 			mTxt->DrawText(pos, buf, mFont, 14.f, 0xFFFFFFFF);
 
@@ -68,7 +69,7 @@ namespace nkentseu {
 			char buf[512];
 			va_list va;
 			va_start(va, fmt);
-			vsnprintf(buf, sizeof(buf), fmt, va);
+			NkVsnprintf(buf, sizeof(buf), fmt, va);
 			va_end(va);
 			mTxt->DrawText(pos, buf, mFont, 14.f, 0xFFFFFFFF);
 		}
