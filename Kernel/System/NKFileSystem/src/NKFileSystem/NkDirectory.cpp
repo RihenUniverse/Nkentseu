@@ -8,7 +8,7 @@
 //  - Filtrage par pattern glob-style (*, ?) implémenté manuellement
 //  - Aucune dépendance STL dans l'implémentation
 //
-// Auteur : Rihen
+// AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // Date : 2024-2026
 // License : Proprietary - All Rights Reserved (see LICENSE)
 // =============================================================================
@@ -22,6 +22,7 @@
 // 4. Headers système conditionnels selon la plateforme
 
 #include "pch.h"
+#include "NKCore/Text/NkSnprintf.h"
 #include "NKFileSystem/NkDirectory.h"
 #include "NKFileSystem/NkFile.h"
 
@@ -645,7 +646,7 @@ namespace nkentseu {
 		NkString dest = trashFiles + "/" + name.CStr();
 		for (int n = 1; (Exists(dest.CStr()) || NkFile::Exists(dest.CStr())) && n < 10000; ++n) {
 			char b[24];
-			std::snprintf(b, sizeof(b), ".%d", n);
+			nkentseu::NkSnprintf(b, sizeof(b), ".%d", n);
 			dest = trashFiles + "/" + name.CStr() + b;
 		}
 #ifndef __APPLE__

@@ -29,6 +29,7 @@
  *     lire un mauvais octet de valeur. Ajout de vérification !s.IsEOF().
  */
 #include "NKImage/Codecs/HDR/NkHDRCodec.h"
+#include "NKCore/Text/NkSnprintf.h"
 #include "NKMemory/NkAllocator.h"
 #include "NKMemory/NkFunction.h"
 #include <cstdio>
@@ -428,7 +429,7 @@ namespace nkentseu {
 
 		// Ligne dimensions : convention standard -Y h +X w
 		char dimLine[64];
-		int32 dlen = ::snprintf(dimLine, sizeof(dimLine), "-Y %d +X %d\n", h, w);
+		int32 dlen = nkentseu::NkSnprintf(dimLine, sizeof(dimLine), "-Y %d +X %d\n", h, w);
 		s.WriteBytes(reinterpret_cast<const uint8 *>(dimLine), usize(dlen));
 
 		uint8 *scan = static_cast<uint8 *>(NkAlloc(usize(w) * 4));
