@@ -2,11 +2,12 @@
 // -----------------------------------------------------------------------------
 // @File    NkTheme.inl
 // @Brief   Implantation du systeme de themes. Incluse par NkTheme.h.
-// @Author  Rihen
+// AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // @License Proprietary - All Rights Reserved (see LICENSE)
 // -----------------------------------------------------------------------------
 
 #include <math.h>
+#include "NKCore/Text/NkSnprintf.h"
 #include <stdio.h> // puits par defaut du repli franc (NkRoleAudit) : stderr
 
 namespace nkentseu {
@@ -262,11 +263,11 @@ namespace nkentseu {
 				return;
 			char line[256];
 			if (canon && *canon)
-				snprintf(line, sizeof(line),
+				nkentseu::NkSnprintf(line, sizeof(line),
 						 "role « %s » rattrape par canonisation -> « %s » ; A CORRIGER A LA SOURCE",
 						 name ? name : "(nul)", canon);
 			else
-				snprintf(line, sizeof(line),
+				nkentseu::NkSnprintf(line, sizeof(line),
 						 "role « %s » NON RESOLU : il sera peint avec la couleur de repli",
 						 name ? name : "(nul)");
 			slot.fn(slot.user, line);
@@ -275,7 +276,7 @@ namespace nkentseu {
 		inline void NkRoleAudit::Summary(NkString &out, uint32 maxNames) {
 			out = NkString("");
 			char b[160];
-			snprintf(b, sizeof(b), "%u role(s) NON RESOLU(S), %u rattrape(s) par canonisation",
+			nkentseu::NkSnprintf(b, sizeof(b), "%u role(s) NON RESOLU(S), %u rattrape(s) par canonisation",
 					 FaultCount(), RescuedCount());
 			out.Append(b);
 
@@ -301,7 +302,7 @@ namespace nkentseu {
 						}
 						if (n > shown) {
 							char t[48];
-							snprintf(t, sizeof(t), " (+%u)", n - shown);
+							nkentseu::NkSnprintf(t, sizeof(t), " (+%u)", n - shown);
 							o.Append(t);
 						}
 					}
