@@ -10,6 +10,7 @@
 #include "NKLogger/NkLog.h"
 
 #include <cstring>
+#include <cstdio>
 
 namespace nkentseu {
 
@@ -36,8 +37,12 @@ namespace nkentseu {
 		for (int32 i = 0; i < mNbFaces; ++i) {
 			if (mFaces[i].ok)
 				nkfont::NkFreeFontFace(&mFaces[i].info);
-			if (mFaces[i].ttf)
-				NkFontEmbedded::FreeDecompressedData(mFaces[i].ttf);
+			if (mFaces[i].ttf) {
+				if (mFaces[i].ttfPropre)
+					memory::NkFree(mFaces[i].ttf);
+				else
+					NkFontEmbedded::FreeDecompressedData(mFaces[i].ttf);
+			}
 			mFaces[i].ttf = nullptr;
 			mFaces[i].ok = false;
 		}
@@ -45,13 +50,69 @@ namespace nkentseu {
 		mActive = -1;
 	}
 
-	int32 NkFontGlyphSource::Ouvrir(const char *famille) noexcept {
+	bool NkFontGlyphSource::AjouterFonteFichier(const char *famille, int32 poids, const char *chemin) noexcept {
+		if (!famille || !*famille || !chemin || !*chemin || mNbFaces >= kMaxFaces)
+			return false;
+		std::FILE *f = std::fopen(chemin, "rb");
+		if (!f)
+			return false;
+		std::fseek(f, 0, SEEK_END);
+		const long taille = std::ftell(f);
+		std::fseek(f, 0, SEEK_SET);
+		if (taille <= 0) {
+			std::fclose(f);
+			return false;
+		}
+		nkft_uint8 *buf = (nkft_uint8 *)memory::NkAlloc((usize)taille);
+		if (!buf) {
+			std::fclose(f);
+			return false;
+		}
+		const usize lus = std::fread(buf, 1, (usize)taille, f);
+		std::fclose(f);
+		if (lus != (usize)taille) {
+			memory::NkFree(buf);
+			return false;
+		}
+		Face &fa = mFaces[mNbFaces];
+		std::strncpy(fa.famille, famille, sizeof(fa.famille) - 1);
+		fa.famille[sizeof(fa.famille) - 1] = 0;
+		fa.poids = poids > 0 ? poids : 400;
+		fa.ttf = buf;
+		fa.ttfPropre = true;
+		fa.ok = nkfont::NkInitFontFace(&fa.info, buf, (nkft_size)taille, 0);
+		if (!fa.ok) {
+			memory::NkFree(buf);
+			fa.ttf = nullptr;
+			logger.Warn("[NkFontGlyphSource] « {0} » n'est pas une fonte lisible.", chemin);
+			return false;
+		}
+		++mNbFaces;
+		return true;
+	}
+
+	int32 NkFontGlyphSource::Ouvrir(const char *famille, int32 poids) noexcept {
 		if (!famille || !*famille)
 			famille = "Inter";
 
+		// LA COUPE LA PLUS PROCHE de la graisse demandee, parmi celles deja
+		// ouvertes pour cette famille. Prendre la premiere venue rendrait un
+		// Regular a qui demande un Bold alors qu'on a les deux.
+		int32 meilleur = -1, ecartMin = 1 << 20;
+		for (int32 i = 0; i < mNbFaces; ++i) {
+			if (CmpSansCasse(mFaces[i].famille, famille) != 0 || !mFaces[i].ok)
+				continue;
+			const int32 e = (mFaces[i].poids > poids) ? (mFaces[i].poids - poids) : (poids - mFaces[i].poids);
+			if (e < ecartMin) {
+				ecartMin = e;
+				meilleur = i;
+			}
+		}
+		if (meilleur >= 0)
+			return meilleur;
 		for (int32 i = 0; i < mNbFaces; ++i)
 			if (CmpSansCasse(mFaces[i].famille, famille) == 0)
-				return mFaces[i].ok ? i : -1;
+				return -1; // deja tentee, et elle a echoue
 		if (mNbFaces >= kMaxFaces)
 			return (mNbFaces > 0 && mFaces[0].ok) ? 0 : -1;
 
@@ -91,7 +152,7 @@ namespace nkentseu {
 
 	bool NkFontGlyphSource::SelectFace(const char *family, int32 weight) noexcept {
 		mWeight = weight > 0 ? weight : 400;
-		const int32 idx = Ouvrir(family);
+		const int32 idx = Ouvrir(family, mWeight);
 		mActive = idx;
 		if (idx < 0)
 			return false;

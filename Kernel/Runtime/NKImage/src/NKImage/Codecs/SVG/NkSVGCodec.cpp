@@ -611,6 +611,12 @@ namespace nkentseu {
 			None	  ///< etire aux deux dimensions, le rapport est perdu
 		};
 
+		/// L'ALIGNEMENT de preserveAspectRatio : `xMinYMax`, `xMidYMid`... Neuf
+		/// combinaisons, et elles comptent -- une icone calee en haut a gauche et la
+		/// meme centree ne sont pas au meme endroit. Ne gerer que « Mid » revenait a
+		/// recentrer silencieusement ce que le fichier voulait caler dans un coin.
+		enum class Align : uint8 { Min = 0, Mid, Max };
+
 		// ═════════════════════════════════════════════════════════════════════════════
 		// <filter> — UN GRAPHE, PAS UNE LISTE DE CAS PARTICULIERS
 		// -----------------------------------------------------------------------------
@@ -695,6 +701,7 @@ namespace nkentseu {
 				NkImage img;						 ///< pixels decodes ; invalide = ce n'est pas une image
 				float32 ix = 0, iy = 0, iw = 0, ih = 0; ///< la boite, en espace UTILISATEUR (avant ctm)
 				FitKind fit = FitKind::Meet;
+				Align alignX = Align::Mid, alignY = Align::Mid;
 
 				// ── le filtre du groupe qui porte cette forme ────────────────
 				char filterRef[64] = {0};
@@ -2011,19 +2018,37 @@ namespace nkentseu {
 			std::strncat(out, href, outSz - l - 1);
 		}
 
-		FitKind LireFit(const char *par) noexcept {
+		/// Lit « <align> [meet|slice] » en entier : l'ajustement ET les deux
+		/// alignements. Le defaut de la norme est `xMidYMid meet`.
+		void LirePreserveAspectRatio(const char *par, FitKind &fit, Align &ax, Align &ay) noexcept {
+			fit = FitKind::Meet;
+			ax = ay = Align::Mid;
 			if (!par)
-				return FitKind::Meet; // le defaut SVG : xMidYMid meet
+				return;
 			const char *p = SkipWS(par);
-			if (std::strncmp(p, "none", 4) == 0)
-				return FitKind::None;
-			// « <align> [meet|slice] » : l'alignement autre que Mid n'est pas honore
-			// (l'image est CENTREE) -- dit par l'appelant, une fois.
-			for (const char *q = p; *q; ++q) {
-				if (std::strncmp(q, "slice", 5) == 0)
-					return FitKind::Slice;
+			if (std::strncmp(p, "none", 4) == 0) {
+				fit = FitKind::None;
+				return;
 			}
-			return FitKind::Meet;
+			for (const char *q = p; *q; ++q)
+				if (std::strncmp(q, "slice", 5) == 0) {
+					fit = FitKind::Slice;
+					break;
+				}
+			// ⚠️ LE JETON, PAS LA SOUS-CHAINE. « xMaxYMid » contient DEUX `x` : celui
+			// du debut, et celui de « Max ». Balayer toute la chaine trouvait le
+			// second (suivi de « YMid ») et ecrasait l'alignement lu au premier --
+			// `xMaxYMid` rendait donc `xMidYMid`, en silence. L'alignement est UN
+			// jeton de huit caracteres, en tete : on le lit LA, une fois.
+			//   « x » + Min|Mid|Max + « Y » + Min|Mid|Max
+			if (p[0] == 'x' && p[1] && p[2] && p[3] && p[4] == 'Y' && p[5] && p[6] && p[7]) {
+				if (std::strncmp(p + 1, "Min", 3) == 0) ax = Align::Min;
+				else if (std::strncmp(p + 1, "Max", 3) == 0) ax = Align::Max;
+				else ax = Align::Mid;
+				if (std::strncmp(p + 5, "Min", 3) == 0) ay = Align::Min;
+				else if (std::strncmp(p + 5, "Max", 3) == 0) ay = Align::Max;
+				else ay = Align::Mid;
+			}
 		}
 
 		void ShapeFromImage(NkVector<Shape> &shapes, const AttrPair *a, int32 n, const ParseState &st,
@@ -2062,14 +2087,6 @@ namespace nkentseu {
 				return;
 
 			const char *par = FindAttr(a, n, "preserveAspectRatio");
-			if (par) {
-				const char *p = SkipWS(par);
-				if (std::strncmp(p, "none", 4) != 0 && std::strncmp(p, "xMidYMid", 8) != 0 &&
-					skips.Noter("preserveAspectRatio-align"))
-					logger.Warn("[SVG] preserveAspectRatio « {0} » : l'ajustement (meet / slice) est honore, "
-								"l'ALIGNEMENT ne l'est pas -- l'image est centree.",
-								par);
-			}
 
 			Shape s2;
 			s2.style = st.style;
@@ -2078,7 +2095,7 @@ namespace nkentseu {
 			s2.iy = y;
 			s2.iw = w;
 			s2.ih = h;
-			s2.fit = LireFit(par);
+			LirePreserveAspectRatio(par, s2.fit, s2.alignX, s2.alignY);
 			// les quatre coins de la boite, comme pour toute shape : ils donnent la
 			// bbox de balayage, et ils suivent le transform du groupe parent.
 			PathBuilder pb(s2);
@@ -2490,13 +2507,18 @@ namespace nkentseu {
 			// font-weight >= 600 est rendu par un TRAIT de la couleur du remplissage
 			// autour du glyphe -- plus d'encre, la meme forme. Ce n'est pas un vrai
 			// Bold dessine par un typographe, et c'est dit.
-			if (grasSimule) {
+			// LA SIMULATION N'A LIEU QUE SI LA SOURCE N'A PAS DE VRAIE COUPE GRASSE.
+			// Quand l'application en declare une, on la prend -- un vrai Bold dessine
+			// par un typographe n'a pas les memes formes qu'un contour epaissi, et
+			// l'epaissir en plus le rendrait pateux.
+			if (grasSimule && source->ActiveWeight() < 600) {
 				sh.style.stroke = sh.style.fill;
 				sh.style.strokeOpacity = sh.style.fillOpacity;
 				sh.style.strokeWidth = ts.frags[0].fontSize * 0.03f;
 				if (skips.Noter("font-weight"))
-					logger.Warn("[SVG] font-weight >= 600 : la source de glyphes n'offre qu'une coupe -- graisse "
-								"SIMULEE par un trait (ce n'est pas un vrai Bold).");
+					logger.Warn("[SVG] font-weight >= 600 : la source de glyphes n'offre pas de coupe grasse -- "
+								"graisse SIMULEE par un trait (ce n'est pas un vrai Bold). Une application peut "
+								"en declarer une (NkFontGlyphSource::AjouterFonteFichier).");
 			}
 			ApplyTransform(sh, ts.xform);
 			sh.ctm = ts.xform;
@@ -3980,8 +4002,10 @@ namespace nkentseu {
 				const float32 sx = sh.iw / nw, sy = sh.ih / nh;
 				ech = (sh.fit == FitKind::Meet) ? (sx < sy ? sx : sy) : (sx > sy ? sx : sy);
 				echY = ech;
-				offx = (sh.iw - nw * ech) * 0.5f; // xMidYMid : centre
-				offy = (sh.ih - nh * echY) * 0.5f;
+				// LES NEUF ALIGNEMENTS : Min cale au bord, Max a l'autre, Mid centre.
+				const float32 resteX = sh.iw - nw * ech, resteY = sh.ih - nh * echY;
+				offx = (sh.alignX == Align::Min) ? 0.f : ((sh.alignX == Align::Max) ? resteX : resteX * 0.5f);
+				offy = (sh.alignY == Align::Min) ? 0.f : ((sh.alignY == Align::Max) ? resteY : resteY * 0.5f);
 			}
 
 			uint8 *pixels = dst.Pixels();
@@ -5803,6 +5827,8 @@ namespace nkentseu {
 				poseur.iw = src.iw;
 				poseur.ih = src.ih;
 				poseur.fit = src.fit;
+				poseur.alignX = src.alignX;
+				poseur.alignY = src.alignY;
 				for (uint32 k = 0; k < src.xs.Size(); ++k) {
 					float32 x = src.xs[k], y = src.ys[k];
 					mView.Apply(x, y);

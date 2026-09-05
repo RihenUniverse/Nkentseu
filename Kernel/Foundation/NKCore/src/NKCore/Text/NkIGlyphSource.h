@@ -86,6 +86,13 @@ namespace nkentseu {
 			/// corps donne. @p fontSize est le CADRATIN (em), comme en CSS et en SVG.
 			virtual float32 Advance(uint32 codepoint, float32 fontSize) const noexcept = 0;
 
+			/// La GRAISSE reellement active (400 par defaut). Un appelant qui a
+			/// demande 700 et recoit 400 sait qu'il doit simuler -- ou renoncer.
+			/// Non pure : une source qui n'a qu'une coupe n'a rien a declarer.
+			virtual int32 ActiveWeight() const noexcept {
+				return 400;
+			}
+
 			/// Les metriques verticales de la fonte active, pour un corps donne :
 			/// @p ascent au-dessus de la ligne de base (positif), @p descent en
 			/// dessous (positif lui aussi). Sert a `dominant-baseline`.

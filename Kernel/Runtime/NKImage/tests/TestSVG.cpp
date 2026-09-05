@@ -1803,6 +1803,147 @@ static void TestTexteAvance() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER preserveAspectRatio — les NEUF alignements, pas seulement le centre
+// ─────────────────────────────────────────────────────────────────────────────
+static void TestAlignements() {
+	std::printf("\n== PALIER preserveAspectRatio (alignements) ==\n");
+	char det[640];
+	static char svg[8192];
+
+	// une image 4x2 (rouge) dans une boite CARREE de 40x40 : en « meet », elle
+	// occupe 40x20 et il reste 20 px de bandes. OU sont-elles ? C'est tout le
+	// palier -- et ne gerer que « Mid » recentrait ce que le fichier voulait caler.
+	NkImage large = NkImage::Create(4u, 2u, 4, 0xFF0000FFu);
+	uint8 *lo = nullptr;
+	usize lt = 0;
+	NkString b64;
+	if (large.IsValid() && large.SaveToMemory(lo, lt) && lo && lt)
+		b64 = nkentseu::encoding::base64::NkEncode(lo, lt);
+
+	auto poser = [&](const char *par) -> NkImage {
+		std::snprintf(svg, sizeof(svg),
+					  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 40 40\">"
+					  "<image x=\"0\" y=\"0\" width=\"40\" height=\"40\" preserveAspectRatio=\"%s\" "
+					  "href=\"data:image/png;base64,%s\"/></svg>",
+					  par, b64.Length() ? b64.Data() : "");
+		return Decoder(svg);
+	};
+
+	NkImage min = poser("xMidYMin meet");   // collee EN HAUT
+	NkImage mid = poser("xMidYMid meet");   // centree
+	NkImage max = poser("xMidYMax meet");   // collee EN BAS
+	const bool haut = min.IsValid() && Proche(min, 20, 5, 255, 0, 0, 6) && AlphaDe(min, 20, 35) < 30;
+	const bool centre = mid.IsValid() && AlphaDe(mid, 20, 5) < 30 && Proche(mid, 20, 20, 255, 0, 0, 6) &&
+						AlphaDe(mid, 20, 35) < 30;
+	const bool bas = max.IsValid() && AlphaDe(max, 20, 5) < 30 && Proche(max, 20, 35, 255, 0, 0, 6);
+	std::snprintf(det, sizeof(det), "YMin : haut plein=%d, bas vide (alpha %d) | YMid : centre=%d | YMax : haut "
+								   "vide (alpha %d), bas plein=%d",
+				  haut ? 1 : 0, AlphaDe(min, 20, 35), centre ? 1 : 0, AlphaDe(max, 20, 5), bas ? 1 : 0);
+	Verifier("A1. preserveAspectRatio YMin / YMid / YMax : l'image est calee EN HAUT, CENTREE ou EN BAS -- trois "
+			 "resultats distincts la ou seul « centre » existait",
+			 haut && centre && bas, det);
+
+	// et sur l'autre axe, avec une image HAUTE cette fois
+	NkImage haute = NkImage::Create(2u, 4u, 4, 0x0000FFFFu);
+	uint8 *ho = nullptr;
+	usize ht = 0;
+	NkString b64h;
+	if (haute.IsValid() && haute.SaveToMemory(ho, ht) && ho && ht)
+		b64h = nkentseu::encoding::base64::NkEncode(ho, ht);
+	auto poserH = [&](const char *par) -> NkImage {
+		std::snprintf(svg, sizeof(svg),
+					  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 40 40\">"
+					  "<image x=\"0\" y=\"0\" width=\"40\" height=\"40\" preserveAspectRatio=\"%s\" "
+					  "href=\"data:image/png;base64,%s\"/></svg>",
+					  par, b64h.Length() ? b64h.Data() : "");
+		return Decoder(svg);
+	};
+	NkImage gauche = poserH("xMinYMid meet");
+	NkImage droite = poserH("xMaxYMid meet");
+	const bool aGauche = gauche.IsValid() && Proche(gauche, 5, 20, 0, 0, 255, 6) && AlphaDe(gauche, 35, 20) < 30;
+	const bool aDroite = droite.IsValid() && AlphaDe(droite, 5, 20) < 30 && Proche(droite, 35, 20, 0, 0, 255, 6);
+	std::snprintf(det, sizeof(det), "xMin : gauche plein=%d, droite vide (alpha %d) | xMax : gauche vide (alpha "
+								   "%d), droite plein=%d",
+				  aGauche ? 1 : 0, AlphaDe(gauche, 35, 20), AlphaDe(droite, 5, 20), aDroite ? 1 : 0);
+	Verifier("A2. xMin / xMax : l'alignement HORIZONTAL est honore lui aussi", aGauche && aDroite, det);
+
+	if (lo)
+		nkentseu::memory::NkFree(lo);
+	if (ho)
+		nkentseu::memory::NkFree(ho);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PALIER font-weight — une VRAIE coupe grasse quand on en declare une
+// ─────────────────────────────────────────────────────────────────────────────
+static void TestGraisse() {
+	std::printf("\n== PALIER font-weight ==\n");
+	char det[640];
+	static char svg[3072];
+
+	// MESURE DU 2026-09-05 : les dix polices embarquees dans NKFont sont TOUTES des
+	// « Regular ». Sans coupe grasse declaree, le codec SIMULE (un trait autour du
+	// glyphe) et le DIT. Avec une vraie coupe, il la prend.
+	PageTexte(svg, sizeof(svg),
+			  "<text x=\"20\" y=\"50\" font-family=\"Inter\" font-size=\"30\" fill=\"#000000\">HH</text>");
+	Encre normal = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	PageTexte(svg, sizeof(svg), "<text x=\"20\" y=\"50\" font-family=\"Inter\" font-size=\"30\" fill=\"#000000\" "
+								"font-weight=\"700\">HH</text>");
+	Encre simule = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	const bool plusEncre = normal.sombres > 20 && simule.sombres > normal.sombres;
+	std::snprintf(det, sizeof(det), "regulier : %d px d'encre ; font-weight=700 SIMULE : %d px (plus d'encre, "
+								   "meme forme)",
+				  normal.sombres, simule.sombres);
+	Verifier("W1. font-weight=\"700\" SANS coupe grasse declaree : la graisse est simulee par un trait (plus "
+			 "d'encre) et c'est dit",
+			 plusEncre, det);
+
+	// (b) une VRAIE coupe grasse declaree par l'application : le codec la prend, et
+	//     NE simule plus. Les formes d'un Bold dessine ne sont pas celles d'un
+	//     contour epaissi -- les epaissir en plus le rendrait pateux.
+	NkFontGlyphSource *avecBold = nkentseu::memory::NkGetDefaultAllocator().New<NkFontGlyphSource>();
+	bool declaree = false, simulationAnnoncee = true;
+	int32 encreVraie = 0;
+	if (avecBold) {
+		declaree = avecBold->AjouterFonteFichier("Inter", 700, "Resources/Fonts/newfonts/Inter_18pt-Bold.ttf");
+		if (declaree) {
+			NkIGlyphSource *garde = NkSVGCodec::GetDefaultGlyphSource();
+			NkSVGCodec::SetDefaultGlyphSource(avecBold);
+			static const char *kBold =
+				"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"80\" viewBox=\"0 0 200 80\">"
+				"<rect x=\"0\" y=\"0\" width=\"200\" height=\"80\" fill=\"#ffffff\"/>"
+				"<text x=\"20\" y=\"50\" font-family=\"Inter\" font-size=\"30\" fill=\"#000000\" "
+				"font-weight=\"700\">HH</text></svg>";
+			NkSVGImage *doc = NkSVGImage::LoadFromMemory((const uint8 *)kBold, std::strlen(kBold));
+			if (doc) {
+				// LE CRITERE FRANC : avec une vraie coupe, le codec ne doit PAS
+				// annoncer de simulation. Comparer les quantites d'encre ne
+				// distinguait pas un vrai Bold d'un vrai Bold ENCORE epaissi -- deux
+				// choses tres differentes qui rendent toutes deux « plus d'encre ».
+				simulationAnnoncee = false;
+				for (int32 i = 0; i < doc->SkippedCount(); ++i) {
+					const char *n = doc->SkippedAt(i);
+					if (n && std::strcmp(n, "font-weight") == 0)
+						simulationAnnoncee = true;
+				}
+				NkImage r = doc->Rasterize(0, 0);
+				encreVraie = EncreDe(r, 0, 0, 200, 80).sombres;
+				doc->Free();
+			}
+			NkSVGCodec::SetDefaultGlyphSource(garde);
+		}
+		nkentseu::memory::NkGetDefaultAllocator().Delete(avecBold);
+	}
+	const bool vraiBold = declaree && !simulationAnnoncee && encreVraie > normal.sombres;
+	std::snprintf(det, sizeof(det), "coupe grasse declaree=%d ; simulation annoncee=%d (elle ne doit PAS l'etre) ; "
+								   "encre : regulier %d, simule %d, VRAI Bold %d",
+				  declaree ? 1 : 0, simulationAnnoncee ? 1 : 0, normal.sombres, simule.sombres, encreVraie);
+	Verifier("W2. une VRAIE coupe grasse declaree (AjouterFonteFichier) est PRISE, et le codec n'ajoute alors "
+			 "AUCUN trait de simulation -- epaissir un Bold dessine le rendrait pateux",
+			 vraiBold, det);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -1892,6 +2033,8 @@ int TestSVG_Run() {
 	TestPattern();
 	TestGrapheFiltres();
 	TestTexteAvance();
+	TestAlignements();
+	TestGraisse();
 	TestNonGere();
 	TestTemoinCroise();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);
