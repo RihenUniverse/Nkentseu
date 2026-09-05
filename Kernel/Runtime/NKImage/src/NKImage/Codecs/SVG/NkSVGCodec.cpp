@@ -611,12 +611,68 @@ namespace nkentseu {
 			None	  ///< etire aux deux dimensions, le rapport est perdu
 		};
 
-		// ── <filter> : la seule primitive PEINTE est <feDropShadow> ──────────
+		// ═════════════════════════════════════════════════════════════════════════════
+		// <filter> — UN GRAPHE, PAS UNE LISTE DE CAS PARTICULIERS
+		// -----------------------------------------------------------------------------
+		// Un filtre SVG est un petit graphe de flots : chaque primitive lit une ou
+		// deux images (`in`, `in2` -- nommees, ou implicitement la sortie de la
+		// precedente), en produit une, et peut la nommer (`result`) pour qu'une autre
+		// la reprenne. `feDropShadow` n'est qu'un raccourci pour flou + decalage +
+		// teinte + composition.
+		//
+		// ECRIRE LE GRAPHE PLUTOT QUE DES CAS : une implementation « si c'est une
+		// ombre, faire ceci » traite le cas frequent et laisse les autres muets pour
+		// toujours -- et le jour ou deux primitives se suivent, elle n'a rien a dire.
+		// Avec le graphe, chaque primitive ajoutee vaut pour toutes les combinaisons.
+		// ═════════════════════════════════════════════════════════════════════════════
+		enum class PrimType : uint8 {
+			Inconnue = 0,
+			Flou,		 ///< feGaussianBlur
+			Decalage,	 ///< feOffset
+			Aplat,		 ///< feFlood
+			Composition, ///< feComposite
+			Matrice,	 ///< feColorMatrix
+			Fusion,		 ///< feBlend
+			Assemblage,	 ///< feMerge (+ feMergeNode)
+			Ombre		 ///< feDropShadow (raccourci)
+		};
+
+		/// L'operateur de feComposite (Porter-Duff) ou de feBlend.
+		enum class OpComposite : uint8 { Over = 0, In, Out, Atop, Xor, Arithmetique };
+		enum class OpFusion : uint8 { Normal = 0, Multiplier, Ecran, Assombrir, Eclaircir };
+
+		struct Primitive {
+				PrimType type = PrimType::Inconnue;
+				char in[32] = {0};	   ///< vide = la sortie de la primitive precedente
+				char in2[32] = {0};
+				char result[32] = {0}; ///< vide = anonyme (seule la suivante la lit)
+				float32 ecartX = 0.f, ecartY = 0.f;
+				float32 dx = 0.f, dy = 0.f;
+				NkSVGColor couleur = NkSVGColor::Black();
+				OpComposite op = OpComposite::Over;
+				OpFusion fusion = OpFusion::Normal;
+				float32 k1 = 0.f, k2 = 0.f, k3 = 0.f, k4 = 0.f;
+				float32 mat[20] = {};
+				bool aMatrice = false;
+				char merges[8][32] = {};
+				int32 nMerges = 0;
+		};
+
 		struct Filtre {
 				char id[64] = {0};
-				bool ombre = false; ///< au moins un feDropShadow lu
-				float32 dx = 0.f, dy = 0.f, ecartType = 0.f;
-				NkSVGColor couleur = NkSVGColor::Black();
+				NkVector<Primitive> prims;
+
+				Filtre() = default;
+				Filtre(Filtre &&) noexcept = default;
+				Filtre &operator=(Filtre &&) noexcept = default;
+				Filtre(const Filtre &) = delete;
+				Filtre &operator=(const Filtre &) = delete;
+
+				void Vider() noexcept {
+					id[0] = 0;
+					while (!prims.IsEmpty())
+						prims.PopBack();
+				}
 		};
 
 		/// Shape interne = un path flatten en polyligne(s), + style cumule + CTM applique.
@@ -2745,8 +2801,8 @@ namespace nkentseu {
 						continue;
 					if (std::strcmp(tagBuf, "filter") == 0) {
 						if (dansFiltre) {
-							filtres.PushBack(curFiltre);
-							curFiltre = Filtre();
+							filtres.PushBack(std::move(curFiltre));
+							curFiltre.Vider();
 							dansFiltre = false;
 						}
 						continue;
@@ -2949,7 +3005,7 @@ namespace nkentseu {
 
 				// ── <filter> et ses primitives ───────────────────────────────────
 				if (std::strcmp(tagBuf, "filter") == 0) {
-					curFiltre = Filtre();
+					curFiltre.Vider();
 					const char *fid = FindAttr(attrs, numAttrs, "id");
 					if (fid) {
 						std::strncpy(curFiltre.id, fid, 63);
@@ -2957,39 +3013,153 @@ namespace nkentseu {
 					}
 					dansFiltre = true;
 					if (kind == 2) { // <filter/> vide
-						filtres.PushBack(curFiltre);
-						curFiltre = Filtre();
+						filtres.PushBack(std::move(curFiltre));
+						curFiltre.Vider();
 						dansFiltre = false;
 					}
 					continue;
 				}
 				if (std::strncmp(tagBuf, "fe", 2) == 0) {
-					if (std::strcmp(tagBuf, "feDropShadow") == 0 && dansFiltre) {
-						curFiltre.ombre = true;
-						curFiltre.dx = ParseFloat(FindAttr(attrs, numAttrs, "dx"));
-						curFiltre.dy = ParseFloat(FindAttr(attrs, numAttrs, "dy"));
-						const char *sd = FindAttr(attrs, numAttrs, "stdDeviation");
-						curFiltre.ecartType = sd ? ParseFloat(sd) : 2.f;
-						const char *fc = FindAttr(attrs, numAttrs, "flood-color");
-						curFiltre.couleur = fc ? NkSVGColor::Parse(fc) : NkSVGColor::Black();
-						const char *fo = FindAttr(attrs, numAttrs, "flood-opacity");
-						if (fo) {
-							float32 o = ParseFloat(fo);
-							if (o < 0.f)
-								o = 0.f;
-							if (o > 1.f)
-								o = 1.f;
-							curFiltre.couleur.a = (uint8)((float32)curFiltre.couleur.a * o);
+					if (!dansFiltre)
+						continue;
+					// feMergeNode n'est pas une primitive : c'est une ENTREE de la
+					// derniere feMerge ouverte.
+					if (std::strcmp(tagBuf, "feMergeNode") == 0) {
+						if (!curFiltre.prims.IsEmpty()) {
+							Primitive &p = curFiltre.prims[curFiltre.prims.Size() - 1];
+							const char *mi = FindAttr(attrs, numAttrs, "in");
+							if (p.type == PrimType::Assemblage && p.nMerges < 8) {
+								if (mi) {
+									std::strncpy(p.merges[p.nMerges], mi, 31);
+									p.merges[p.nMerges][31] = 0;
+								} else {
+									p.merges[p.nMerges][0] = 0;
+								}
+								++p.nMerges;
+							}
 						}
-						curFiltre.couleur.none = false;
-					} else if (skips.Noter(tagBuf)) {
-						// LES AUTRES PRIMITIVES SONT NOMMEES : un flou, une matrice de
-						// couleurs ou une turbulence qu'on saute change l'image ; le
-						// taire ferait croire que le filtre a ete applique.
-						logger.Warn("[SVG] primitive de filtre non geree, sautee : <{0}> (seul <feDropShadow> est "
-									"peint).",
-									tagBuf);
+						continue;
 					}
+					Primitive p;
+					if (std::strcmp(tagBuf, "feGaussianBlur") == 0)
+						p.type = PrimType::Flou;
+					else if (std::strcmp(tagBuf, "feOffset") == 0)
+						p.type = PrimType::Decalage;
+					else if (std::strcmp(tagBuf, "feFlood") == 0)
+						p.type = PrimType::Aplat;
+					else if (std::strcmp(tagBuf, "feComposite") == 0)
+						p.type = PrimType::Composition;
+					else if (std::strcmp(tagBuf, "feColorMatrix") == 0)
+						p.type = PrimType::Matrice;
+					else if (std::strcmp(tagBuf, "feBlend") == 0)
+						p.type = PrimType::Fusion;
+					else if (std::strcmp(tagBuf, "feMerge") == 0)
+						p.type = PrimType::Assemblage;
+					else if (std::strcmp(tagBuf, "feDropShadow") == 0)
+						p.type = PrimType::Ombre;
+					else {
+						if (skips.Noter(tagBuf))
+							logger.Warn("[SVG] primitive de filtre non geree, sautee : <{0}> -- le graphe "
+										"continue SANS elle (son entree passe telle quelle).",
+										tagBuf);
+						// on l'ajoute quand meme en « inconnue » : elle laisse passer
+						// son entree, ce qui garde le CHAINAGE des `result` intact.
+						p.type = PrimType::Inconnue;
+					}
+					const char *ai = FindAttr(attrs, numAttrs, "in");
+					if (ai) {
+						std::strncpy(p.in, ai, 31);
+						p.in[31] = 0;
+					}
+					const char *ai2 = FindAttr(attrs, numAttrs, "in2");
+					if (ai2) {
+						std::strncpy(p.in2, ai2, 31);
+						p.in2[31] = 0;
+					}
+					const char *ar = FindAttr(attrs, numAttrs, "result");
+					if (ar) {
+						std::strncpy(p.result, ar, 31);
+						p.result[31] = 0;
+					}
+					// stdDeviation accepte « x » ou « x y »
+					const char *sd = FindAttr(attrs, numAttrs, "stdDeviation");
+					if (sd) {
+						const char *pp = sd;
+						p.ecartX = ParseFloat(pp, &pp);
+						pp = SkipWSComma(pp);
+						p.ecartY = (*pp) ? ParseFloat(pp, &pp) : p.ecartX;
+					} else if (p.type == PrimType::Ombre) {
+						p.ecartX = p.ecartY = 2.f;
+					}
+					p.dx = ParseFloat(FindAttr(attrs, numAttrs, "dx"));
+					p.dy = ParseFloat(FindAttr(attrs, numAttrs, "dy"));
+					const char *fc = FindAttr(attrs, numAttrs, "flood-color");
+					p.couleur = fc ? NkSVGColor::Parse(fc) : NkSVGColor::Black();
+					const char *fo = FindAttr(attrs, numAttrs, "flood-opacity");
+					if (fo) {
+						float32 o = ParseFloat(fo);
+						if (o < 0.f)
+							o = 0.f;
+						if (o > 1.f)
+							o = 1.f;
+						p.couleur.a = (uint8)((float32)p.couleur.a * o);
+					}
+					p.couleur.none = false;
+					const char *op = FindAttr(attrs, numAttrs, "operator");
+					if (op) {
+						if (std::strcmp(op, "in") == 0) p.op = OpComposite::In;
+						else if (std::strcmp(op, "out") == 0) p.op = OpComposite::Out;
+						else if (std::strcmp(op, "atop") == 0) p.op = OpComposite::Atop;
+						else if (std::strcmp(op, "xor") == 0) p.op = OpComposite::Xor;
+						else if (std::strcmp(op, "arithmetic") == 0) p.op = OpComposite::Arithmetique;
+					}
+					const char *mo = FindAttr(attrs, numAttrs, "mode");
+					if (mo) {
+						if (std::strcmp(mo, "multiply") == 0) p.fusion = OpFusion::Multiplier;
+						else if (std::strcmp(mo, "screen") == 0) p.fusion = OpFusion::Ecran;
+						else if (std::strcmp(mo, "darken") == 0) p.fusion = OpFusion::Assombrir;
+						else if (std::strcmp(mo, "lighten") == 0) p.fusion = OpFusion::Eclaircir;
+					}
+					p.k1 = ParseFloat(FindAttr(attrs, numAttrs, "k1"));
+					p.k2 = ParseFloat(FindAttr(attrs, numAttrs, "k2"));
+					p.k3 = ParseFloat(FindAttr(attrs, numAttrs, "k3"));
+					p.k4 = ParseFloat(FindAttr(attrs, numAttrs, "k4"));
+					// feColorMatrix : type matrix / saturate / hueRotate / luminanceToAlpha
+					if (p.type == PrimType::Matrice) {
+						const char *ty = FindAttr(attrs, numAttrs, "type");
+						const char *va = FindAttr(attrs, numAttrs, "values");
+						for (int32 i = 0; i < 20; ++i)
+							p.mat[i] = 0.f;
+						p.mat[0] = p.mat[6] = p.mat[12] = p.mat[18] = 1.f; // identite
+						p.aMatrice = true;
+						if (!ty || std::strcmp(ty, "matrix") == 0) {
+							if (va) {
+								const char *pp = va;
+								for (int32 i = 0; i < 20 && *pp; ++i) {
+									pp = SkipWSComma(pp);
+									if (!*pp)
+										break;
+									p.mat[i] = ParseFloat(pp, &pp);
+								}
+							}
+						} else if (std::strcmp(ty, "saturate") == 0) {
+							const float32 sv = va ? ParseFloat(va) : 1.f;
+							p.mat[0] = 0.213f + 0.787f * sv; p.mat[1] = 0.715f - 0.715f * sv; p.mat[2] = 0.072f - 0.072f * sv;
+							p.mat[5] = 0.213f - 0.213f * sv; p.mat[6] = 0.715f + 0.285f * sv; p.mat[7] = 0.072f - 0.072f * sv;
+							p.mat[10] = 0.213f - 0.213f * sv; p.mat[11] = 0.715f - 0.715f * sv; p.mat[12] = 0.072f + 0.928f * sv;
+							p.mat[3] = p.mat[4] = p.mat[8] = p.mat[9] = p.mat[13] = p.mat[14] = 0.f;
+							p.mat[18] = 1.f;
+						} else if (std::strcmp(ty, "luminanceToAlpha") == 0) {
+							for (int32 i = 0; i < 20; ++i)
+								p.mat[i] = 0.f;
+							p.mat[15] = 0.2125f;
+							p.mat[16] = 0.7154f;
+							p.mat[17] = 0.0721f;
+						} else if (skips.Noter("feColorMatrix-type")) {
+							logger.Warn("[SVG] feColorMatrix type=\"{0}\" non gere -- identite appliquee.", ty);
+						}
+					}
+					curFiltre.prims.PushBack(p);
 					continue;
 				}
 
@@ -3368,7 +3538,7 @@ namespace nkentseu {
 			}
 
 			if (dansFiltre)
-				filtres.PushBack(curFiltre); // un <filter> jamais ferme
+				filtres.PushBack(std::move(curFiltre)); // un <filter> jamais ferme
 			if (dansClip) {
 				for (uint32 k = shapesAvantClip; k < shapes.Size(); ++k)
 					curClip.formes.PushBack(std::move(shapes[k]));
@@ -4235,25 +4405,40 @@ namespace nkentseu {
 		// ─────────────────────────────────────────────────────────────────────────────
 
 		/// Flou gaussien separable d'un canal 8 bits, en place (via un tampon).
-		void FlouGaussien(uint8 *canal, int32 W, int32 H, float32 sigma) noexcept {
-			if (sigma < 0.05f || W <= 0 || H <= 0)
+		void FlouGaussienXY(uint8 *canal, int32 W, int32 H, float32 sigmaX, float32 sigmaY) noexcept {
+			if ((sigmaX < 0.05f && sigmaY < 0.05f) || W <= 0 || H <= 0)
 				return;
-			int32 rayon = (int32)std::ceil(sigma * 3.f);
-			if (rayon < 1)
-				rayon = 1;
-			if (rayon > 128)
-				rayon = 128; // borne : au-dela le noyau coute plus que le resultat ne montre
-			const int32 n = rayon * 2 + 1;
-			float32 poids[257];
-			float32 somme = 0.f;
-			const float32 deux = 2.f * sigma * sigma;
-			for (int32 i = 0; i < n; ++i) {
-				const float32 d = (float32)(i - rayon);
-				poids[i] = std::exp(-(d * d) / deux);
-				somme += poids[i];
-			}
-			for (int32 i = 0; i < n; ++i)
-				poids[i] /= somme;
+			// DEUX NOYAUX, un par direction : `stdDeviation` accepte « x y » et un
+			// flou anisotrope est un usage courant (une ombre ecrasee). Reutiliser le
+			// meme sigma dans les deux sens rendrait un flou rond la ou le fichier en
+			// demande un ovale -- une erreur qui ne se voit que sur les cas obliques.
+			constexpr int32 kRayonMax = 128;
+			float32 poidsX[kRayonMax * 2 + 1], poidsY[kRayonMax * 2 + 1];
+			int32 rx = 0, ry = 0;
+			auto noyau = [](float32 sigma, float32 *poids, int32 &rayon) {
+				if (sigma < 0.05f) {
+					rayon = 0;
+					poids[0] = 1.f;
+					return;
+				}
+				rayon = (int32)std::ceil(sigma * 3.f);
+				if (rayon < 1)
+					rayon = 1;
+				if (rayon > kRayonMax)
+					rayon = kRayonMax; // au-dela, le noyau coute plus que le resultat ne montre
+				const int32 n = rayon * 2 + 1;
+				const float32 deux = 2.f * sigma * sigma;
+				float32 somme = 0.f;
+				for (int32 i = 0; i < n; ++i) {
+					const float32 d = (float32)(i - rayon);
+					poids[i] = std::exp(-(d * d) / deux);
+					somme += poids[i];
+				}
+				for (int32 i = 0; i < n; ++i)
+					poids[i] /= somme;
+			};
+			noyau(sigmaX, poidsX, rx);
+			noyau(sigmaY, poidsY, ry);
 
 			uint8 *tmp = (uint8 *)NkAlloc((usize)W * (usize)H);
 			if (!tmp)
@@ -4263,14 +4448,18 @@ namespace nkentseu {
 				const uint8 *ligne = canal + (usize)y * (usize)W;
 				uint8 *sortie = tmp + (usize)y * (usize)W;
 				for (int32 x = 0; x < W; ++x) {
+					if (rx == 0) {
+						sortie[x] = ligne[x];
+						continue;
+					}
 					float32 acc = 0.f;
-					for (int32 i = 0; i < n; ++i) {
-						int32 sx = x + i - rayon;
+					for (int32 i = 0; i < rx * 2 + 1; ++i) {
+						int32 sx = x + i - rx;
 						if (sx < 0)
 							sx = 0;
 						if (sx >= W)
 							sx = W - 1;
-						acc += (float32)ligne[sx] * poids[i];
+						acc += (float32)ligne[sx] * poidsX[i];
 					}
 					sortie[x] = (uint8)(acc + 0.5f);
 				}
@@ -4278,14 +4467,18 @@ namespace nkentseu {
 			// passe verticale
 			for (int32 y = 0; y < H; ++y) {
 				for (int32 x = 0; x < W; ++x) {
+					if (ry == 0) {
+						canal[(usize)y * (usize)W + (usize)x] = tmp[(usize)y * (usize)W + (usize)x];
+						continue;
+					}
 					float32 acc = 0.f;
-					for (int32 i = 0; i < n; ++i) {
-						int32 sy = y + i - rayon;
+					for (int32 i = 0; i < ry * 2 + 1; ++i) {
+						int32 sy = y + i - ry;
 						if (sy < 0)
 							sy = 0;
 						if (sy >= H)
 							sy = H - 1;
-						acc += (float32)tmp[(usize)sy * (usize)W + (usize)x] * poids[i];
+						acc += (float32)tmp[(usize)sy * (usize)W + (usize)x] * poidsY[i];
 					}
 					canal[(usize)y * (usize)W + (usize)x] = (uint8)(acc + 0.5f);
 				}
@@ -4315,46 +4508,359 @@ namespace nkentseu {
 			}
 		}
 
-		/// Pose l'ombre du calque SOUS lui : son alpha floute, decale et teinte.
-		void PoserOmbre(NkImage &dst, const NkImage &calque, const Filtre &fl, float32 echX, float32 echY) noexcept {
-			const int32 W = dst.Width(), H = dst.Height();
-			const uint8 *src = calque.Pixels();
-			uint8 *d = dst.Pixels();
-			if (!src || !d || W <= 0 || H <= 0)
+		/// Flou gaussien d'une image RGBA, en PREMULTIPLIE. Flouter des canaux non
+		/// premultiplies fait baver la couleur des pixels transparents dans les
+		/// voisins (une frange noire autour de tout objet floute) : le premultiplie
+		/// est la seule facon d'obtenir un bord propre.
+		void FlouRGBA(NkImage &img, float32 sigmaX, float32 sigmaY) noexcept {
+			if (sigmaX < 0.05f && sigmaY < 0.05f)
 				return;
-			uint8 *masque = (uint8 *)NkAlloc((usize)W * (usize)H);
-			if (!masque)
+			const int32 W = img.Width(), H = img.Height();
+			uint8 *px = img.Pixels();
+			if (!px || W <= 0 || H <= 0)
 				return;
-			for (int32 i = 0; i < W * H; ++i)
-				masque[i] = src[(usize)i * 4u + 3u];
-			// l'ecart-type est en unites UTILISATEUR : il suit l'echelle de sortie,
-			// sinon une ombre nette a 1x deviendrait floue a 3x (ou l'inverse).
-			FlouGaussien(masque, W, H, fl.ecartType * (echX + echY) * 0.5f);
-			const float32 dx = fl.dx * echX, dy = fl.dy * echY;
-			const int32 idx = (int32)(dx + (dx >= 0.f ? 0.5f : -0.5f));
-			const int32 idy = (int32)(dy + (dy >= 0.f ? 0.5f : -0.5f));
-			const float32 teinteA = (float32)fl.couleur.a / 255.f;
-			for (int32 y = 0; y < H; ++y) {
-				for (int32 x = 0; x < W; ++x) {
-					const int32 sx = x - idx, sy = y - idy;
-					if (sx < 0 || sy < 0 || sx >= W || sy >= H)
-						continue;
-					const int32 m = (int32)masque[(usize)sy * (usize)W + (usize)sx];
-					if (m <= 0)
-						continue;
-					const int32 sa = (int32)((float32)m * teinteA + 0.5f);
-					if (sa <= 0)
-						continue;
-					const usize o = ((usize)y * (usize)W + (usize)x) * 4u;
-					const int32 invA = 255 - sa;
-					d[o + 0] = (uint8)(((int32)fl.couleur.r * sa + (int32)d[o + 0] * invA + 127) / 255);
-					d[o + 1] = (uint8)(((int32)fl.couleur.g * sa + (int32)d[o + 1] * invA + 127) / 255);
-					d[o + 2] = (uint8)(((int32)fl.couleur.b * sa + (int32)d[o + 2] * invA + 127) / 255);
-					const int32 a2 = (int32)d[o + 3] + sa - ((int32)d[o + 3] * sa + 127) / 255;
-					d[o + 3] = (uint8)(a2 > 255 ? 255 : a2);
+			const usize n = (usize)W * (usize)H;
+			uint8 *canal = (uint8 *)NkAlloc(n);
+			if (!canal)
+				return;
+			// premultiplier
+			for (usize i = 0; i < n; ++i) {
+				const int32 a = px[i * 4u + 3u];
+				for (int32 k = 0; k < 3; ++k)
+					px[i * 4u + (usize)k] = (uint8)(((int32)px[i * 4u + (usize)k] * a + 127) / 255);
+			}
+			for (int32 k = 0; k < 4; ++k) {
+				for (usize i = 0; i < n; ++i)
+					canal[i] = px[i * 4u + (usize)k];
+				FlouGaussienXY(canal, W, H, sigmaX, sigmaY);
+				for (usize i = 0; i < n; ++i)
+					px[i * 4u + (usize)k] = canal[i];
+			}
+			// demultiplier
+			for (usize i = 0; i < n; ++i) {
+				const int32 a = px[i * 4u + 3u];
+				if (a == 0) {
+					px[i * 4u] = px[i * 4u + 1u] = px[i * 4u + 2u] = 0;
+					continue;
+				}
+				for (int32 k = 0; k < 3; ++k) {
+					int32 v = ((int32)px[i * 4u + (usize)k] * 255 + a / 2) / a;
+					px[i * 4u + (usize)k] = (uint8)(v > 255 ? 255 : v);
 				}
 			}
-			NkFree(masque);
+			NkFree(canal);
+		}
+
+		// ═════════════════════════════════════════════════════════════════════════════
+		// L'EVALUATION DU GRAPHE — chaque primitive lit des images nommees, en produit une
+		// ═════════════════════════════════════════════════════════════════════════════
+		struct ResultatFiltre {
+				char nom[32] = {0};
+				NkImage img;
+
+				ResultatFiltre() = default;
+				ResultatFiltre(ResultatFiltre &&) noexcept = default;
+				ResultatFiltre &operator=(ResultatFiltre &&) noexcept = default;
+				ResultatFiltre(const ResultatFiltre &) = delete;
+				ResultatFiltre &operator=(const ResultatFiltre &) = delete;
+		};
+
+		/// Copie profonde d'une image RGBA (les primitives ne modifient jamais leur
+		/// entree : une meme image nommee peut etre lue par plusieurs primitives).
+		NkImage CopierImage(const NkImage &src) noexcept {
+			NkImage d = NkImage::Alloc(src.Width(), src.Height(), NkImagePixelFormat::NK_RGBA32);
+			if (d.IsValid() && src.Pixels() && d.Pixels())
+				std::memcpy(d.Pixels(), src.Pixels(), (usize)src.Width() * (usize)src.Height() * 4u);
+			return d;
+		}
+
+		/// `SourceAlpha` : la source, dont il ne reste que l'alpha (noir opaque la ou
+		/// il y avait quelque chose). C'est l'entree de toute ombre portee.
+		NkImage AlphaSeul(const NkImage &src) noexcept {
+			NkImage d = CopierImage(src);
+			if (!d.IsValid())
+				return d;
+			uint8 *p = d.Pixels();
+			const usize n = (usize)d.Width() * (usize)d.Height();
+			for (usize i = 0; i < n; ++i) {
+				p[i * 4u] = 0;
+				p[i * 4u + 1u] = 0;
+				p[i * 4u + 2u] = 0;
+			}
+			return d;
+		}
+
+		/// Compose `a` SUR `b` selon un operateur de Porter-Duff, dans `sortie`.
+		void Composer(const NkImage &a, const NkImage &b, OpComposite op, float32 k1, float32 k2, float32 k3,
+					  float32 k4, NkImage &sortie) noexcept {
+			const int32 W = sortie.Width(), H = sortie.Height();
+			uint8 *d = sortie.Pixels();
+			const uint8 *pa = a.Pixels();
+			const uint8 *pb = b.Pixels();
+			if (!d || !pa || !pb)
+				return;
+			const usize n = (usize)W * (usize)H;
+			for (usize i = 0; i < n; ++i) {
+				float32 A[4], B[4];
+				for (int32 k = 0; k < 4; ++k) {
+					A[k] = (float32)pa[i * 4u + (usize)k] / 255.f;
+					B[k] = (float32)pb[i * 4u + (usize)k] / 255.f;
+				}
+				// les operateurs travaillent en PREMULTIPLIE (c'est leur definition)
+				for (int32 k = 0; k < 3; ++k) {
+					A[k] *= A[3];
+					B[k] *= B[3];
+				}
+				float32 O[4];
+				switch (op) {
+					case OpComposite::In:
+						for (int32 k = 0; k < 4; ++k) O[k] = A[k] * B[3];
+						break;
+					case OpComposite::Out:
+						for (int32 k = 0; k < 4; ++k) O[k] = A[k] * (1.f - B[3]);
+						break;
+					case OpComposite::Atop:
+						for (int32 k = 0; k < 4; ++k) O[k] = A[k] * B[3] + B[k] * (1.f - A[3]);
+						break;
+					case OpComposite::Xor:
+						for (int32 k = 0; k < 4; ++k) O[k] = A[k] * (1.f - B[3]) + B[k] * (1.f - A[3]);
+						break;
+					case OpComposite::Arithmetique:
+						for (int32 k = 0; k < 4; ++k) O[k] = k1 * A[k] * B[k] + k2 * A[k] + k3 * B[k] + k4;
+						break;
+					default: // Over
+						for (int32 k = 0; k < 4; ++k) O[k] = A[k] + B[k] * (1.f - A[3]);
+						break;
+				}
+				for (int32 k = 0; k < 4; ++k) {
+					if (O[k] < 0.f) O[k] = 0.f;
+					if (O[k] > 1.f) O[k] = 1.f;
+				}
+				// retour en alpha droit
+				if (O[3] > 0.f)
+					for (int32 k = 0; k < 3; ++k)
+						O[k] = O[k] / O[3] > 1.f ? 1.f : O[k] / O[3];
+				else
+					O[0] = O[1] = O[2] = 0.f;
+				for (int32 k = 0; k < 4; ++k)
+					d[i * 4u + (usize)k] = (uint8)(O[k] * 255.f + 0.5f);
+			}
+		}
+
+		/// feBlend : `a` sur `b` avec un mode de fusion.
+		void Fusionner(const NkImage &a, const NkImage &b, OpFusion mode, NkImage &sortie) noexcept {
+			const usize n = (usize)sortie.Width() * (usize)sortie.Height();
+			uint8 *d = sortie.Pixels();
+			const uint8 *pa = a.Pixels();
+			const uint8 *pb = b.Pixels();
+			if (!d || !pa || !pb)
+				return;
+			for (usize i = 0; i < n; ++i) {
+				const float32 sa = (float32)pa[i * 4u + 3u] / 255.f;
+				const float32 da = (float32)pb[i * 4u + 3u] / 255.f;
+				const float32 oa = sa + da * (1.f - sa);
+				for (int32 k = 0; k < 3; ++k) {
+					const float32 cs = (float32)pa[i * 4u + (usize)k] / 255.f;
+					const float32 cb = (float32)pb[i * 4u + (usize)k] / 255.f;
+					float32 B = cs;
+					switch (mode) {
+						case OpFusion::Multiplier: B = cs * cb; break;
+						case OpFusion::Ecran: B = cs + cb - cs * cb; break;
+						case OpFusion::Assombrir: B = cs < cb ? cs : cb; break;
+						case OpFusion::Eclaircir: B = cs > cb ? cs : cb; break;
+						default: break;
+					}
+					const float32 cr = (1.f - da) * cs + da * B;
+					float32 v = (oa > 0.f) ? (cr * sa + cb * da * (1.f - sa)) / oa : 0.f;
+					if (v < 0.f) v = 0.f;
+					if (v > 1.f) v = 1.f;
+					d[i * 4u + (usize)k] = (uint8)(v * 255.f + 0.5f);
+				}
+				d[i * 4u + 3u] = (uint8)(oa * 255.f + 0.5f);
+			}
+		}
+
+		/// Evalue le graphe d'un filtre. @p source = le groupe deja peint.
+		/// @return l'image filtree (invalide si rien a faire).
+		NkImage EvaluerFiltre(const Filtre &f, const NkImage &source, float32 echX, float32 echY) noexcept {
+			const int32 W = source.Width(), H = source.Height();
+			NkVector<ResultatFiltre> nommes;
+			NkImage precedente = CopierImage(source);
+			if (!precedente.IsValid())
+				return NkImage();
+
+			auto trouver = [&](const char *nom) -> const NkImage * {
+				if (!nom || !nom[0])
+					return nullptr;
+				if (std::strcmp(nom, "SourceGraphic") == 0)
+					return &source;
+				for (uint32 i = 0; i < nommes.Size(); ++i)
+					if (std::strcmp(nommes[i].nom, nom) == 0)
+						return &nommes[i].img;
+				return nullptr;
+			};
+
+			NkImage sourceAlpha; // fabriquee a la demande : la plupart des filtres l'utilisent
+			for (uint32 ip = 0; ip < f.prims.Size(); ++ip) {
+				const Primitive &p = f.prims[ip];
+				// ── l'entree : nommee, ou la sortie de la primitive precedente ──
+				NkImage entree;
+				const NkImage *ref = trouver(p.in);
+				if (!ref && p.in[0] && std::strcmp(p.in, "SourceAlpha") == 0) {
+					if (!sourceAlpha.IsValid())
+						sourceAlpha = AlphaSeul(source);
+					ref = &sourceAlpha;
+				}
+				entree = ref ? CopierImage(*ref) : CopierImage(precedente);
+				if (!entree.IsValid())
+					break;
+
+				NkImage sortie;
+				switch (p.type) {
+					case PrimType::Flou: {
+						sortie = std::move(entree);
+						FlouRGBA(sortie, p.ecartX * echX, p.ecartY * echY);
+						break;
+					}
+					case PrimType::Decalage: {
+						sortie = NkImage::Alloc(W, H, NkImagePixelFormat::NK_RGBA32);
+						if (!sortie.IsValid())
+							break;
+						const int32 idx = (int32)(p.dx * echX + (p.dx >= 0.f ? 0.5f : -0.5f));
+						const int32 idy = (int32)(p.dy * echY + (p.dy >= 0.f ? 0.5f : -0.5f));
+						uint8 *d = sortie.Pixels();
+						const uint8 *sp = entree.Pixels();
+						for (int32 y = 0; y < H; ++y)
+							for (int32 x = 0; x < W; ++x) {
+								const int32 sx = x - idx, sy = y - idy;
+								if (sx < 0 || sy < 0 || sx >= W || sy >= H)
+									continue;
+								for (int32 k = 0; k < 4; ++k)
+									d[((usize)y * (usize)W + (usize)x) * 4u + (usize)k] =
+										sp[((usize)sy * (usize)W + (usize)sx) * 4u + (usize)k];
+							}
+						break;
+					}
+					case PrimType::Aplat: {
+						sortie = NkImage::Alloc(W, H, NkImagePixelFormat::NK_RGBA32);
+						if (!sortie.IsValid())
+							break;
+						uint8 *d = sortie.Pixels();
+						const usize n = (usize)W * (usize)H;
+						for (usize i = 0; i < n; ++i) {
+							d[i * 4u] = p.couleur.r;
+							d[i * 4u + 1u] = p.couleur.g;
+							d[i * 4u + 2u] = p.couleur.b;
+							d[i * 4u + 3u] = p.couleur.a;
+						}
+						break;
+					}
+					case PrimType::Matrice: {
+						sortie = std::move(entree);
+						uint8 *d = sortie.Pixels();
+						const usize n = (usize)W * (usize)H;
+						for (usize i = 0; i < n; ++i) {
+							const float32 r = (float32)d[i * 4u] / 255.f, g = (float32)d[i * 4u + 1u] / 255.f;
+							const float32 b = (float32)d[i * 4u + 2u] / 255.f, a = (float32)d[i * 4u + 3u] / 255.f;
+							float32 o[4];
+							for (int32 k = 0; k < 4; ++k)
+								o[k] = p.mat[k * 5 + 0] * r + p.mat[k * 5 + 1] * g + p.mat[k * 5 + 2] * b +
+									   p.mat[k * 5 + 3] * a + p.mat[k * 5 + 4];
+							for (int32 k = 0; k < 4; ++k) {
+								if (o[k] < 0.f) o[k] = 0.f;
+								if (o[k] > 1.f) o[k] = 1.f;
+								d[i * 4u + (usize)k] = (uint8)(o[k] * 255.f + 0.5f);
+							}
+						}
+						break;
+					}
+					case PrimType::Composition:
+					case PrimType::Fusion: {
+						const NkImage *b2 = trouver(p.in2);
+						NkImage deux;
+						if (!b2 && p.in2[0] && std::strcmp(p.in2, "SourceAlpha") == 0) {
+							if (!sourceAlpha.IsValid())
+								sourceAlpha = AlphaSeul(source);
+							b2 = &sourceAlpha;
+						}
+						if (!b2)
+							b2 = &source;
+						sortie = NkImage::Alloc(W, H, NkImagePixelFormat::NK_RGBA32);
+						if (!sortie.IsValid())
+							break;
+						if (p.type == PrimType::Composition)
+							Composer(entree, *b2, p.op, p.k1, p.k2, p.k3, p.k4, sortie);
+						else
+							Fusionner(entree, *b2, p.fusion, sortie);
+						break;
+					}
+					case PrimType::Assemblage: {
+						sortie = NkImage::Alloc(W, H, NkImagePixelFormat::NK_RGBA32);
+						if (!sortie.IsValid())
+							break;
+						// feMerge empile ses entrees dans l'ordre : la premiere DESSOUS.
+						for (int32 m = 0; m < p.nMerges; ++m) {
+							const NkImage *src2 = trouver(p.merges[m]);
+							if (!src2 && p.merges[m][0] && std::strcmp(p.merges[m], "SourceAlpha") == 0) {
+								if (!sourceAlpha.IsValid())
+									sourceAlpha = AlphaSeul(source);
+								src2 = &sourceAlpha;
+							}
+							if (!src2)
+								src2 = &precedente;
+							ComposerCalque(sortie, *src2);
+						}
+						break;
+					}
+					case PrimType::Ombre: {
+						// LE RACCOURCI, exprime avec les memes briques : l'alpha de
+						// l'entree, floute, decale, teinte, puis l'entree PAR-DESSUS.
+						NkImage ombre = AlphaSeul(entree);
+						if (!ombre.IsValid())
+							break;
+						FlouRGBA(ombre, p.ecartX * echX, p.ecartY * echY);
+						uint8 *d = ombre.Pixels();
+						const usize n = (usize)W * (usize)H;
+						for (usize i = 0; i < n; ++i) {
+							d[i * 4u] = p.couleur.r;
+							d[i * 4u + 1u] = p.couleur.g;
+							d[i * 4u + 2u] = p.couleur.b;
+							d[i * 4u + 3u] = (uint8)(((int32)d[i * 4u + 3u] * (int32)p.couleur.a + 127) / 255);
+						}
+						sortie = NkImage::Alloc(W, H, NkImagePixelFormat::NK_RGBA32);
+						if (!sortie.IsValid())
+							break;
+						const int32 idx = (int32)(p.dx * echX + (p.dx >= 0.f ? 0.5f : -0.5f));
+						const int32 idy = (int32)(p.dy * echY + (p.dy >= 0.f ? 0.5f : -0.5f));
+						uint8 *od = sortie.Pixels();
+						const uint8 *op2 = ombre.Pixels();
+						for (int32 y = 0; y < H; ++y)
+							for (int32 x = 0; x < W; ++x) {
+								const int32 sx = x - idx, sy = y - idy;
+								if (sx < 0 || sy < 0 || sx >= W || sy >= H)
+									continue;
+								for (int32 k = 0; k < 4; ++k)
+									od[((usize)y * (usize)W + (usize)x) * 4u + (usize)k] =
+										op2[((usize)sy * (usize)W + (usize)sx) * 4u + (usize)k];
+							}
+						ComposerCalque(sortie, entree); // la forme PAR-DESSUS son ombre
+						break;
+					}
+					default: // Inconnue : l'entree passe telle quelle, le chainage tient
+						sortie = std::move(entree);
+						break;
+				}
+				if (!sortie.IsValid())
+					continue;
+				if (p.result[0] && nommes.Size() < 16u) {
+					ResultatFiltre r;
+					std::strncpy(r.nom, p.result, sizeof(r.nom) - 1);
+					r.img = CopierImage(sortie);
+					nommes.PushBack(std::move(r));
+				}
+				precedente = std::move(sortie);
+			}
+			return precedente;
 		}
 
 		/// Donnees opaques d'un NkSVGImage : shapes vectorielles + dimensions natives.
@@ -4396,7 +4902,7 @@ namespace nkentseu {
 				return nullptr;
 			for (uint32 i = 0; i < impl->filtres.Size(); ++i)
 				if (std::strcmp(impl->filtres[i].id, id) == 0)
-					return impl->filtres[i].ombre ? &impl->filtres[i] : nullptr;
+					return impl->filtres[i].prims.IsEmpty() ? nullptr : &impl->filtres[i];
 			return nullptr;
 		}
 
@@ -5218,8 +5724,10 @@ namespace nkentseu {
 			}
 			for (uint32 k = i; k < j; ++k)
 				peindre(calque, impl->shapes[k]);
-			PoserOmbre(img, calque, *fl, echX, echY); // l'ombre D'ABORD : elle est DESSOUS
-			ComposerCalque(img, calque);
+			// LE GRAPHE remplace le groupe par son resultat -- l'ombre n'est plus un
+			// cas particulier, c'est une primitive parmi d'autres.
+			NkImage filtre = EvaluerFiltre(*fl, calque, echX, echY);
+			ComposerCalque(img, filtre.IsValid() ? filtre : calque);
 			i = j;
 		}
 		return img;

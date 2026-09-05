@@ -711,27 +711,28 @@ static void TestOmbre() {
 		"</filter></defs><g filter=\"url(#f)\"><rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"#000\"/></g>"
 		"</svg>";
 	NkSVGImage *img = NkSVGImage::LoadFromMemory((const uint8 *)kAutre, std::strlen(kAutre));
-	bool blurDit = false, turbDit = false;
+	bool blurEncoreDit = false, turbDit = false;
+	bool formePeinte = false;
 	if (img) {
 		for (int32 i = 0; i < img->SkippedCount(); ++i) {
 			const char *n = img->SkippedAt(i);
 			if (n && std::strcmp(n, "feGaussianBlur") == 0)
-				blurDit = true;
+				blurEncoreDit = true; // GERE depuis le palier du graphe : plus ici
 			if (n && std::strcmp(n, "feTurbulence") == 0)
 				turbDit = true;
 		}
-		// et le groupe est peint QUAND MEME : perdre l'effet vaut mieux que perdre
-		// la forme
+		// et le groupe est peint QUAND MEME : une primitive inconnue laisse passer
+		// son entree, ce qui garde le graphe entier utilisable.
 		NkImage r = img->Rasterize(0, 0);
-		blurDit = blurDit && Proche(r, 20, 20, 0, 0, 0, 4);
+		formePeinte = AlphaDe(r, 20, 20) > 100;
 		img->Free();
 	}
-	std::snprintf(det, sizeof(det), "feGaussianBlur nomme (et la forme peinte quand meme)=%d ; feTurbulence "
-								   "nomme=%d",
-				  blurDit ? 1 : 0, turbDit ? 1 : 0);
-	Verifier("5d. les primitives de filtre AUTRES que feDropShadow sont NOMMEES, et le groupe est peint quand "
-			 "meme (perdre l'effet vaut mieux que perdre la forme)",
-			 blurDit && turbDit, det);
+	std::snprintf(det, sizeof(det), "feTurbulence nomme=%d ; feGaussianBlur n'est PLUS annonce comme saute (il "
+								   "est applique)=%d ; le groupe reste peint=%d",
+				  turbDit ? 1 : 0, blurEncoreDit ? 0 : 1, formePeinte ? 1 : 0);
+	Verifier("5d. une primitive de filtre INCONNUE est NOMMEE et laisse passer son entree (le groupe reste "
+			 "peint) ; celles qui sont implementees ne sont plus annoncees comme sautees",
+			 turbDit && !blurEncoreDit && formePeinte, det);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1562,6 +1563,127 @@ static void TestPattern() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER GRAPHE DE FILTRES — des primitives qui se CHAINENT
+// ─────────────────────────────────────────────────────────────────────────────
+static void TestGrapheFiltres() {
+	std::printf("\n== PALIER graphe de filtres ==\n");
+	char det[640];
+	static char svg[3072];
+
+	// (a) feFlood + feComposite operator="in" : un aplat DECOUPE par la forme.
+	//     C'est le test du CHAINAGE : ni l'un ni l'autre ne donne ce resultat seul.
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+				  "<defs><filter id=\"f\">"
+				  "<feFlood flood-color=\"#00ff00\" result=\"aplat\"/>"
+				  "<feComposite in=\"aplat\" in2=\"SourceGraphic\" operator=\"in\"/>"
+				  "</filter></defs>"
+				  "<g filter=\"url(#f)\"><rect x=\"25\" y=\"25\" width=\"50\" height=\"50\" fill=\"#ff0000\"/></g>"
+				  "</svg>");
+	NkImage a = Decoder(svg);
+	const bool decoupe = a.IsValid() && Proche(a, 50, 50, 0, 255, 0, 8) && AlphaDe(a, 10, 10) < 30 &&
+						 AlphaDe(a, 90, 90) < 30;
+	std::snprintf(det, sizeof(det), "dans la forme : vert (l'aplat)=%d ; hors de la forme : alpha %d / %d (l'aplat "
+								   "couvre TOUT le plan, seul le `in` le limite)",
+				  Proche(a, 50, 50, 0, 255, 0, 8) ? 1 : 0, AlphaDe(a, 10, 10), AlphaDe(a, 90, 90));
+	Verifier("G1. feFlood + feComposite operator=\"in\" : un aplat DECOUPE par la forme -- c'est le chainage qui "
+			 "produit ca, aucune des deux primitives seule ne le peut",
+			 decoupe, det);
+
+	// (b) feGaussianBlur seul : la forme est floutee (bords adoucis DEDANS,
+	//     debordement DEHORS).
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+				  "<defs><filter id=\"f\"><feGaussianBlur stdDeviation=\"4\"/></filter></defs>"
+				  "<g filter=\"url(#f)\"><rect x=\"30\" y=\"30\" width=\"40\" height=\"40\" fill=\"#000000\"/></g>"
+				  "</svg>");
+	NkImage b = Decoder(svg);
+	const int32 dedans = AlphaDe(b, 50, 50), bord = AlphaDe(b, 30, 50), dehors = AlphaDe(b, 24, 50);
+	const bool floute = b.IsValid() && dedans > 230 && bord > 60 && bord < 200 && dehors > 5 && dehors < 90;
+	std::snprintf(det, sizeof(det), "alpha : coeur=%d, sur le bord=%d (mi-chemin), au-dela=%d (deborde)", dedans,
+				  bord, dehors);
+	Verifier("G2. feGaussianBlur : le coeur reste opaque, le bord passe a mi-chemin, et l'alpha DEBORDE de la "
+			 "forme (c'est ce qui distingue un flou d'une transparence)",
+			 floute, det);
+
+	// (c) feOffset + feMerge : l'ombre portee, ECRITE A LA MAIN avec les briques du
+	//     graphe. Le meme resultat que feDropShadow, par un autre chemin -- c'est la
+	//     preuve que le graphe fonctionne et pas seulement le raccourci.
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\">"
+				  "<defs><filter id=\"f\">"
+				  "<feOffset in=\"SourceAlpha\" dx=\"12\" dy=\"12\" result=\"dec\"/>"
+				  "<feMerge><feMergeNode in=\"dec\"/><feMergeNode in=\"SourceGraphic\"/></feMerge>"
+				  "</filter></defs>"
+				  "<g filter=\"url(#f)\"><rect x=\"20\" y=\"20\" width=\"50\" height=\"50\" fill=\"#ff0000\"/></g>"
+				  "</svg>");
+	NkImage c = Decoder(svg);
+	const bool aLaMain = c.IsValid() && Proche(c, 45, 45, 255, 0, 0, 6) && Proche(c, 75, 75, 0, 0, 0, 10) &&
+						 AlphaDe(c, 10, 10) < 30;
+	std::snprintf(det, sizeof(det), "la forme rouge au centre=%d ; l'ombre NOIRE decalee en (75,75)=%d ; rien "
+								   "avant la forme : alpha=%d",
+				  Proche(c, 45, 45, 255, 0, 0, 6) ? 1 : 0, Proche(c, 75, 75, 0, 0, 0, 10) ? 1 : 0,
+				  AlphaDe(c, 10, 10));
+	Verifier("G3. feOffset(SourceAlpha) + feMerge : une ombre portee ECRITE A LA MAIN avec les briques du graphe "
+			 "-- le meme resultat que feDropShadow par un autre chemin",
+			 aLaMain, det);
+
+	// (d) feColorMatrix type=\"saturate\" values=\"0\" : la forme passe en gris. Une
+	//     primitive qui touche LA COULEUR, pas la geometrie.
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+				  "<defs><filter id=\"f\"><feColorMatrix type=\"saturate\" values=\"0\"/></filter></defs>"
+				  "<g filter=\"url(#f)\"><rect x=\"0\" y=\"0\" width=\"60\" height=\"60\" fill=\"#ff0000\"/></g>"
+				  "</svg>");
+	NkImage d = Decoder(svg);
+	uint8 pd[4];
+	Pixel(d, 30, 30, pd);
+	const bool gris = d.IsValid() && std::abs((int32)pd[0] - (int32)pd[1]) < 6 &&
+					  std::abs((int32)pd[1] - (int32)pd[2]) < 6 && pd[0] > 30 && pd[0] < 100;
+	std::snprintf(det, sizeof(det), "le rouge pur devient (%u,%u,%u) : les trois canaux egaux, a la LUMINANCE du "
+								   "rouge (~54)",
+				  pd[0], pd[1], pd[2]);
+	Verifier("G4. feColorMatrix type=\"saturate\" values=\"0\" : la couleur est desaturee (les trois canaux "
+			 "convergent vers la luminance)",
+			 gris, det);
+
+	// (e) feBlend mode=\"multiply\" entre deux entrees du graphe.
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+				  "<defs><filter id=\"f\">"
+				  "<feFlood flood-color=\"#808080\" result=\"gris\"/>"
+				  "<feBlend in=\"gris\" in2=\"SourceGraphic\" mode=\"multiply\"/>"
+				  "</filter></defs>"
+				  "<g filter=\"url(#f)\"><rect x=\"0\" y=\"0\" width=\"60\" height=\"60\" fill=\"#ff0000\"/></g>"
+				  "</svg>");
+	NkImage e = Decoder(svg);
+	uint8 pe[4];
+	Pixel(e, 30, 30, pe);
+	const bool multiplie = e.IsValid() && pe[0] > 110 && pe[0] < 145 && pe[1] < 20 && pe[2] < 20;
+	std::snprintf(det, sizeof(det), "(%u,%u,%u) -- gris 50 %% multiplie par du rouge donne ~(128,0,0)", pe[0], pe[1],
+				  pe[2]);
+	Verifier("G5. feBlend mode=\"multiply\" entre deux entrees NOMMEES du graphe", multiplie, det);
+
+	// (f) stdDeviation=\"x y\" : un flou ANISOTROPE. Le meme sigma dans les deux
+	//     sens rendrait un flou rond la ou le fichier demande un ovale.
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\">"
+				  "<defs><filter id=\"f\"><feGaussianBlur stdDeviation=\"8 0\"/></filter></defs>"
+				  "<g filter=\"url(#f)\"><rect x=\"40\" y=\"40\" width=\"40\" height=\"40\" fill=\"#000000\"/></g>"
+				  "</svg>");
+	NkImage f = Decoder(svg);
+	const int32 horiz = AlphaDe(f, 30, 60); // 10 px a GAUCHE du bord : floute
+	const int32 vert = AlphaDe(f, 60, 30);  // 10 px AU-DESSUS : net, donc vide
+	const bool aniso = f.IsValid() && horiz > 20 && vert < 20;
+	std::snprintf(det, sizeof(det), "a 10 px du bord : horizontalement alpha=%d (le flou deborde), verticalement "
+								   "alpha=%d (aucun flou dans ce sens)",
+				  horiz, vert);
+	Verifier("G6. stdDeviation=\"8 0\" : le flou est ANISOTROPE -- il deborde horizontalement et pas "
+			 "verticalement",
+			 aniso, det);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -1649,6 +1771,7 @@ int TestSVG_Run() {
 	TestCSS();
 	TestDash();
 	TestPattern();
+	TestGrapheFiltres();
 	TestNonGere();
 	TestTemoinCroise();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);
