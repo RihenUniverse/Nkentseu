@@ -23,7 +23,7 @@ with project("NKImage"):
     location(".")
 
     nkentseudependson(
-        ["NKPlatform", "NKCore", "NKMemory", "NKMath", "NKContainers", "NKLogger", "NKThreading", "NKFileSystem", "NKStream"],
+        ["NKPlatform", "NKCore", "NKMemory", "NKMath", "NKContainers", "NKLogger", "NKThreading", "NKFileSystem", "NKStream", "NKFont"],
         selfexport="NKImage",
         extra_includes=["src"],
     )
@@ -143,6 +143,7 @@ with project("NKImage"):
             testownmain()  # la suite fournit son main() -- le mot propre de Jenga 2.6 (2026-09-04)
             links([
                 "NKImage",
+                "NKFont",
                 "NKMemory",
                 "NKCore",
             ])

@@ -549,6 +549,37 @@ namespace nkentseu {
 				Shape &operator=(const Shape &) = delete;
 		};
 
+		// ─────────────────────────────────────────────────────────────────────────────
+		// CE QUE LE CODEC SAUTE SE DIT — UNE FOIS PAR NOM, JAMAIS EN SILENCE.
+		// Un decodeur qui ignore sans le dire fait croire que le fichier est rendu.
+		// Le nom est garde ici (relisible par NkSVGImage::SkippedAt) ET journalise :
+		// le test lit la liste, l'humain lit le journal.
+		// ─────────────────────────────────────────────────────────────────────────────
+		struct SkipList {
+				static constexpr int32 kMax = 32;
+				char noms[kMax][40] = {};
+				int32 nb = 0;
+
+				bool Connu(const char *nom) const noexcept {
+					for (int32 i = 0; i < nb; ++i)
+						if (std::strcmp(noms[i], nom) == 0)
+							return true;
+					return false;
+				}
+
+				/// @return true si c'est la PREMIERE fois qu'on voit ce nom.
+				bool Noter(const char *nom) noexcept {
+					if (!nom || !*nom || Connu(nom))
+						return false;
+					if (nb >= kMax)
+						return false;
+					std::strncpy(noms[nb], nom, 39);
+					noms[nb][39] = 0;
+					++nb;
+					return true;
+				}
+		};
+
 		/// State courant pendant le parsing (push/pop sur <g>).
 		struct ParseState {
 				NkSVGStyle style = {};
@@ -1191,13 +1222,55 @@ namespace nkentseu {
 			const float32 h = ParseFloat(sh);
 			if (w <= 0 || h <= 0)
 				return;
+
+			// ── rx / ry : la regle du W3C (SVG 1.1 §9.2), pas une approximation ──
+			//   - « auto » ou absent des DEUX cotes : coins droits ;
+			//   - un seul des deux donne : l'autre prend sa valeur ;
+			//   - chacun borne a la MOITIE du cote correspondant.
+			// Le coin est un ARC (quart d'ellipse par une Bezier cubique, k = 4/3
+			// tan(pi/8)), jamais une suite de segments : a l'oeil comme au test,
+			// un octogone n'est pas un arrondi.
+			const char *srx = FindAttr(a, n, "rx");
+			const char *sry = FindAttr(a, n, "ry");
+			const bool rxAuto = (!srx || StrCaseCmp(srx, "auto") == 0);
+			const bool ryAuto = (!sry || StrCaseCmp(sry, "auto") == 0);
+			float32 rx = rxAuto ? 0.f : ParseFloat(srx);
+			float32 ry = ryAuto ? 0.f : ParseFloat(sry);
+			if (rxAuto && !ryAuto)
+				rx = ry;
+			else if (ryAuto && !rxAuto)
+				ry = rx;
+			if (rx < 0.f)
+				rx = 0.f;
+			if (ry < 0.f)
+				ry = 0.f;
+			if (rx > w * 0.5f)
+				rx = w * 0.5f;
+			if (ry > h * 0.5f)
+				ry = h * 0.5f;
+
 			Shape s2;
 			s2.style = st.style;
 			PathBuilder pb(s2);
-			pb.StartContour(x, y);
-			pb.LineTo(x + w, y);
-			pb.LineTo(x + w, y + h);
-			pb.LineTo(x, y + h);
+			if (rx > 0.f && ry > 0.f) {
+				constexpr float32 k = 0.5522847498307933f;
+				const float32 cx = rx * k, cy = ry * k;
+				const float32 x0 = x, x1 = x + w, y0 = y, y1 = y + h;
+				pb.StartContour(x0 + rx, y0);
+				pb.LineTo(x1 - rx, y0);
+				FlattenCubic(pb, x1 - rx, y0, x1 - rx + cx, y0, x1, y0 + ry - cy, x1, y0 + ry);
+				pb.LineTo(x1, y1 - ry);
+				FlattenCubic(pb, x1, y1 - ry, x1, y1 - ry + cy, x1 - rx + cx, y1, x1 - rx, y1);
+				pb.LineTo(x0 + rx, y1);
+				FlattenCubic(pb, x0 + rx, y1, x0 + rx - cx, y1, x0, y1 - ry + cy, x0, y1 - ry);
+				pb.LineTo(x0, y0 + ry);
+				FlattenCubic(pb, x0, y0 + ry, x0, y0 + ry - cy, x0 + rx - cx, y0, x0 + rx, y0);
+			} else {
+				pb.StartContour(x, y);
+				pb.LineTo(x + w, y);
+				pb.LineTo(x + w, y + h);
+				pb.LineTo(x, y + h);
+			}
 			pb.Close();
 			ApplyTransform(s2, st.xform);
 			shapes.PushBack(std::move(s2));
@@ -1424,8 +1497,8 @@ namespace nkentseu {
 
 		/// Parse l'ensemble du document SVG -> liste de shapes + gradients + viewBox + dim.
 		void ParseSVGDocument(const char *xml, usize xmlLen, NkVector<Shape> &shapes, NkVector<Gradient> &gradients,
-							  float32 &vbX, float32 &vbY, float32 &vbW, float32 &vbH, float32 &svgW,
-							  float32 &svgH) noexcept {
+							  float32 &vbX, float32 &vbY, float32 &vbW, float32 &vbH, float32 &svgW, float32 &svgH,
+							  SkipList &skips) noexcept {
 			vbX = vbY = 0.f;
 			vbW = 0.f;
 			vbH = 0.f;
@@ -1595,9 +1668,13 @@ namespace nkentseu {
 					continue;
 				}
 
-				// Tags structurels ignores (contenu sans shape direct).
+				// Tags structurels ignores (contenu sans shape direct). <style> est
+				// SAUTE, pas applique : les classes CSS ne sont pas resolues -> on le dit.
 				if (std::strcmp(tagBuf, "title") == 0 || std::strcmp(tagBuf, "desc") == 0 ||
 					std::strcmp(tagBuf, "metadata") == 0 || std::strcmp(tagBuf, "style") == 0) {
+					if (std::strcmp(tagBuf, "style") == 0 && skips.Noter("style"))
+						logger.Warn("[SVG] <style> saute : les classes CSS ne sont pas resolues (attributs et "
+									"style=\"...\" inline seuls).");
 					// Skip jusqu'au closing equivalent.
 					if (kind == 1) {
 						int32 nested = 1;
@@ -1621,6 +1698,9 @@ namespace nkentseu {
 					continue;
 
 				// Element shape : compose le state local = cur + attrs propres.
+				if (FindAttr(attrs, numAttrs, "stroke-dasharray") && skips.Noter("stroke-dasharray"))
+					logger.Warn("[SVG] stroke-dasharray non honore : le trait est rendu CONTINU.");
+
 				ParseState local = cur;
 				local.style = MergeStyle(cur.style, attrs, numAttrs);
 				UpdateRefs(local.fillRef, local.strokeRef, attrs, numAttrs);
@@ -1643,7 +1723,11 @@ namespace nkentseu {
 					ShapeFromPolygon(shapes, attrs, numAttrs, local, true);
 				else if (std::strcmp(tagBuf, "path") == 0)
 					ShapeFromPath(shapes, attrs, numAttrs, local);
-				// Autres tags ignores.
+				else if (skips.Noter(tagBuf)) {
+					// L'ELEMENT QU'ON NE SAIT PAS SE DIT, une fois par nom. Le silence
+					// d'un decodeur est ce qui fait croire qu'un fichier est rendu.
+					logger.Warn("[SVG] element non gere, saute : <{0}>", tagBuf);
+				}
 
 				// Propage le CTM + les refs de gradient aux shapes nouvellement creees.
 				for (uint32 si = shapeBefore; si < shapes.Size(); ++si) {
@@ -2139,6 +2223,7 @@ namespace nkentseu {
 				NkVector<Gradient> gradients;
 				float32 vbX = 0, vbY = 0, vbW = 0, vbH = 0;
 				float32 svgW = 0, svgH = 0;
+				SkipList skips; ///< ce que le decodage a saute (dit une fois par nom)
 		};
 
 		/// Trouve un gradient par id (recherche lineaire). nullptr si absent.
@@ -2443,7 +2528,7 @@ namespace nkentseu {
 			return nullptr;
 		new (impl) SVGImageImpl();
 		ParseSVGDocument(xml, size, impl->shapes, impl->gradients, impl->vbX, impl->vbY, impl->vbW, impl->vbH,
-						 impl->svgW, impl->svgH);
+						 impl->svgW, impl->svgH, impl->skips);
 
 		// Si parsing a echoue (aucun shape ET aucune viewBox), on libere.
 		if (impl->shapes.IsEmpty() && impl->vbW <= 0.f && impl->svgW <= 0.f) {
@@ -2596,6 +2681,18 @@ namespace nkentseu {
 	int32 NkSVGImage::NaturalHeight() const noexcept {
 		const SVGImageImpl *impl = (const SVGImageImpl *)mImpl;
 		return impl ? (int32)impl->svgH : 0;
+	}
+
+	int32 NkSVGImage::SkippedCount() const noexcept {
+		const SVGImageImpl *impl = (const SVGImageImpl *)mImpl;
+		return impl ? impl->skips.nb : 0;
+	}
+
+	const char *NkSVGImage::SkippedAt(int32 idx) const noexcept {
+		const SVGImageImpl *impl = (const SVGImageImpl *)mImpl;
+		if (!impl || idx < 0 || idx >= impl->skips.nb)
+			return nullptr;
+		return impl->skips.noms[idx];
 	}
 
 	int32 NkSVGImage::ShapeCount() const noexcept {

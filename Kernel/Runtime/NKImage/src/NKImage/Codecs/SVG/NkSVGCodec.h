@@ -18,7 +18,7 @@
 //   - Beziers cubiques/quadratiques avec subdivision adaptative
 //   - Arc elliptique converti en Beziers
 //
-// Elements supportes : <svg> <g> <path> <rect> <circle> <ellipse> <line>
+// Elements supportes : <svg> <g> <path> <rect> (rx/ry) <circle> <ellipse> <line>
 //                      <polyline> <polygon> <linearGradient> <radialGradient> <stop>
 // Attributs styles  : fill, stroke, stroke-width, opacity, fill-opacity,
 //                     stroke-opacity, fill-rule, transform,
@@ -215,6 +215,15 @@ namespace nkentseu {
 
 			/// Nombre de shapes parsees (paths/rect/circle/ellipse/line/polygon).
 			int32 ShapeCount() const noexcept;
+
+			/// Nombre de choses DISTINCTES que le decodage a sautees (elements non
+			/// geres, attributs non honores). Chacune a aussi ete journalisee, une
+			/// seule fois. Zero = tout ce que portait le fichier a ete lu.
+			int32 SkippedCount() const noexcept;
+
+			/// Nom de la i-eme chose sautee (« use », « stroke-dasharray »...).
+			/// Le pointeur vit aussi longtemps que ce NkSVGImage. nullptr hors bornes.
+			const char *SkippedAt(int32 idx) const noexcept;
 
 			/// Vue read-only sur la i-eme shape. Pour usage 3D / mesh / collision.
 			NkSVGShapeView GetShape(int32 idx) const noexcept;
