@@ -24,6 +24,10 @@
 #include "NKImage/Core/NkImage.h"
 #include "NKContainers/String/Encoding/NkBase64.h"
 #include "NKMemory/NkAllocator.h"
+// LE BANC lie NKFont pour eprouver l'INJECTION -- NKImage, lui, ne le connait
+// pas (aucune arete dans les .jenga ; le cas « sans source » ci-dessous le prouve
+// autrement : sans injection, le codec ne peut PAS peindre un glyphe).
+#include "NKFont/Text/NkFontGlyphSource.h"
 
 #include <cstdio>
 #include <cstring>
@@ -456,6 +460,42 @@ static void TestTexte() {
 	Verifier("3g. les blancs de mise en forme du FICHIER ne deviennent pas du texte : sans xml:space=\"preserve\" "
 			 "ils sont rognes, le glyphe commence bien a x",
 			 rogne, det);
+	// (i) AUCUNE SOURCE DE GLYPHES : le texte est SAUTE **ET DIT**, jamais rendu
+	//     vide en silence. C'est la contrepartie de « NKImage ne depend pas de
+	//     NKFont » : qui ne fournit pas de police n'a pas de texte, et l'apprend.
+	{
+		NkIGlyphSource *garde = NkSVGCodec::GetDefaultGlyphSource();
+		NkSVGCodec::SetDefaultGlyphSource(nullptr);
+		static const char *kSansSource =
+			"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"80\" viewBox=\"0 0 200 80\">"
+			"<rect x=\"0\" y=\"0\" width=\"200\" height=\"80\" fill=\"#ffffff\"/>"
+			"<text x=\"20\" y=\"60\" font-family=\"Inter\" font-size=\"40\" fill=\"#000000\">H</text></svg>";
+		NkSVGImage *sans = NkSVGImage::LoadFromMemory((const uint8 *)kSansSource, std::strlen(kSansSource));
+		bool texteDit = false;
+		int32 encreSans = -1;
+		if (sans) {
+			for (int32 k = 0; k < sans->SkippedCount(); ++k) {
+				const char *n = sans->SkippedAt(k);
+				if (n && std::strcmp(n, "text") == 0)
+					texteDit = true;
+			}
+			NkImage r = sans->Rasterize(0, 0);
+			encreSans = EncreDe(r, 0, 0, 200, 80).sombres;
+			sans->Free();
+		}
+		// et AVEC la source rendue, le meme document peint de nouveau
+		NkSVGCodec::SetDefaultGlyphSource(garde);
+		NkImage avec = Decoder(kSansSource);
+		const int32 encreAvec = EncreDe(avec, 0, 0, 200, 80).sombres;
+		std::snprintf(det, sizeof(det),
+					  "sans source : « text » nomme=%d, encre=%d (le fond blanc est peint quand meme) ; avec la "
+					  "source injectee : encre=%d",
+					  texteDit ? 1 : 0, encreSans, encreAvec);
+		Verifier("3i. SANS source de glyphes injectee, <text> est SAUTE ET NOMME (le reste du document est peint "
+				 "normalement) ; la meme source injectee, il est peint -- l'injection est le seul chemin",
+				 texteDit && encreSans == 0 && encreAvec > 60, det);
+	}
+
 	// (h) L'AVANCE : trois H cote a cote occupent ~trois fois la largeur d'un seul.
 	//     Sans avance, les glyphes s'EMPILENT au meme x -- la boite resterait
 	//     celle d'un seul glyphe, et l'encre serait a peine plus dense.
@@ -969,6 +1009,11 @@ int TestSVG_Run() {
 	gPass = 0;
 	gTotal = 0;
 	std::printf("\n===== BANC DU CODEC SVG (NkSVGCodec) =====\n");
+	// L'INJECTION, telle qu'une application la ferait : une ligne, au demarrage.
+	// NKImage ne connait aucune police ; NKFont en fournit une source ; c'est
+	// l'appelant qui les met en presence.
+	static NkFontGlyphSource glyphes;
+	NkSVGCodec::SetDefaultGlyphSource(&glyphes);
 	TestRxRy();
 	TestImage();
 	TestTexte();

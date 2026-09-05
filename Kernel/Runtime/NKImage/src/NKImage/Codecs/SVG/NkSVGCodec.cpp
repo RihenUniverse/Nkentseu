@@ -50,8 +50,7 @@
 #include "NKMemory/NkAllocator.h"
 #include "NKContainers/Sequential/NkVector.h"
 #include "NKContainers/String/Encoding/NkBase64.h"
-#include "NKFont/Core/NkFontParser.h"
-#include "NKFont/Embedded/NkFontEmbedded.h"
+#include "NKCore/Text/NkIGlyphSource.h"
 #include "NKLogger/NkLog.h"
 #include <cmath>
 #include <cstring>
@@ -149,6 +148,68 @@ namespace nkentseu {
 				++b;
 			}
 			return *a - *b;
+		}
+
+		/// Decode UN point de code UTF-8 et avance @p p. 0 en fin ou sur octet
+		/// invalide. (Il venait de NKFont ; le codec ne depend plus de NKFont, et
+		/// douze lignes valent mieux qu'une arete entre deux modules.)
+		uint32 DecoderUTF8(const char *&p, const char *end) noexcept {
+			if (p >= end)
+				return 0u;
+			const uint8 c0 = (uint8)*p++;
+			if (c0 < 0x80u)
+				return c0;
+			int32 suite = 0;
+			uint32 cp = 0;
+			if ((c0 & 0xE0u) == 0xC0u) {
+				cp = c0 & 0x1Fu;
+				suite = 1;
+			} else if ((c0 & 0xF0u) == 0xE0u) {
+				cp = c0 & 0x0Fu;
+				suite = 2;
+			} else if ((c0 & 0xF8u) == 0xF0u) {
+				cp = c0 & 0x07u;
+				suite = 3;
+			} else {
+				return 0xFFFDu; // octet de continuation isole : le caractere de remplacement
+			}
+			for (int32 i = 0; i < suite; ++i) {
+				if (p >= end)
+					return 0xFFFDu;
+				const uint8 c = (uint8)*p;
+				if ((c & 0xC0u) != 0x80u)
+					return 0xFFFDu;
+				cp = (cp << 6) | (uint32)(c & 0x3Fu);
+				++p;
+			}
+			return cp;
+		}
+
+		/// Encode un point de code en UTF-8. @return le nombre d'octets ecrits.
+		int32 EncoderUTF8(uint32 cp, char *out, int32 outSz) noexcept {
+			if (cp < 0x80u && outSz >= 1) {
+				out[0] = (char)cp;
+				return 1;
+			}
+			if (cp < 0x800u && outSz >= 2) {
+				out[0] = (char)(0xC0u | (cp >> 6));
+				out[1] = (char)(0x80u | (cp & 0x3Fu));
+				return 2;
+			}
+			if (cp < 0x10000u && outSz >= 3) {
+				out[0] = (char)(0xE0u | (cp >> 12));
+				out[1] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+				out[2] = (char)(0x80u | (cp & 0x3Fu));
+				return 3;
+			}
+			if (outSz >= 4) {
+				out[0] = (char)(0xF0u | (cp >> 18));
+				out[1] = (char)(0x80u | ((cp >> 12) & 0x3Fu));
+				out[2] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
+				out[3] = (char)(0x80u | (cp & 0x3Fu));
+				return 4;
+			}
+			return 0;
 		}
 
 		int32 HexDigit(char c) noexcept {
@@ -1605,131 +1666,84 @@ namespace nkentseu {
 		}
 
 		// ═════════════════════════════════════════════════════════════════════════════
-		// SECTION 7bis — <text> : LES CONTOURS DES GLYPHES, par NKFont
+		// SECTION 7bis — <text> : LES CONTOURS DES GLYPHES, PAR UNE SOURCE INJECTEE
 		// -----------------------------------------------------------------------------
-		// CHERCHER AVANT D'ECRIRE (porte du 28/08) : NKFont porte deja tout ce qu'il
-		// faut, une couche plus bas -- `NkGetGlyphShape` rend les contours d'un glyphe
-		// (TrueType et CFF), `NkScaleForEmToPixels` l'echelle, `NkGetGlyphHMetrics`
-		// l'avance. On ne rasterise donc AUCUN glyphe ici : on les convertit en
-		// contours et on les donne au rasteriseur qui remplit deja tout le reste.
+		// NKImage NE DEPEND PAS DE NKFont, et ce n'est pas un detail de plomberie.
+		// Faire dependre NKImage de NKFont reglait le texte d'un trait -- et faisait
+		// payer les polices embarquees a TOUT consommateur de NKImage, y compris
+		// celui qui ne veut que decoder un PNG. Nkentseu vise `Bare` (une console
+		// sans OS) et le Web : ce poids n'y est pas negociable.
 		//
-		// POURQUOI LES CONTOURS ET PAS L'ATLAS. L'atlas de NkFontAtlas est rasterise
-		// A UNE TAILLE en pixels ; un SVG se re-rasterise a n'importe quelle taille
-		// (c'est son interet) et porte des matrices qui tournent. Un atlas etire par
-		// une matrice rend flou -- c'est exactement ce que la sonde 81 de NkUIDesign
-		// mesure et refuse. Les contours, eux, suivent la matrice sans perte, passent
-		// par le meme anticrenelage que les formes, et acceptent un degrade.
+		// Arbitrage du 2026-09-05 (sortie 2 de la porte des cycles) : LE BAS DEFINIT,
+		// LE HAUT IMPLEMENTE ET INJECTE.
+		//   - NKCore declare `NkIGlyphSource` / `NkIGlyphSink` -- le contrat minimal
+		//     pour dessiner un glyphe : choisir une fonte, l'avance, les contours ;
+		//   - NKFont l'implemente (`NkFontGlyphSource`) ;
+		//   - ici on ne connait QUE le contrat. Aucune arete NKImage <-> NKFont dans
+		//     les .jenga : c'est verifiable par un grep, et le banc le verifie.
 		//
-		// ⚠️ CE QUE `font-size` VEUT DIRE. En SVG c'est le CADRATIN (em) : l'echelle
-		// est `font-size / unitsPerEm`. NkFontAtlas, lui, appelle
-		// `NkScaleForPixelHeight` = px / (ascender - descender). Pour Inter les deux
-		// different d'environ 21 % ; on suit LA NORME, et l'ecart avec le peintre est
-		// mesure et nomme par le banc du temoin croise plutot que masque.
+		// SANS SOURCE INJECTEE, le texte est SAUTE ET DIT (comme <use> ou <mask>),
+		// jamais rendu vide en silence. L'application choisit, en une ligne :
+		//     static NkFontGlyphSource glyphes;                 // NKFont
+		//     NkSVGCodec::SetDefaultGlyphSource(&glyphes);
+		//
+		// POURQUOI LES CONTOURS ET PAS UN ATLAS. Un atlas est rasterise A UNE TAILLE
+		// en pixels ; un SVG se re-rasterise a n'importe quelle taille (c'est son
+		// interet) et porte des matrices qui tournent. Un atlas etire par une matrice
+		// rend flou -- c'est ce que la sonde 81 de NkUIDesign mesure et refuse. Les
+		// contours suivent la matrice sans perte, passent par le meme anticrenelage
+		// que les formes, et acceptent un degrade.
+		//
+		// ⚠️ `font-size` EST LE CADRATIN (em) en SVG comme en CSS. NkFontAtlas
+		// echelonne par (ascender - descender) : pour Inter les deux different d'un
+		// facteur mesure a 1,25. On suit LA NORME -- un .svg doit etre juste pour un
+		// navigateur d'abord -- et le temoin croise NOMME l'ecart avec le peintre.
 		// ═════════════════════════════════════════════════════════════════════════════
 
-		/// Une police ouverte pendant le temps d'un decodage.
-		struct FaceChargee {
-				char famille[64] = {0};
-				uint8 *ttf = nullptr; ///< buffer decompresse (nous appartient)
-				nkfont::NkFontFaceInfo info;
-				bool ok = false;
-		};
-
-		/// Les polices ouvertes pour CE document. Ouvrir une police coute une
-		/// decompression et un parsing de tables : on ne le fait qu'une fois par
-		/// famille, et on rend tout a la fin du decodage.
-		struct FontCache {
-				static constexpr int32 kMax = 4;
-				FaceChargee faces[kMax];
-				int32 nb = 0;
-
-				/// Le premier nom d'une liste « Inter, sans-serif » -> "Inter",
-				/// guillemets et espaces retires.
-				static void PremiereFamille(const char *liste, char *out, usize outSz) noexcept {
-					out[0] = 0;
-					if (!liste)
-						return;
-					const char *p = SkipWS(liste);
-					usize i = 0;
-					while (*p && *p != ',' && i + 1 < outSz) {
-						if (*p != '"' && *p != '\'')
-							out[i++] = *p;
-						++p;
-					}
-					while (i > 0 && IsSpace(out[i - 1]))
-						--i;
-					out[i] = 0;
+		/// Recoit les contours d'un glyphe et les pousse dans une Shape. Les courbes
+		/// sont aplaties ICI, avec la tolerance du rasteriseur qui va les remplir --
+		/// c'est pour ca que la source rend des courbes et non des points.
+		class GlyphSink final : public NkIGlyphSink {
+			public:
+				explicit GlyphSink(PathBuilder &pb) noexcept : mPb(pb) {
 				}
 
-				/// La police embarquee dont le nom correspond, sinon Inter -- et on DIT
-				/// le repli : un texte rendu dans une autre police que celle demandee
-				/// n'est pas une erreur, mais le taire en serait une.
-				nkfont::NkFontFaceInfo *Obtenir(const char *fontFamily, SkipList &skips) noexcept {
-					char fam[64];
-					PremiereFamille(fontFamily, fam, sizeof(fam));
-					if (!fam[0])
-						std::strncpy(fam, "Inter", sizeof(fam) - 1);
-
-					for (int32 i = 0; i < nb; ++i)
-						if (StrCaseCmp(faces[i].famille, fam) == 0)
-							return faces[i].ok ? &faces[i].info : nullptr;
-					if (nb >= kMax)
-						return nb > 0 && faces[0].ok ? &faces[0].info : nullptr;
-
-					// la police embarquee du meme nom, sinon Inter
-					int32 nbEmb = 0;
-					const NkEmbeddedFontData *toutes = NkFontEmbedded::GetAll(&nbEmb);
-					NkEmbeddedFontId choisie = NkEmbeddedFontId::Inter;
-					bool trouvee = false;
-					for (int32 i = 0; i < nbEmb && toutes; ++i) {
-						if (toutes[i].name && StrCaseCmp(toutes[i].name, fam) == 0) {
-							choisie = (NkEmbeddedFontId)i;
-							trouvee = true;
-							break;
-						}
-					}
-					if (!trouvee) {
-						char cle[80];
-						std::snprintf(cle, sizeof(cle), "police:%s", fam);
-						if (skips.Noter(cle))
-							logger.Warn("[SVG] <text font-family=\"{0}\"> : police indisponible -- repli sur Inter "
-										"(embarquee). La forme des glyphes n'est PAS celle demandee.",
-										fam);
-					}
-					const NkEmbeddedFontData *d = NkFontEmbedded::GetData(choisie);
-					FaceChargee &f = faces[nb++];
-					std::strncpy(f.famille, fam, sizeof(f.famille) - 1);
-					if (!d) {
-						if (skips.Noter("police-absente"))
-							logger.Warn("[SVG] <text> : AUCUNE police embarquee dans ce binaire -- le texte n'est "
-										"pas peint.");
-						return nullptr;
-					}
-					uint32 taille = 0;
-					f.ttf = NkFontEmbedded::DecompressData(*d, &taille);
-					if (!f.ttf || taille == 0) {
-						logger.Warn("[SVG] <text> : decompression de la police « {0} » echouee.", d->name);
-						return nullptr;
-					}
-					f.ok = nkfont::NkInitFontFace(&f.info, f.ttf, (nkft_size)taille, 0);
-					if (!f.ok) {
-						logger.Warn("[SVG] <text> : police « {0} » illisible (tables).", d->name);
-						return nullptr;
-					}
-					return &f.info;
+				void GlyphMoveTo(float32 x, float32 y) noexcept override {
+					if (mOuvert)
+						mPb.Close();
+					mPb.StartContour(x, y);
+					mOuvert = true;
+					mX = x;
+					mY = y;
+				}
+				void GlyphLineTo(float32 x, float32 y) noexcept override {
+					mPb.LineTo(x, y);
+					mX = x;
+					mY = y;
+				}
+				void GlyphQuadTo(float32 cx, float32 cy, float32 x, float32 y) noexcept override {
+					FlattenQuad(mPb, mX, mY, cx, cy, x, y);
+					mX = x;
+					mY = y;
+				}
+				void GlyphCubicTo(float32 c1x, float32 c1y, float32 c2x, float32 c2y, float32 x,
+								  float32 y) noexcept override {
+					FlattenCubic(mPb, mX, mY, c1x, c1y, c2x, c2y, x, y);
+					mX = x;
+					mY = y;
+				}
+				void GlyphClose() noexcept override {
+					// UN CONTOUR DE GLYPHE EST TOUJOURS FERME : laisse ouvert, il fait
+					// fuir le remplissage nonzero sur toute la ligne.
+					if (mOuvert)
+						mPb.Close();
+					mOuvert = false;
 				}
 
-				void Liberer() noexcept {
-					for (int32 i = 0; i < nb; ++i) {
-						if (faces[i].ok)
-							nkfont::NkFreeFontFace(&faces[i].info);
-						if (faces[i].ttf)
-							NkFontEmbedded::FreeDecompressedData(faces[i].ttf);
-						faces[i].ttf = nullptr;
-						faces[i].ok = false;
-					}
-					nb = 0;
-				}
+			private:
+				PathBuilder &mPb;
+				float32 mX = 0.f, mY = 0.f;
+				bool mOuvert = false;
 		};
 
 		/// Un morceau de texte : le contenu direct d'un <text>, ou celui d'un <tspan>.
@@ -1785,7 +1799,7 @@ namespace nkentseu {
 						}
 						if (j < n && src[j] == ';' && code > 0) {
 							char buf[8];
-							const int32 nb = NkFontEncodeUTF8((NkFontCodepoint)code, buf, (nkft_int32)sizeof(buf));
+							const int32 nb = EncoderUTF8((uint32)code, buf, (int32)sizeof(buf));
 							for (int32 k = 0; k < nb && o + 1 < outSz; ++k)
 								out[o++] = buf[k];
 							i = j;
@@ -1810,98 +1824,87 @@ namespace nkentseu {
 			out[o] = 0;
 		}
 
+		/// Choisit la fonte du fragment et DIT le repli, une fois par famille.
+		void ChoisirFonte(NkIGlyphSource &src, const TextFragment &fr, SkipList &skips) noexcept {
+			// « Inter, sans-serif » -> « Inter » : guillemets et espaces retires.
+			char fam[64];
+			fam[0] = 0;
+			{
+				const char *p = SkipWS(fr.famille);
+				usize i = 0;
+				while (*p && *p != ',' && i + 1 < sizeof(fam)) {
+					if (*p != '"' && *p != '\'')
+						fam[i++] = *p;
+					++p;
+				}
+				while (i > 0 && IsSpace(fam[i - 1]))
+					--i;
+				fam[i] = 0;
+			}
+			if (!src.SelectFace(fam[0] ? fam : nullptr, fr.weight)) {
+				char cle[96];
+				std::snprintf(cle, sizeof(cle), "police:%s", fam[0] ? fam : "(defaut)");
+				if (skips.Noter(cle))
+					logger.Warn("[SVG] <text font-family=\"{0}\"> : police indisponible -- repli sur « {1} ». La "
+								"forme des glyphes n'est PAS celle demandee.",
+								fam[0] ? fam : "(defaut)", src.ActiveFamily());
+			}
+		}
+
 		/// La largeur d'un fragment, en unites utilisateur (somme des avances).
 		/// Le CRENAGE n'est PAS applique : le peintre de NKGui ne l'applique pas non
 		/// plus (`x += g->advanceX`), et le temoin croise compare les deux.
-		float32 LargeurFragment(nkfont::NkFontFaceInfo *face, const TextFragment &fr) noexcept {
-			if (!face)
-				return 0.f;
-			const float32 ech = nkfont::NkScaleForEmToPixels(face, fr.fontSize);
+		float32 LargeurFragment(NkIGlyphSource &src, const TextFragment &fr) noexcept {
 			const char *p = fr.txt;
 			const char *end = p + std::strlen(p);
 			float32 w = 0.f;
 			while (p < end) {
-				const NkFontCodepoint cp = NkFontDecodeUTF8(&p, end);
+				const uint32 cp = DecoderUTF8(p, end);
 				if (cp == 0u)
 					break;
-				const nkft_int32 gid = (nkft_int32)nkfont::NkFindGlyphIndex(face, cp);
-				nkft_int32 aw = 0, lsb = 0;
-				nkfont::NkGetGlyphHMetrics(face, (NkGlyphId)gid, &aw, &lsb);
-				w += (float32)aw * ech;
+				w += src.Advance(cp, fr.fontSize);
 			}
 			return w;
 		}
 
 		/// Pose les contours d'un fragment dans @p sh, a partir de (penX, penY).
-		/// penX avance. Y est INVERSE : la police monte, l'ecran descend.
-		void ContoursDuFragment(Shape &sh, nkfont::NkFontFaceInfo *face, const TextFragment &fr, float32 &penX,
+		void ContoursDuFragment(Shape &sh, NkIGlyphSource &src, const TextFragment &fr, float32 &penX,
 								float32 penY) noexcept {
-			if (!face)
-				return;
-			const float32 ech = nkfont::NkScaleForEmToPixels(face, fr.fontSize);
 			PathBuilder pb(sh);
+			GlyphSink sink(pb);
 			const char *p = fr.txt;
 			const char *end = p + std::strlen(p);
 			while (p < end) {
-				const NkFontCodepoint cp = NkFontDecodeUTF8(&p, end);
+				const uint32 cp = DecoderUTF8(p, end);
 				if (cp == 0u)
 					break;
-				const NkGlyphId gid = nkfont::NkFindGlyphIndex(face, cp);
-				nkft_int32 aw = 0, lsb = 0;
-				nkfont::NkGetGlyphHMetrics(face, gid, &aw, &lsb);
-				nkfont::NkFontVertexBuffer vb;
-				if (gid != 0 && nkfont::NkGetGlyphShape(face, gid, &vb)) {
-					float32 cx = 0.f, cy = 0.f;
-					bool ouvert = false;
-					for (uint32 i = 0; i < vb.count; ++i) {
-						const nkfont::NkFontVertex &v = vb.verts[i];
-						const float32 vx = penX + (float32)v.x * ech;
-						const float32 vy = penY - (float32)v.y * ech;
-						switch (v.type) {
-							case nkfont::NK_FONT_VERTEX_MOVE:
-								if (ouvert)
-									pb.Close(); // un contour de glyphe est TOUJOURS ferme :
-												// sans ca, le remplissage nonzero fuit
-								pb.StartContour(vx, vy);
-								ouvert = true;
-								break;
-							case nkfont::NK_FONT_VERTEX_LINE:
-								pb.LineTo(vx, vy);
-								break;
-							case nkfont::NK_FONT_VERTEX_CURVE:
-								FlattenQuad(pb, cx, cy, penX + (float32)v.cx * ech, penY - (float32)v.cy * ech, vx, vy);
-								break;
-							case nkfont::NK_FONT_VERTEX_CUBIC:
-								FlattenCubic(pb, cx, cy, penX + (float32)v.cx * ech, penY - (float32)v.cy * ech,
-											 penX + (float32)v.cx1 * ech, penY - (float32)v.cy1 * ech, vx, vy);
-								break;
-							default:
-								break;
-						}
-						cx = vx;
-						cy = vy;
-					}
-					if (ouvert)
-						pb.Close();
-				}
-				penX += (float32)aw * ech;
+				src.Outline(cp, fr.fontSize, penX, penY, sink); // false = espace : normal
+				penX += src.Advance(cp, fr.fontSize);
 			}
 		}
 
 		/// Ferme un <text> : c'est ICI qu'on connait la largeur totale, donc l'ancrage.
-		void FinirTexte(NkVector<Shape> &shapes, TextState &ts, FontCache &polices, SkipList &skips) noexcept {
+		void FinirTexte(NkVector<Shape> &shapes, TextState &ts, NkIGlyphSource *source, SkipList &skips) noexcept {
 			if (!ts.actif)
 				return;
 			ts.actif = false;
 			if (ts.frags.IsEmpty())
 				return;
+			if (!source) {
+				// PAS DE SOURCE : on ne peint rien, ET ON LE DIT. Un <text> avale en
+				// silence donnerait une image incomplete qui a l'air complete.
+				if (skips.Noter("text"))
+					logger.Warn("[SVG] <text> saute : aucune source de glyphes fournie. Injectez-en une "
+								"(NkSVGCodec::SetDefaultGlyphSource) -- NKFont en fournit une avec "
+								"NkFontGlyphSource.");
+				return;
+			}
 
-			// largeur totale (les fragments qui repositionnent le curseur ouvrent une
-			// nouvelle sequence : l'ancrage ne vaut que pour celle en cours)
+			// largeur totale (l'ancrage a besoin de la connaitre AVANT de poser)
 			float32 largeur = 0.f;
 			for (uint32 i = 0; i < ts.frags.Size(); ++i) {
-				nkfont::NkFontFaceInfo *face = polices.Obtenir(ts.frags[i].famille, skips);
-				largeur += LargeurFragment(face, ts.frags[i]);
+				ChoisirFonte(*source, ts.frags[i], skips);
+				largeur += LargeurFragment(*source, ts.frags[i]);
 			}
 			float32 penX = ts.x;
 			if (ts.anchor == 1)
@@ -1921,12 +1924,12 @@ namespace nkentseu {
 			bool grasSimule = false;
 			for (uint32 i = 0; i < ts.frags.Size(); ++i) {
 				TextFragment &fr = ts.frags[i];
-				nkfont::NkFontFaceInfo *face = polices.Obtenir(fr.famille, skips);
+				ChoisirFonte(*source, fr, skips);
 				if (fr.posX)
 					penX = fr.x;
 				if (fr.posY)
 					penY = fr.y;
-				ContoursDuFragment(sh, face, fr, penX, penY);
+				ContoursDuFragment(sh, *source, fr, penX, penY);
 				if (fr.weight >= 600)
 					grasSimule = true;
 			}
@@ -1941,13 +1944,14 @@ namespace nkentseu {
 				sh.style.strokeOpacity = sh.style.fillOpacity;
 				sh.style.strokeWidth = ts.frags[0].fontSize * 0.03f;
 				if (skips.Noter("font-weight"))
-					logger.Warn("[SVG] font-weight >= 600 : la police embarquee n'a qu'une coupe -- graisse "
+					logger.Warn("[SVG] font-weight >= 600 : la source de glyphes n'offre qu'une coupe -- graisse "
 								"SIMULEE par un trait (ce n'est pas un vrai Bold).");
 			}
 			ApplyTransform(sh, ts.xform);
 			sh.ctm = ts.xform;
 			shapes.PushBack(std::move(sh));
 		}
+
 
 		// ─────────────────────────────────────────────────────────────────────────────
 		// SECTION 8 — Parser XML stream-based avec stack <g>
@@ -2070,7 +2074,8 @@ namespace nkentseu {
 		/// Parse l'ensemble du document SVG -> liste de shapes + gradients + viewBox + dim.
 		void ParseSVGDocument(const char *xml, usize xmlLen, NkVector<Shape> &shapes, NkVector<Gradient> &gradients,
 							  NkVector<Filtre> &filtres, float32 &vbX, float32 &vbY, float32 &vbW, float32 &vbH,
-							  float32 &svgW, float32 &svgH, SkipList &skips, const char *baseDir) noexcept {
+							  float32 &svgW, float32 &svgH, SkipList &skips, const char *baseDir,
+							  NkIGlyphSource *glyphes) noexcept {
 			vbX = vbY = 0.f;
 			vbW = 0.f;
 			vbH = 0.f;
@@ -2102,7 +2107,6 @@ namespace nkentseu {
 			int32 numAttrs = 0;
 			bool gotSvg = false;
 			TextState texte;
-			FontCache polices;
 			Filtre curFiltre;
 			bool dansFiltre = false;
 			int32 prochaineInstance = 0;
@@ -2124,7 +2128,7 @@ namespace nkentseu {
 				if (kind == 3) {
 					// Closing tag : depile la stack / la profondeur defs / finalise un gradient.
 					if (std::strcmp(tagBuf, "text") == 0) {
-						FinirTexte(shapes, texte, polices, skips);
+						FinirTexte(shapes, texte, glyphes, skips);
 						continue;
 					}
 					if (std::strcmp(tagBuf, "tspan") == 0)
@@ -2379,7 +2383,7 @@ namespace nkentseu {
 						loc.xform = cur.xform * NkSVGTransform::Parse(tr2);
 
 					if (estText) {
-						FinirTexte(shapes, texte, polices, skips); // un <text> non ferme
+						FinirTexte(shapes, texte, glyphes, skips); // un <text> non ferme
 						texte = TextState();
 						texte.actif = true;
 						texte.x = ParseFloat(FindAttr(attrs, numAttrs, "x"));
@@ -2502,8 +2506,7 @@ namespace nkentseu {
 
 			if (dansFiltre)
 				filtres.PushBack(curFiltre); // un <filter> jamais ferme
-			FinirTexte(shapes, texte, polices, skips); // un <text> jamais ferme se pose quand meme
-			polices.Liberer();
+			FinirTexte(shapes, texte, glyphes, skips); // un <text> jamais ferme se pose quand meme
 			NkFree(nameBuf);
 			NkFree(attrPool);
 		}
@@ -3454,6 +3457,13 @@ namespace nkentseu {
 			return true;
 		}
 
+		// LA SOURCE DE GLYPHES PAR DEFAUT. Un pointeur, pose UNE FOIS au demarrage
+		// par l'application qui veut du texte (elle seule sait quelles polices elle
+		// embarque). Nul par defaut : le texte est alors saute ET DIT. Ce n'est pas
+		// un etat mutable en cours de route -- le poser depuis plusieurs fils
+		// pendant un decodage n'aurait aucun sens.
+		NkIGlyphSource *gSourceParDefaut = nullptr;
+
 	} // anonymous namespace
 
 	// ═════════════════════════════════════════════════════════════════════════════
@@ -3656,10 +3666,15 @@ namespace nkentseu {
 	// ═════════════════════════════════════════════════════════════════════════════
 
 	NkSVGImage *NkSVGImage::LoadFromMemory(const uint8 *data, usize size) noexcept {
-		return LoadFromMemory(data, size, nullptr);
+		return LoadFromMemory(data, size, nullptr, gSourceParDefaut);
 	}
 
 	NkSVGImage *NkSVGImage::LoadFromMemory(const uint8 *data, usize size, const char *baseDir) noexcept {
+		return LoadFromMemory(data, size, baseDir, gSourceParDefaut);
+	}
+
+	NkSVGImage *NkSVGImage::LoadFromMemory(const uint8 *data, usize size, const char *baseDir,
+										   NkIGlyphSource *glyphes) noexcept {
 		if (!data || size < 5)
 			return nullptr;
 		const char *xml = reinterpret_cast<const char *>(data);
@@ -3670,7 +3685,7 @@ namespace nkentseu {
 			return nullptr;
 		new (impl) SVGImageImpl();
 		ParseSVGDocument(xml, size, impl->shapes, impl->gradients, impl->filtres, impl->vbX, impl->vbY, impl->vbW,
-						 impl->vbH, impl->svgW, impl->svgH, impl->skips, baseDir);
+						 impl->vbH, impl->svgW, impl->svgH, impl->skips, baseDir, glyphes);
 
 		// Si parsing a echoue (aucun shape ET aucune viewBox), on libere.
 		if (impl->shapes.IsEmpty() && impl->vbW <= 0.f && impl->svgW <= 0.f) {
@@ -3730,7 +3745,7 @@ namespace nkentseu {
 			if (base[i] == '/' || base[i] == '\\')
 				coupe = i;
 		base[coupe] = 0; // "" si le chemin n'a pas de dossier : le courant, et c'est juste
-		NkSVGImage *svg = LoadFromMemory(buf, read, base);
+		NkSVGImage *svg = LoadFromMemory(buf, read, base, gSourceParDefaut);
 		NkFree(buf);
 		return svg;
 	}
@@ -3973,6 +3988,24 @@ namespace nkentseu {
 			return NkImage();
 		// NkSVGImage reste une ressource tas explicite : on la libere ici.
 		// Seule l'image rasterisee est un type valeur, rendue par valeur.
+		NkImage img = svg->Rasterize(outW, outH);
+		svg->Free();
+		return img;
+	}
+
+	void NkSVGCodec::SetDefaultGlyphSource(NkIGlyphSource *source) noexcept {
+		gSourceParDefaut = source;
+	}
+
+	NkIGlyphSource *NkSVGCodec::GetDefaultGlyphSource() noexcept {
+		return gSourceParDefaut;
+	}
+
+	NkImage NkSVGCodec::Decode(const uint8 *data, usize size, int32 outW, int32 outH, const char *baseDir,
+							   NkIGlyphSource *glyphes) noexcept {
+		NkSVGImage *svg = NkSVGImage::LoadFromMemory(data, size, baseDir, glyphes);
+		if (!svg)
+			return NkImage();
 		NkImage img = svg->Rasterize(outW, outH);
 		svg->Free();
 		return img;

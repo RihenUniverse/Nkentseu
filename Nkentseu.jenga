@@ -627,13 +627,13 @@ with workspace("Nkentseu", location="."):
 
 
 
-    with include("Kernel/Runtime/NKFont/NKFont.jenga"):
+    with include("Kernel/Runtime/NKImage/NKImage.jenga"):
 
         pass
 
 
 
-    with include("Kernel/Runtime/NKImage/NKImage.jenga"):
+    with include("Kernel/Runtime/NKFont/NKFont.jenga"):
 
         pass
 

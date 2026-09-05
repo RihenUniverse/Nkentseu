@@ -37,7 +37,9 @@
 //                     NKImage) ; preserveAspectRatio meet / slice / none ;
 //                     opacity ; transform du groupe parent, rotation comprise
 //
-// <text>/<tspan>    : x, y (LIGNE DE BASE), font-family (repli sur Inter, DIT),
+// <text>/<tspan>    : SI une source de glyphes est injectee (voir
+//                     NkSVGCodec::SetDefaultGlyphSource) -- sinon saute et DIT.
+//                     x, y (LIGNE DE BASE), font-family (repli DIT),
 //                     font-size (= le CADRATIN em, comme la norme), font-weight
 //                     (>= 600 : graisse SIMULEE par un trait, dit), fill,
 //                     fill-opacity, text-anchor start/middle/end, xml:space.
@@ -65,6 +67,7 @@
 
 #include "NKImage/Core/NkImage.h"
 #include "NKContainers/Sequential/NkVector.h"
+#include "NKCore/Text/NkIGlyphSource.h"
 
 namespace nkentseu {
 
@@ -243,6 +246,13 @@ namespace nkentseu {
 			/// chemin relatif partira alors du repertoire courant, et c'est dit).
 			static NkSVGImage *LoadFromMemory(const uint8 *data, usize size, const char *baseDir) noexcept;
 
+			/// Idem, avec LA SOURCE DE GLYPHES a utiliser pour les `<text>`.
+			/// nullptr = pas de texte : il est saute ET DIT (SkippedAt), jamais rendu
+			/// vide en silence. NKImage ne connait aucune police ; c'est NKFont qui
+			/// fournit une source (`NkFontGlyphSource`), et l'application qui choisit.
+			static NkSVGImage *LoadFromMemory(const uint8 *data, usize size, const char *baseDir,
+											  NkIGlyphSource *glyphes) noexcept;
+
 			/// Rasterise les shapes a la resolution (outW, outH). Si outW=0 ou
 			/// outH=0, calcule la taille manquante en preservant l'aspect ratio.
 			/// Retourne une NkImage RGBA32 PAR VALEUR (liberee par son destructeur) ;
@@ -302,8 +312,24 @@ namespace nkentseu {
 			/// @return        NkImage RGBA32 rendue PAR VALEUR ; INVALIDE en cas d'echec.
 			static NkImage Decode(const uint8 *data, usize size, int32 outW = 0, int32 outH = 0) noexcept;
 
+			/// Decode en disant le dossier du SVG (href relatifs) et la source de
+			/// glyphes (`<text>`). Les deux peuvent etre nuls -- ce qui manque est dit.
+			static NkImage Decode(const uint8 *data, usize size, int32 outW, int32 outH, const char *baseDir,
+								  NkIGlyphSource *glyphes) noexcept;
+
 			/// Lit un fichier .svg disque et le rasterise.
 			static NkImage DecodeFromFile(const char *path, int32 outW = 0, int32 outH = 0) noexcept;
+
+			// ── LA SOURCE DE GLYPHES PAR DEFAUT ───────────────────────────────
+			//  NKImage NE DEPEND PAS DE NKFont : un consommateur qui ne veut que
+			//  decoder un PNG ne doit pas payer les polices embarquees (Bare, le Web).
+			//  L'application qui veut du texte SVG l'injecte, en une ligne, au
+			//  demarrage :
+			//      static NkFontGlyphSource glyphes;              // NKFont
+			//      NkSVGCodec::SetDefaultGlyphSource(&glyphes);
+			//  Sans elle, tout `<text>` est saute et NOMME.
+			static void SetDefaultGlyphSource(NkIGlyphSource *source) noexcept;
+			static NkIGlyphSource *GetDefaultGlyphSource() noexcept;
 
 			/// Encode une NkImage en SVG : enrobe l'image comme <image href="data:png;base64,...">
 			/// dans un <svg> de la meme taille. **Pas une vectorisation** -- conserve
