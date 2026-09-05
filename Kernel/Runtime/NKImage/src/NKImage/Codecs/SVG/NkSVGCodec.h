@@ -30,10 +30,17 @@
 //                     fill/stroke="url(#id)", href (stops herites)
 // Couleurs          : #RGB, #RRGGBB, #RRGGBBAA, rgb(), rgba(), nom CSS (148 noms)
 //
-// Pas supporte (Phase 3 +) : <text>, <use>, <defs><style> (classes CSS),
-// patterns, masks, clipPath, filters.
+// <image>           : href RELATIF au fichier .svg (cf. LoadFromMemory(baseDir))
+//                     ou « data:image/...;base64,... » (tout format connu de
+//                     NKImage) ; preserveAspectRatio meet / slice / none ;
+//                     opacity ; transform du groupe parent, rotation comprise
 //
-// Auteur : Rihen (reecriture 2026-05-19), inspire de NanoSVG par Mikko Mononen.
+// Pas supporte : <text>, <use>, <symbol>, <defs><style> (classes CSS), patterns,
+//                masks, clipPath, filters. TOUT CE QUI EST SAUTE SE DIT une fois
+//                (journal + SkippedCount() / SkippedAt()).
+//
+// AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
+// Reecriture 2026-05-19, inspiree de NanoSVG par Mikko Mononen.
 // =============================================================================
 
 #include "NKImage/Core/NkImage.h"
@@ -202,6 +209,11 @@ namespace nkentseu {
 
 			/// Parse depuis un buffer en memoire. Caller doit appeler ->Free().
 			static NkSVGImage *LoadFromMemory(const uint8 *data, usize size) noexcept;
+
+			/// Idem, en disant le DOSSIER d'ou le SVG vient : c'est par rapport a lui
+			/// qu'un `<image href="...">` relatif est resolu. nullptr = inconnu (le
+			/// chemin relatif partira alors du repertoire courant, et c'est dit).
+			static NkSVGImage *LoadFromMemory(const uint8 *data, usize size, const char *baseDir) noexcept;
 
 			/// Rasterise les shapes a la resolution (outW, outH). Si outW=0 ou
 			/// outH=0, calcule la taille manquante en preservant l'aspect ratio.

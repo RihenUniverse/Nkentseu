@@ -22,6 +22,8 @@
 
 #include "NKImage/Codecs/SVG/NkSVGCodec.h"
 #include "NKImage/Core/NkImage.h"
+#include "NKContainers/String/Encoding/NkBase64.h"
+#include "NKMemory/NkAllocator.h"
 
 #include <cstdio>
 #include <cstring>
@@ -155,6 +157,155 @@ static void TestRxRy() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER 2 — <image> : « data: » base64 ET href relatif au fichier SVG
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Un damier 2x2 : magenta / vert / vert / magenta. Ses quatre texels sont des
+/// couleurs PURES, donc reconnaissables apres n'importe quel etirement (le bord
+/// est repete : les quatre coins de la boite rendent les quatre texels tels quels).
+static NkImage Damier2x2() {
+	NkImage im = NkImage::Create(2u, 2u, 4);
+	if (!im.IsValid() || !im.Pixels())
+		return im;
+	static const uint8 kM[4] = {255, 0, 255, 255}, kV[4] = {0, 255, 0, 255};
+	uint8 *px = im.Pixels();
+	for (int32 y = 0; y < 2; ++y)
+		for (int32 x = 0; x < 2; ++x) {
+			const uint8 *c = ((x + y) & 1) ? kV : kM;
+			for (int32 k = 0; k < 4; ++k)
+				px[(y * 2 + x) * 4 + k] = c[k];
+		}
+	return im;
+}
+
+static void TestImage() {
+	std::printf("\n== PALIER 2 : <image> ==\n");
+	char det[640];
+
+	NkImage src = Damier2x2();
+	// le PNG du damier, en memoire, puis en base64 : la source des deux cas
+	uint8 *pngOctets = nullptr;
+	usize pngTaille = 0;
+	const bool encode = src.IsValid() && src.SaveToMemory(pngOctets, pngTaille) && pngOctets && pngTaille > 0;
+	NkString b64;
+	if (encode)
+		b64 = nkentseu::encoding::base64::NkEncode(pngOctets, pngTaille);
+
+	// (a) data:image/png;base64 — etire (« none ») sur 40x40 : les quatre texels
+	//     aux quatre coins, purs.
+	static char svg[8192];
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 40 40\">"
+				  "<image x=\"0\" y=\"0\" width=\"40\" height=\"40\" preserveAspectRatio=\"none\" "
+				  "href=\"data:image/png;base64,%s\"/></svg>",
+				  encode ? b64.Data() : "");
+	NkImage a = Decoder(svg);
+	const bool quatreTexels = a.IsValid() && a.Width() == 40 && Proche(a, 3, 3, 255, 0, 255, 4) &&
+							  Proche(a, 36, 3, 0, 255, 0, 4) && Proche(a, 3, 36, 0, 255, 0, 4) &&
+							  Proche(a, 36, 36, 255, 0, 255, 4);
+	std::snprintf(det, sizeof(det), "PNG encode=%d (%u octets, base64 %u car.) ; 40x40=%d ; quatre texels purs=%d",
+				  encode ? 1 : 0, (uint32)pngTaille, (uint32)b64.Length(), a.IsValid() && a.Width() == 40 ? 1 : 0,
+				  quatreTexels ? 1 : 0);
+	Verifier("2a. <image href=\"data:image/png;base64,...\"> : le base64 est decode, le PNG relu par les codecs "
+			 "NKImage, et les quatre texels du damier arrivent PURS aux quatre coins (preserveAspectRatio=none)",
+			 encode && quatreTexels, det);
+
+	// (b) un base64 ABIME ne doit RIEN peindre — et le dire. Un decodeur qui
+	//     « devine » peindrait du bruit ; ici la boite reste vide.
+	static char svgKo[8192];
+	{
+		NkString abime = b64;
+		char *d = abime.Data();
+		if (d && abime.Length() > 8)
+			d[4] = '@'; // caractere hors alphabet base64
+		std::snprintf(svgKo, sizeof(svgKo),
+					  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 40 40\">"
+					  "<image x=\"0\" y=\"0\" width=\"40\" height=\"40\" href=\"data:image/png;base64,%s\"/></svg>",
+					  d ? d : "");
+	}
+	NkImage ko = Decoder(svgKo);
+	const bool rienPeint = ko.IsValid() && AlphaDe(ko, 3, 3) < 20 && AlphaDe(ko, 20, 20) < 20 &&
+						   AlphaDe(ko, 36, 36) < 20;
+	std::snprintf(det, sizeof(det), "alpha (3,3)=%d (20,20)=%d (36,36)=%d -- la boite reste VIDE",
+				  AlphaDe(ko, 3, 3), AlphaDe(ko, 20, 20), AlphaDe(ko, 36, 36));
+	Verifier("2b. un base64 ABIME ne peint RIEN (le decodeur relaie l'echec au lieu de deviner des octets)", rienPeint,
+			 det);
+
+	// (c) href RELATIF, resolu par rapport au dossier du .svg — pas au repertoire
+	//     courant. On ecrit le PNG a cote, et on decode en disant ce dossier.
+	const char *dossier = "Build";
+	const char *chemin = "Build/nksvg_test_damier.png";
+	const bool ecrit = src.IsValid() && src.SavePNG(chemin);
+	static const char *kRel =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 40 40\">"
+		"<image x=\"0\" y=\"0\" width=\"40\" height=\"40\" preserveAspectRatio=\"none\" "
+		"href=\"nksvg_test_damier.png\"/></svg>";
+	NkSVGImage *rel = NkSVGImage::LoadFromMemory((const uint8 *)kRel, std::strlen(kRel), dossier);
+	NkImage r = rel ? rel->Rasterize(0, 0) : NkImage();
+	const bool relOk = ecrit && rel && Proche(r, 3, 3, 255, 0, 255, 4) && Proche(r, 36, 3, 0, 255, 0, 4) &&
+					   Proche(r, 3, 36, 0, 255, 0, 4) && Proche(r, 36, 36, 255, 0, 255, 4);
+	if (rel)
+		rel->Free();
+	std::snprintf(det, sizeof(det), "PNG ecrit dans %s=%d ; decode avec baseDir=\"%s\" -> quatre texels=%d", chemin,
+				  ecrit ? 1 : 0, dossier, relOk ? 1 : 0);
+	Verifier("2c. <image href=\"...png\"> RELATIF : resolu depuis le DOSSIER DU SVG (baseDir), pas depuis le "
+			 "repertoire courant du processus",
+			 relOk, det);
+
+	// (d) preserveAspectRatio=\"xMidYMid meet\" : une image 4x2 dans une boite
+	//     carree laisse des BANDES VIDES en haut et en bas, et ne se deforme pas.
+	NkImage large = NkImage::Create(4u, 2u, 4, 0xFF0000FFu); // rouge opaque
+	uint8 *lo = nullptr;
+	usize lt = 0;
+	NkString b64Large;
+	if (large.IsValid() && large.SaveToMemory(lo, lt) && lo && lt)
+		b64Large = nkentseu::encoding::base64::NkEncode(lo, lt);
+	static char svgMeet[8192];
+	std::snprintf(svgMeet, sizeof(svgMeet),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 40 40\">"
+				  "<image x=\"0\" y=\"0\" width=\"40\" height=\"40\" preserveAspectRatio=\"xMidYMid meet\" "
+				  "href=\"data:image/png;base64,%s\"/></svg>",
+				  b64Large.Length() ? b64Large.Data() : "");
+	NkImage m = Decoder(svgMeet);
+	// echelle = min(40/4, 40/2) = 10 -> l'image occupe 40 x 20, centree : y de 10 a 30
+	const bool bandes = m.IsValid() && AlphaDe(m, 20, 3) < 20 && AlphaDe(m, 20, 36) < 20 &&
+						Proche(m, 20, 20, 255, 0, 0, 4) && Proche(m, 3, 20, 255, 0, 0, 4);
+	std::snprintf(det, sizeof(det), "bande haute alpha=%d ; bande basse alpha=%d ; centre rouge=%d ; bord gauche a "
+								   "mi-hauteur rouge=%d",
+				  AlphaDe(m, 20, 3), AlphaDe(m, 20, 36), Proche(m, 20, 20, 255, 0, 0, 4) ? 1 : 0,
+				  Proche(m, 3, 20, 255, 0, 0, 4) ? 1 : 0);
+	Verifier("2d. preserveAspectRatio=\"xMidYMid meet\" : une image 4x2 dans une boite carree garde son rapport et "
+			 "laisse des BANDES VIDES (elle n'est pas etiree)",
+			 bandes, det);
+
+	// (e) l'image suit le TRANSFORM du groupe parent, et son `opacity`.
+	static char svgRot[8192];
+	std::snprintf(svgRot, sizeof(svgRot),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"80\" viewBox=\"0 0 80 80\">"
+				  "<g transform=\"rotate(45 40 40)\">"
+				  "<image x=\"20\" y=\"20\" width=\"40\" height=\"40\" preserveAspectRatio=\"none\" opacity=\"0.5\" "
+				  "href=\"data:image/png;base64,%s\"/></g></svg>",
+				  encode ? b64.Data() : "");
+	NkImage rot = Decoder(svgRot);
+	// tournee de 45 deg autour du centre, la boite devient un losange : le centre
+	// reste couvert, mais le COIN de la boite droite (22,22) sort du losange.
+	const int32 aCentre = AlphaDe(rot, 40, 40), aCoin = AlphaDe(rot, 22, 22);
+	const bool tourne = rot.IsValid() && aCentre > 100 && aCentre < 160 && aCoin < 40;
+	std::snprintf(det, sizeof(det),
+				  "alpha au centre=%d (opacity 0.5 -> ~128, pas 255) ; alpha au coin de la boite DROITE (22,22)=%d "
+				  "(hors du losange)",
+				  aCentre, aCoin);
+	Verifier("2e. l'<image> suit le transform du groupe parent (rotation : sa boite devient un losange) et son "
+			 "`opacity` (alpha ~128, pas 255)",
+			 tourne, det);
+
+	if (pngOctets)
+		nkentseu::memory::NkFree(pngOctets);
+	if (lo)
+		nkentseu::memory::NkFree(lo);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -206,6 +357,7 @@ int TestSVG_Run() {
 	gTotal = 0;
 	std::printf("\n===== BANC DU CODEC SVG (NkSVGCodec) =====\n");
 	TestRxRy();
+	TestImage();
 	TestNonGere();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);
 	return (gPass == gTotal) ? 0 : 1;

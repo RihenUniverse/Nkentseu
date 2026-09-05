@@ -40,6 +40,8 @@
 // entieres en contours evides pour contourner une limite qui n'existait plus
 // (13 aout 2026). Une capacite qu'on ajoute se declare ICI dans le meme
 // changement, sans quoi personne ne s'en sert.
+//
+// AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // =============================================================================
 
 #include "NKImage/Codecs/SVG/NkSVGCodec.h"
@@ -47,6 +49,7 @@
 #include "NKFileSystem/NkFile.h"
 #include "NKMemory/NkAllocator.h"
 #include "NKContainers/Sequential/NkVector.h"
+#include "NKContainers/String/Encoding/NkBase64.h"
 #include "NKLogger/NkLog.h"
 #include <cmath>
 #include <cstring>
@@ -529,8 +532,19 @@ namespace nkentseu {
 				Gradient &operator=(const Gradient &) = delete;
 		};
 
+		// ── L'AJUSTEMENT D'UNE IMAGE DANS SA BOITE (preserveAspectRatio) ──────
+		enum class FitKind : uint8 {
+			Meet = 0, ///< tient EN ENTIER dans la boite, des bandes vides restent
+			Slice,	  ///< COUVRE la boite, ce qui depasse est coupe
+			None	  ///< etire aux deux dimensions, le rapport est perdu
+		};
+
 		/// Shape interne = un path flatten en polyligne(s), + style cumule + CTM applique.
 		/// Les xs/ys sont en COORDONNEES DESTINATION (apres ctm + view->out scaling).
+		/// Une shape peut aussi porter une IMAGE (<image>) : ses quatre coins sont
+		/// alors le contour, et `img` les pixels a poser dedans. Les deux vivent dans
+		/// LE MEME vecteur, dans l'ordre du document -- c'est ce qui garde l'ordre de
+		/// peinture entre formes et images (deux listes l'auraient perdu).
 		struct Shape {
 				NkSVGStyle style;
 				NkVector<float32> xs;
@@ -540,6 +554,15 @@ namespace nkentseu {
 				NkSVGTransform ctm = NkSVGTransform::Identity(); // CTM applique (gradients userSpace)
 				char fillRef[64] = {0};							 // id de gradient si fill="url(#id)"
 				char strokeRef[64] = {0};						 // id de gradient si stroke="url(#id)"
+
+				// ── <image> ──────────────────────────────────────────────────
+				NkImage img;						 ///< pixels decodes ; invalide = ce n'est pas une image
+				float32 ix = 0, iy = 0, iw = 0, ih = 0; ///< la boite, en espace UTILISATEUR (avant ctm)
+				FitKind fit = FitKind::Meet;
+
+				bool EstImage() const noexcept {
+					return img.IsValid();
+				}
 
 				Shape() = default;
 				// Move uniquement (les NkVector peuvent etre couteux a copier).
@@ -1365,6 +1388,172 @@ namespace nkentseu {
 			shapes.PushBack(std::move(s2));
 		}
 
+		// ─────────────────────────────────────────────────────────────────────────────
+		// <image> — LA SOURCE : « data:image/...;base64,... » ou un chemin RELATIF AU
+		// FICHIER SVG. Un href relatif ne veut rien dire sans savoir d'ou l'on lit :
+		// le dossier du .svg est donc porte jusqu'ici (nullptr = on ne sait pas, et
+		// on le DIT au lieu de deviner un chemin depuis le repertoire courant).
+		// ─────────────────────────────────────────────────────────────────────────────
+
+		/// Decode « data:<type>;base64,<charge> ». @return image invalide si ce n'est
+		/// pas une URL de donnees, ou si la charge est illisible (dit par l'appelant).
+		NkImage ImageDepuisDataURL(const char *href, bool &etaitDataURL) noexcept {
+			etaitDataURL = false;
+			NkImage vide;
+			if (!href || std::strncmp(href, "data:", 5) != 0)
+				return vide;
+			etaitDataURL = true;
+			// on saute jusqu'a la virgule ; on exige base64 (le pourcent-encodage
+			// d'un SVG imbrique n'est pas lu -- ce serait un autre palier, et il est dit)
+			const char *virgule = href;
+			while (*virgule && *virgule != ',')
+				++virgule;
+			if (*virgule != ',')
+				return vide;
+			bool b64 = false;
+			for (const char *p = href + 5; p < virgule; ++p) {
+				if (std::strncmp(p, "base64", 6) == 0) {
+					b64 = true;
+					break;
+				}
+			}
+			if (!b64) {
+				logger.Warn("[SVG] <image> : data: sans « base64 » -- charge non lue.");
+				return vide;
+			}
+			const char *charge = virgule + 1;
+			const usize nChars = std::strlen(charge);
+			if (nChars == 0)
+				return vide;
+			// 4 caracteres -> 3 octets ; on alloue large, NkDecode rend la taille exacte
+			const usize capacite = (nChars / 4u + 2u) * 3u;
+			uint8 *brut = (uint8 *)NkAlloc(capacite);
+			if (!brut)
+				return vide;
+			usize ecrits = 0;
+			const NkStringView vue(charge, nChars);
+			// NkDecode ECHOUE sur un caractere invalide (il ne devine pas) : on relaie
+			// cet echec au lieu de peindre du bruit.
+			if (!encoding::base64::NkDecode(vue, brut, &ecrits) || ecrits == 0) {
+				NkFree(brut);
+				logger.Warn("[SVG] <image> : base64 illisible -- image ignoree.");
+				return vide;
+			}
+			NkImage im;
+			// 4 canaux exiges : le rasteriseur compose en RGBA, un PNG gris ou sans
+			// alpha doit arriver au meme format que les autres.
+			if (!im.LoadFromMemory(brut, ecrits, 4)) {
+				NkFree(brut);
+				logger.Warn("[SVG] <image> : les octets base64 ne sont AUCUN des formats connus de NKImage.");
+				return NkImage();
+			}
+			NkFree(brut);
+			return im;
+		}
+
+		/// Joint le dossier du .svg et un href relatif. Un href ABSOLU (C:/..., /...)
+		/// est pris tel quel.
+		void JoindreChemin(char *out, usize outSz, const char *base, const char *href) noexcept {
+			out[0] = 0;
+			if (!href)
+				return;
+			const bool absolu = (href[0] == '/' || href[0] == '\\' ||
+								 (href[0] && href[1] == ':' && (href[2] == '/' || href[2] == '\\')));
+			if (absolu || !base || !*base) {
+				std::strncpy(out, href, outSz - 1);
+				out[outSz - 1] = 0;
+				return;
+			}
+			std::strncpy(out, base, outSz - 1);
+			out[outSz - 1] = 0;
+			usize l = std::strlen(out);
+			if (l > 0 && out[l - 1] != '/' && out[l - 1] != '\\' && l + 1 < outSz) {
+				out[l++] = '/';
+				out[l] = 0;
+			}
+			std::strncat(out, href, outSz - l - 1);
+		}
+
+		FitKind LireFit(const char *par) noexcept {
+			if (!par)
+				return FitKind::Meet; // le defaut SVG : xMidYMid meet
+			const char *p = SkipWS(par);
+			if (std::strncmp(p, "none", 4) == 0)
+				return FitKind::None;
+			// « <align> [meet|slice] » : l'alignement autre que Mid n'est pas honore
+			// (l'image est CENTREE) -- dit par l'appelant, une fois.
+			for (const char *q = p; *q; ++q) {
+				if (std::strncmp(q, "slice", 5) == 0)
+					return FitKind::Slice;
+			}
+			return FitKind::Meet;
+		}
+
+		void ShapeFromImage(NkVector<Shape> &shapes, const AttrPair *a, int32 n, const ParseState &st,
+							const char *baseDir, SkipList &skips) noexcept {
+			const char *href = FindAttr(a, n, "href");
+			if (!href)
+				href = FindAttr(a, n, "xlink:href");
+			if (!href || !*href)
+				return;
+			const float32 w = ParseFloat(FindAttr(a, n, "width"));
+			const float32 h = ParseFloat(FindAttr(a, n, "height"));
+			if (w <= 0.f || h <= 0.f)
+				return;
+			const float32 x = ParseFloat(FindAttr(a, n, "x"));
+			const float32 y = ParseFloat(FindAttr(a, n, "y"));
+
+			bool dataURL = false;
+			NkImage im = ImageDepuisDataURL(href, dataURL);
+			if (!dataURL) {
+				char chemin[1024];
+				JoindreChemin(chemin, sizeof(chemin), baseDir, href);
+				if (!chemin[0])
+					return;
+				if (!baseDir && href[0] != '/' && !(href[0] && href[1] == ':')) {
+					if (skips.Noter("image-href-relatif"))
+						logger.Warn("[SVG] <image href=\"{0}\"> : le SVG a ete decode SANS son dossier "
+									"(Decode d'un buffer) -- le chemin est resolu depuis le repertoire courant.",
+									href);
+				}
+				if (!im.Load(chemin, 4)) {
+					logger.Warn("[SVG] <image> : « {0} » illisible -- image ignoree (le cadre reste vide).", chemin);
+					return;
+				}
+			}
+			if (!im.IsValid())
+				return;
+
+			const char *par = FindAttr(a, n, "preserveAspectRatio");
+			if (par) {
+				const char *p = SkipWS(par);
+				if (std::strncmp(p, "none", 4) != 0 && std::strncmp(p, "xMidYMid", 8) != 0 &&
+					skips.Noter("preserveAspectRatio-align"))
+					logger.Warn("[SVG] preserveAspectRatio « {0} » : l'ajustement (meet / slice) est honore, "
+								"l'ALIGNEMENT ne l'est pas -- l'image est centree.",
+								par);
+			}
+
+			Shape s2;
+			s2.style = st.style;
+			s2.img = std::move(im);
+			s2.ix = x;
+			s2.iy = y;
+			s2.iw = w;
+			s2.ih = h;
+			s2.fit = LireFit(par);
+			// les quatre coins de la boite, comme pour toute shape : ils donnent la
+			// bbox de balayage, et ils suivent le transform du groupe parent.
+			PathBuilder pb(s2);
+			pb.StartContour(x, y);
+			pb.LineTo(x + w, y);
+			pb.LineTo(x + w, y + h);
+			pb.LineTo(x, y + h);
+			pb.Close();
+			ApplyTransform(s2, st.xform);
+			shapes.PushBack(std::move(s2));
+		}
+
 		void ShapeFromPath(NkVector<Shape> &shapes, const AttrPair *a, int32 n, const ParseState &st) noexcept {
 			const char *d = FindAttr(a, n, "d");
 			if (!d)
@@ -1498,7 +1687,7 @@ namespace nkentseu {
 		/// Parse l'ensemble du document SVG -> liste de shapes + gradients + viewBox + dim.
 		void ParseSVGDocument(const char *xml, usize xmlLen, NkVector<Shape> &shapes, NkVector<Gradient> &gradients,
 							  float32 &vbX, float32 &vbY, float32 &vbW, float32 &vbH, float32 &svgW, float32 &svgH,
-							  SkipList &skips) noexcept {
+							  SkipList &skips, const char *baseDir) noexcept {
 			vbX = vbY = 0.f;
 			vbW = 0.f;
 			vbH = 0.f;
@@ -1723,6 +1912,8 @@ namespace nkentseu {
 					ShapeFromPolygon(shapes, attrs, numAttrs, local, true);
 				else if (std::strcmp(tagBuf, "path") == 0)
 					ShapeFromPath(shapes, attrs, numAttrs, local);
+				else if (std::strcmp(tagBuf, "image") == 0)
+					ShapeFromImage(shapes, attrs, numAttrs, local, baseDir, skips);
 				else if (skips.Noter(tagBuf)) {
 					// L'ELEMENT QU'ON NE SAIT PAS SE DIT, une fois par nom. Le silence
 					// d'un decodeur est ce qui fait croire qu'un fichier est rendu.
@@ -1821,6 +2012,155 @@ namespace nkentseu {
 				}
 			}
 			return gp.stops[gp.nStops - 1].color;
+		}
+
+		/// Inverse d'une affine [a c e ; b d f]. @return false si degeneree (det ~ 0).
+		bool Inverser(const NkSVGTransform &m, NkSVGTransform &out) noexcept {
+			const float32 det = m.a * m.d - m.b * m.c;
+			if (std::fabs(det) < 1e-12f)
+				return false;
+			const float32 inv = 1.f / det;
+			out.a = m.d * inv;
+			out.b = -m.b * inv;
+			out.c = -m.c * inv;
+			out.d = m.a * inv;
+			out.e = (m.c * m.f - m.d * m.e) * inv;
+			out.f = (m.b * m.e - m.a * m.f) * inv;
+			return true;
+		}
+
+		/// Echantillon BILINEAIRE (bord repete) d'une image RGBA, en pixels source.
+		void EchantillonBilineaire(const NkImage &src, float32 fx, float32 fy, float32 out[4]) noexcept {
+			const int32 w = src.Width(), h = src.Height(), ch = src.Channels();
+			const uint8 *px = src.Pixels();
+			float32 sx = fx - 0.5f, sy = fy - 0.5f;
+			int32 x0 = (int32)std::floor(sx), y0 = (int32)std::floor(sy);
+			const float32 tx = sx - (float32)x0, ty = sy - (float32)y0;
+			int32 x1 = x0 + 1, y1 = y0 + 1;
+			auto borne = [](int32 v, int32 hi) { return v < 0 ? 0 : (v >= hi ? hi - 1 : v); };
+			x0 = borne(x0, w);
+			x1 = borne(x1, w);
+			y0 = borne(y0, h);
+			y1 = borne(y1, h);
+			const int32 st = src.Stride();
+			auto lire = [&](int32 x, int32 y, float32 c[4]) {
+				const uint8 *p = px + (usize)y * (usize)st + (usize)x * (usize)ch;
+				c[0] = (float32)p[0];
+				c[1] = (float32)(ch > 1 ? p[1] : p[0]);
+				c[2] = (float32)(ch > 2 ? p[2] : p[0]);
+				c[3] = (float32)(ch > 3 ? p[3] : 255);
+			};
+			float32 c00[4], c10[4], c01[4], c11[4];
+			lire(x0, y0, c00);
+			lire(x1, y0, c10);
+			lire(x0, y1, c01);
+			lire(x1, y1, c11);
+			for (int32 k = 0; k < 4; ++k) {
+				const float32 h0 = c00[k] + (c10[k] - c00[k]) * tx;
+				const float32 h1 = c01[k] + (c11[k] - c01[k]) * tx;
+				out[k] = h0 + (h1 - h0) * ty;
+			}
+		}
+
+		// ─────────────────────────────────────────────────────────────────────────────
+		// LA POSE D'UNE <image> : on balaie la BOITE TRANSFORMEE et, pour chaque pixel,
+		// on revient dans l'espace utilisateur par l'INVERSE de la matrice totale. Un
+		// aller (image -> ecran) aurait laisse des trous des que la matrice tourne ou
+		// agrandit ; le retour n'en laisse aucun, et il donne la rotation gratuitement.
+		// Les bords sont anticreneles par 2x2 sous-echantillons -- le seul endroit ou
+		// une image posee de biais se juge.
+		// ─────────────────────────────────────────────────────────────────────────────
+		void RasterizeImage(NkImage &dst, const Shape &sh, const NkImage &src,
+							const NkSVGTransform &totale) noexcept {
+			if (!src.IsValid() || !sh.style.visible)
+				return;
+			NkSVGTransform inv;
+			if (!Inverser(totale, inv))
+				return;
+			const float32 alphaGlobal = sh.style.opacity * sh.style.fillOpacity;
+			if (alphaGlobal <= 0.f)
+				return;
+
+			const int32 W = dst.Width(), H = dst.Height();
+			// bbox du quad deja transforme (les points de la shape sont en destination)
+			float32 minx = 1e30f, miny = 1e30f, maxx = -1e30f, maxy = -1e30f;
+			for (uint32 i = 0; i < sh.xs.Size(); ++i) {
+				if (sh.xs[i] < minx) minx = sh.xs[i];
+				if (sh.xs[i] > maxx) maxx = sh.xs[i];
+				if (sh.ys[i] < miny) miny = sh.ys[i];
+				if (sh.ys[i] > maxy) maxy = sh.ys[i];
+			}
+			int32 x0 = (int32)std::floor(minx), x1 = (int32)std::ceil(maxx);
+			int32 y0 = (int32)std::floor(miny), y1 = (int32)std::ceil(maxy);
+			if (x0 < 0) x0 = 0;
+			if (y0 < 0) y0 = 0;
+			if (x1 > W) x1 = W;
+			if (y1 > H) y1 = H;
+			if (x0 >= x1 || y0 >= y1)
+				return;
+
+			const float32 nw = (float32)src.Width(), nh = (float32)src.Height();
+			if (nw <= 0.f || nh <= 0.f)
+				return;
+			// preserveAspectRatio : l'echelle image -> boite, et le centrage.
+			float32 ech = 1.f, offx = 0.f, offy = 0.f, echY = 1.f;
+			if (sh.fit == FitKind::None) {
+				ech = sh.iw / nw;
+				echY = sh.ih / nh;
+			} else {
+				const float32 sx = sh.iw / nw, sy = sh.ih / nh;
+				ech = (sh.fit == FitKind::Meet) ? (sx < sy ? sx : sy) : (sx > sy ? sx : sy);
+				echY = ech;
+				offx = (sh.iw - nw * ech) * 0.5f; // xMidYMid : centre
+				offy = (sh.ih - nh * echY) * 0.5f;
+			}
+
+			uint8 *pixels = dst.Pixels();
+			const int32 stride = dst.Stride();
+			for (int32 py = y0; py < y1; ++py) {
+				for (int32 px = x0; px < x1; ++px) {
+					// 2x2 sous-echantillons : couverture ET couleur moyennee
+					float32 acc[4] = {0.f, 0.f, 0.f, 0.f};
+					int32 dedans = 0;
+					for (int32 sy2 = 0; sy2 < 2; ++sy2) {
+						for (int32 sx2 = 0; sx2 < 2; ++sx2) {
+							float32 ux = (float32)px + 0.25f + 0.5f * (float32)sx2;
+							float32 uy = (float32)py + 0.25f + 0.5f * (float32)sy2;
+							inv.Apply(ux, uy); // -> espace utilisateur
+							const float32 bx = ux - sh.ix, by = uy - sh.iy;
+							if (bx < 0.f || by < 0.f || bx > sh.iw || by > sh.ih)
+								continue; // hors de la boite <image>
+							const float32 fx = (bx - offx) / ech;
+							const float32 fy = (by - offy) / echY;
+							if (fx < 0.f || fy < 0.f || fx > nw || fy > nh)
+								continue; // « meet » : la bande vide autour de l'image
+							float32 c[4];
+							EchantillonBilineaire(src, fx, fy, c);
+							for (int32 k = 0; k < 4; ++k)
+								acc[k] += c[k];
+							++dedans;
+						}
+					}
+					if (dedans == 0)
+						continue;
+					const float32 inv4 = 1.f / (float32)dedans;
+					const float32 couverture = (float32)dedans * 0.25f;
+					const float32 sa = (acc[3] * inv4 / 255.f) * alphaGlobal * couverture;
+					if (sa <= 0.f)
+						continue;
+					const int32 isa = (int32)(sa * 255.f + 0.5f);
+					if (isa <= 0)
+						continue;
+					const int32 invA = 255 - isa;
+					uint8 *p = pixels + (usize)py * (usize)stride + (usize)px * 4u;
+					for (int32 k = 0; k < 3; ++k) {
+						const int32 sc = (int32)(acc[k] * inv4 + 0.5f);
+						p[k] = (uint8)((sc * isa + (int32)p[k] * invA + 127) / 255);
+					}
+					const int32 a2 = (int32)p[3] + isa - ((int32)p[3] * isa + 127) / 255;
+					p[3] = (uint8)(a2 > 255 ? 255 : (a2 < 0 ? 0 : a2));
+				}
+			}
 		}
 
 		void RasterizeShape(NkImage &img, const Shape &sh, const GradPaint *paint = nullptr) noexcept {
@@ -2518,6 +2858,10 @@ namespace nkentseu {
 	// ═════════════════════════════════════════════════════════════════════════════
 
 	NkSVGImage *NkSVGImage::LoadFromMemory(const uint8 *data, usize size) noexcept {
+		return LoadFromMemory(data, size, nullptr);
+	}
+
+	NkSVGImage *NkSVGImage::LoadFromMemory(const uint8 *data, usize size, const char *baseDir) noexcept {
 		if (!data || size < 5)
 			return nullptr;
 		const char *xml = reinterpret_cast<const char *>(data);
@@ -2528,7 +2872,7 @@ namespace nkentseu {
 			return nullptr;
 		new (impl) SVGImageImpl();
 		ParseSVGDocument(xml, size, impl->shapes, impl->gradients, impl->vbX, impl->vbY, impl->vbW, impl->vbH,
-						 impl->svgW, impl->svgH, impl->skips);
+						 impl->svgW, impl->svgH, impl->skips, baseDir);
 
 		// Si parsing a echoue (aucun shape ET aucune viewBox), on libere.
 		if (impl->shapes.IsEmpty() && impl->vbW <= 0.f && impl->svgW <= 0.f) {
@@ -2578,7 +2922,17 @@ namespace nkentseu {
 		const usize read = f.Read(buf, sz);
 		buf[read] = 0;
 		f.Close();
-		NkSVGImage *svg = LoadFromMemory(buf, read);
+		// LE DOSSIER DU FICHIER : un href relatif se resout par rapport au .svg qui
+		// le porte, jamais par rapport au repertoire courant du processus.
+		char base[1024];
+		std::strncpy(base, path, sizeof(base) - 1);
+		base[sizeof(base) - 1] = 0;
+		usize coupe = 0;
+		for (usize i = 0; base[i]; ++i)
+			if (base[i] == '/' || base[i] == '\\')
+				coupe = i;
+		base[coupe] = 0; // "" si le chemin n'a pas de dossier : le courant, et c'est juste
+		NkSVGImage *svg = LoadFromMemory(buf, read, base);
 		NkFree(buf);
 		return svg;
 	}
@@ -2616,6 +2970,26 @@ namespace nkentseu {
 		// etre appele plusieurs fois avec des tailles differentes).
 		for (uint32 i = 0; i < impl->shapes.Size(); ++i) {
 			const Shape &src = impl->shapes[i];
+			// ── UNE IMAGE SE POSE (pas de remplissage, pas de trait) ───────────
+			if (src.EstImage()) {
+				Shape poseur;
+				poseur.style = src.style;
+				poseur.ix = src.ix;
+				poseur.iy = src.iy;
+				poseur.iw = src.iw;
+				poseur.ih = src.ih;
+				poseur.fit = src.fit;
+				for (uint32 k = 0; k < src.xs.Size(); ++k) {
+					float32 x = src.xs[k], y = src.ys[k];
+					mView.Apply(x, y);
+					poseur.xs.PushBack(x);
+					poseur.ys.PushBack(y);
+				}
+				// les pixels sont REFERENCES, jamais copies ni deplaces : Rasterize()
+				// reste const et rejouable a plusieurs tailles, comme son contrat le dit.
+				RasterizeImage(img, poseur, src.img, mView * src.ctm);
+				continue;
+			}
 			// Construit un Shape transforme localement (sans toucher la source).
 			Shape local;
 			local.style = src.style;
