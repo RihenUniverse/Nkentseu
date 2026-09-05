@@ -1290,6 +1290,122 @@ static void TestMask() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER CSS — ce qui rend lisibles les SVG des autres outils
+// ─────────────────────────────────────────────────────────────────────────────
+static void TestCSS() {
+	std::printf("\n== PALIER CSS (<style>) ==\n");
+	char det[640];
+
+	// (a) LE CAS D'ILLUSTRATOR / FIGMA : les couleurs sont dans un <style>, les
+	//     elements ne portent qu'un `class="st0"`. Sans CSS, tout retombe sur le
+	//     noir par defaut -- le fichier s'ouvre « en silhouette ».
+	static const char *kClasses =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\">"
+		"<style>.st0{fill:#ff0000}.st1{fill:#0000ff}</style>"
+		"<rect class=\"st0\" x=\"0\" y=\"0\" width=\"50\" height=\"50\"/>"
+		"<rect class=\"st1\" x=\"50\" y=\"0\" width=\"50\" height=\"50\"/></svg>";
+	NkImage a = Decoder(kClasses);
+	const bool classes = a.IsValid() && Proche(a, 25, 25, 255, 0, 0, 3) && Proche(a, 75, 25, 0, 0, 255, 3);
+	std::snprintf(det, sizeof(det), "gauche rouge=%d, droite bleu=%d (sans CSS les deux seraient NOIRS)",
+				  Proche(a, 25, 25, 255, 0, 0, 3) ? 1 : 0, Proche(a, 75, 25, 0, 0, 255, 3) ? 1 : 0);
+	Verifier("S1. selecteurs de CLASSE : les couleurs d'un <style> habillent les elements qui n'ont qu'un "
+			 "`class=` (le cas de tous les exports Illustrator / Figma)",
+			 classes, det);
+
+	// (b) SPECIFICITE : id (100) bat classe (10) bat type (1), quel que soit
+	//     l'ordre d'ecriture. Ici la regle la PLUS FAIBLE est ecrite en DERNIER :
+	//     un codec qui appliquerait simplement dans l'ordre du fichier se tromperait.
+	static const char *kSpec =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+		"<style>#a{fill:#00ff00}.c{fill:#0000ff}rect{fill:#ff0000}</style>"
+		"<rect id=\"a\" class=\"c\" x=\"0\" y=\"0\" width=\"60\" height=\"60\"/></svg>";
+	NkImage b = Decoder(kSpec);
+	const bool spec = b.IsValid() && Proche(b, 30, 30, 0, 255, 0, 3);
+	uint8 pb[4];
+	Pixel(b, 30, 30, pb);
+	std::snprintf(det, sizeof(det), "(%u,%u,%u) -- l'id doit gagner (vert), meme si la regle de type est ecrite "
+								   "en dernier",
+				  pb[0], pb[1], pb[2]);
+	Verifier("S2. SPECIFICITE : #id bat .classe bat type -- et pas « la derniere regle ecrite gagne »", spec, det);
+
+	// (c) L'ORDRE DE LA NORME, contre-intuitif : une REGLE CSS ecrase un ATTRIBUT
+	//     de presentation, et le `style=""` inline les bat tous les deux.
+	static const char *kOrdre =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"90\" height=\"30\" viewBox=\"0 0 90 30\">"
+		"<style>rect{fill:#00ff00}</style>"
+		"<rect x=\"0\" y=\"0\" width=\"30\" height=\"30\" fill=\"#ff0000\"/>"
+		"<rect x=\"30\" y=\"0\" width=\"30\" height=\"30\" fill=\"#ff0000\" style=\"fill:#0000ff\"/>"
+		"<rect x=\"60\" y=\"0\" width=\"30\" height=\"30\"/></svg>";
+	NkImage c = Decoder(kOrdre);
+	const bool ordre = c.IsValid() && Proche(c, 15, 15, 0, 255, 0, 3) && Proche(c, 45, 15, 0, 0, 255, 3) &&
+					   Proche(c, 75, 15, 0, 255, 0, 3);
+	uint8 c1[4], c2[4];
+	Pixel(c, 15, 15, c1);
+	Pixel(c, 45, 15, c2);
+	std::snprintf(det, sizeof(det),
+				  "attribut fill=rouge + regle CSS verte -> (%u,%u,%u) : la REGLE gagne ; + style inline bleu -> "
+				  "(%u,%u,%u) : l'INLINE gagne",
+				  c1[0], c1[1], c1[2], c2[0], c2[1], c2[2]);
+	Verifier("S3. l'ordre de la norme : attribut de presentation < regle CSS < style=\"\" inline (le codec faisait "
+			 "gagner l'attribut sur le style inline : corrige)",
+			 ordre, det);
+
+	// (d) !important bat TOUT, y compris le style inline.
+	static const char *kImportant =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"30\" viewBox=\"0 0 60 30\">"
+		"<style>rect{fill:#00ff00 !important}</style>"
+		"<rect x=\"0\" y=\"0\" width=\"60\" height=\"30\" fill=\"#ff0000\" style=\"fill:#0000ff\"/></svg>";
+	NkImage d = Decoder(kImportant);
+	uint8 pd[4];
+	Pixel(d, 30, 15, pd);
+	const bool important = d.IsValid() && Proche(d, 30, 15, 0, 255, 0, 3);
+	std::snprintf(det, sizeof(det), "(%u,%u,%u) -- « !important » d'une regle bat meme le style inline", pd[0], pd[1],
+				  pd[2]);
+	Verifier("S4. !important bat TOUT, y compris le style=\"\" inline", important, det);
+
+	// (e) `*`, les selecteurs groupes par virgule, un CDATA et un commentaire :
+	//     la syntaxe reelle des fichiers, pas seulement celle des exemples.
+	static const char *kSyntaxe =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+		"<style><![CDATA[ /* un commentaire */ * { fill : #888888 } .a , .b { fill:#ff0000 } ]]></style>"
+		"<rect class=\"b\" x=\"0\" y=\"0\" width=\"30\" height=\"60\"/>"
+		"<rect x=\"30\" y=\"0\" width=\"30\" height=\"60\"/></svg>";
+	NkImage e = Decoder(kSyntaxe);
+	const bool syntaxe = e.IsValid() && Proche(e, 15, 30, 255, 0, 0, 3) && Proche(e, 45, 30, 136, 136, 136, 3);
+	std::snprintf(det, sizeof(det), "classe groupee par virgule -> rouge=%d ; `*` -> gris=%d ; CDATA et "
+								   "commentaire traverses",
+				  Proche(e, 15, 30, 255, 0, 0, 3) ? 1 : 0, Proche(e, 45, 30, 136, 136, 136, 3) ? 1 : 0);
+	Verifier("S5. la syntaxe REELLE des fichiers : CDATA, commentaires, espaces, `*` et selecteurs groupes par "
+			 "virgule",
+			 syntaxe, det);
+
+	// (f) un selecteur qu'on ne sait pas lire est IGNORE **ET DIT** -- jamais
+	//     apparie de travers : appliquer une regle au mauvais element est pire que
+	//     ne pas l'appliquer.
+	static const char *kInconnu =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+		"<style>g > rect { fill:#ff0000 } rect:hover { fill:#00ff00 }</style>"
+		"<rect x=\"0\" y=\"0\" width=\"60\" height=\"60\"/></svg>";
+	NkSVGImage *img = NkSVGImage::LoadFromMemory((const uint8 *)kInconnu, std::strlen(kInconnu));
+	bool selDit = false;
+	if (img) {
+		for (int32 i = 0; i < img->SkippedCount(); ++i) {
+			const char *n = img->SkippedAt(i);
+			if (n && std::strcmp(n, "css-selecteur") == 0)
+				selDit = true;
+		}
+		img->Free();
+	}
+	NkImage f = Decoder(kInconnu);
+	const bool pasApplique = f.IsValid() && !Proche(f, 30, 30, 255, 0, 0, 20) && !Proche(f, 30, 30, 0, 255, 0, 20);
+	std::snprintf(det, sizeof(det), "selecteur non gere nomme=%d ; la regle n'a PAS ete appliquee de travers=%d",
+				  selDit ? 1 : 0, pasApplique ? 1 : 0);
+	Verifier("S6. un selecteur non gere (combinateur, pseudo-classe) est IGNORE et NOMME -- l'appliquer au "
+			 "mauvais element serait pire que ne pas l'appliquer",
+			 selDit && pasApplique, det);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -1373,6 +1489,7 @@ int TestSVG_Run() {
 	TestUse();
 	TestClip();
 	TestMask();
+	TestCSS();
 	TestNonGere();
 	TestTemoinCroise();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);

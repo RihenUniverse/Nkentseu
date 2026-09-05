@@ -1172,8 +1172,13 @@ namespace nkentseu {
 			}
 		}
 
-		/// Parse l'attribut "style" CSS inline (key:value;key:value).
-		void ApplyCSSStyle(NkSVGStyle &s, const char *css) noexcept {
+		/// Parse un bloc de declarations « key:value;key:value ».
+		/// @param important  false : n'applique QUE les declarations ordinaires ;
+		///                   true  : n'applique QUE celles marquees `!important`.
+		///                   Deux passes, parce que `!important` ne se contente pas
+		///                   de gagner contre ses voisines : il gagne contre TOUT ce
+		///                   qui vient apres, y compris le style inline.
+		void ApplyCSSStyle(NkSVGStyle &s, const char *css, bool important = false) noexcept {
 			if (!css)
 				return;
 			const char *p = css;
@@ -1206,23 +1211,284 @@ namespace nkentseu {
 				// Trim trailing whitespace.
 				while (vi > 0 && IsSpace(val[vi - 1]))
 					val[--vi] = 0;
-				ApplyAttrToStyle(s, name, val);
+				// « !important » : on le RETIRE de la valeur et on note son rang.
+				bool estImportante = false;
+				{
+					// « !important » fait DIX caracteres : son debut est a k-9. Le
+					// decalage d'un seul caractere ne provoque aucune erreur -- la
+					// declaration passe simplement pour ordinaire, et le style inline
+					// la bat. C'est le genre de defaut qu'aucun compilateur ne voit
+					// et qu'un banc attrape en une ligne.
+					int32 k = vi - 1;
+					while (k >= 0 && IsSpace(val[k]))
+						--k;
+					if (k >= 9) {
+						char *deb = val + (k - 9);
+						if (StrCaseCmp(deb, "!important") == 0) {
+							estImportante = true;
+							*deb = 0;
+							int32 j = (k - 9) - 1;
+							while (j >= 0 && IsSpace(val[j]))
+								val[j--] = 0;
+						}
+					}
+				}
+				if (estImportante == important)
+					ApplyAttrToStyle(s, name, val);
 				if (*p == ';')
 					++p;
 			}
 		}
 
+		// ═════════════════════════════════════════════════════════════════════════════
+		// LE CSS DE <style> — CE QUI REND LISIBLES LES SVG DES AUTRES OUTILS
+		// -----------------------------------------------------------------------------
+		// Illustrator, Figma et Inkscape factorisent les styles dans un <style> et ne
+		// laissent sur les elements qu'un `class="st0"`. Sauter ce bloc -- ce que le
+		// codec faisait -- revient a rendre ces fichiers SANS AUCUNE COULEUR : tout
+		// retombe sur le noir par defaut. C'est le palier qui ouvre le plus de
+		// fichiers d'un coup, apres <use>.
+		//
+		// L'ORDRE DE PRIORITE EST CELUI DE LA NORME, et il n'est pas intuitif :
+		//   attributs de presentation  <  regles CSS  <  style="" inline  <  !important
+		// Autrement dit une regle CSS ECRASE un `fill="red"` ecrit sur l'element. Le
+		// codec faisait l'inverse pour le couple attribut / style inline (les attributs
+		// gagnaient) : corrige ici, et le banc le fige.
+		//
+		// CE QUI N'EST PAS FAIT, et qui est dit : les combinateurs (`a b`, `a > b`),
+		// les pseudo-classes, les media queries. Un selecteur qu'on ne sait pas lire
+		// est IGNORE ET NOMME plutot qu'apparie de travers -- appliquer une regle au
+		// mauvais element est pire que ne pas l'appliquer.
+		// ═════════════════════════════════════════════════════════════════════════════
+		struct RegleCSS {
+				char type[32] = {0}; ///< « rect » ; vide = `*`
+				char cls[64] = {0};	 ///< « st0 » sans le point ; vide = aucune
+				char id[64] = {0};	 ///< sans le dièse ; vide = aucun
+				char decl[512] = {0};
+				int32 spec = 0;	  ///< 100 par id, 10 par classe, 1 par type
+				int32 ordre = 0;  ///< depart l'egalite : la derniere ecrite gagne
+		};
+
+		/// Decompose UN selecteur simple (« rect.st0#a ») en ses trois parties.
+		/// @return false si on y voit autre chose (combinateur, pseudo-classe...).
+		bool LireSelecteur(const char *deb, const char *fin, RegleCSS &r) noexcept {
+			int32 n = 0;
+			char courant = 't'; // t=type, c=classe, i=id
+			char *cible = r.type;
+			usize cap = sizeof(r.type);
+			for (const char *p = deb; p < fin; ++p) {
+				const char c = *p;
+				if (IsSpace(c)) {
+					// un espace SEPARE deux selecteurs : c'est un combinateur
+					const char *q = p;
+					while (q < fin && IsSpace(*q))
+						++q;
+					if (q < fin)
+						return false;
+					break;
+				}
+				if (c == '>' || c == '+' || c == '~' || c == ':' || c == '[')
+					return false;
+				if (c == '.' || c == '#') {
+					courant = (c == '.') ? 'c' : 'i';
+					cible = (c == '.') ? r.cls : r.id;
+					cap = (c == '.') ? sizeof(r.cls) : sizeof(r.id);
+					n = 0;
+					continue;
+				}
+				if (c == '*') {
+					if (courant == 't')
+						continue; // `*` = pas de contrainte de type
+					return false;
+				}
+				if ((usize)n + 1 < cap)
+					cible[n++] = c;
+				cible[n] = 0;
+			}
+			r.spec = (r.id[0] ? 100 : 0) + (r.cls[0] ? 10 : 0) + (r.type[0] ? 1 : 0);
+			return true;
+		}
+
+		/// Collecte toutes les regles de tous les blocs <style> du document. Une
+		/// PRE-PASSE, comme l'index des id : une regle peut etre ecrite APRES les
+		/// elements qu'elle habille.
+		void CollecterCSS(const char *deb, const char *fin, NkVector<RegleCSS> &out, SkipList &skips) noexcept {
+			int32 ordre = 0;
+			const char *p = deb;
+			while (p < fin) {
+				// trouver « <style »
+				while (p < fin && !(p[0] == '<' && (p + 6) < fin && std::strncmp(p + 1, "style", 5) == 0 &&
+									(IsSpace(p[6]) || p[6] == '>')))
+					++p;
+				if (p >= fin)
+					break;
+				while (p < fin && *p != '>')
+					++p;
+				if (p < fin)
+					++p;
+				const char *corpsDeb = p;
+				while (p + 7 < fin && !(p[0] == '<' && p[1] == '/' && std::strncmp(p + 2, "style", 5) == 0))
+					++p;
+				const char *corpsFin = p;
+
+				// le corps, sans le CDATA ni les commentaires
+				const char *c = corpsDeb;
+				while (c < corpsFin) {
+					if (std::strncmp(c, "<![CDATA[", 9) == 0) {
+						c += 9;
+						continue;
+					}
+					if (std::strncmp(c, "]]>", 3) == 0) {
+						c += 3;
+						continue;
+					}
+					if (std::strncmp(c, "/*", 2) == 0) {
+						c += 2;
+						while (c + 1 < corpsFin && !(c[0] == '*' && c[1] == '/'))
+							++c;
+						c = (c + 1 < corpsFin) ? c + 2 : corpsFin;
+						continue;
+					}
+					if (IsSpace(*c)) {
+						++c;
+						continue;
+					}
+					// « selecteurs { declarations } »
+					const char *selDeb = c;
+					while (c < corpsFin && *c != '{')
+						++c;
+					if (c >= corpsFin)
+						break;
+					const char *selFin = c;
+					++c;
+					const char *declDeb = c;
+					while (c < corpsFin && *c != '}')
+						++c;
+					const char *declFin = c;
+					if (c < corpsFin)
+						++c;
+					if (selDeb >= selFin)
+						continue;
+					// une @-regle (@media, @font-face...) : dite, pas devinee
+					if (*selDeb == '@') {
+						if (skips.Noter("css-at-rule"))
+							logger.Warn("[SVG] regle CSS « @ » (media, font-face...) non appliquee.");
+						continue;
+					}
+					// les selecteurs sont separes par des virgules
+					const char *a = selDeb;
+					while (a < selFin) {
+						const char *b = a;
+						while (b < selFin && *b != ',')
+							++b;
+						const char *deb2 = a, *fin2 = b;
+						while (deb2 < fin2 && IsSpace(*deb2))
+							++deb2;
+						while (fin2 > deb2 && IsSpace(fin2[-1]))
+							--fin2;
+						if (deb2 < fin2 && out.Size() < 512u) {
+							RegleCSS r;
+							if (LireSelecteur(deb2, fin2, r)) {
+								usize k = 0;
+								for (const char *d = declDeb; d < declFin && k + 1 < sizeof(r.decl); ++d)
+									r.decl[k++] = *d;
+								r.decl[k] = 0;
+								r.ordre = ordre++;
+								out.PushBack(r);
+							} else if (skips.Noter("css-selecteur")) {
+								logger.Warn("[SVG] selecteur CSS non gere (combinateur, pseudo-classe, "
+											"attribut) -- la regle est IGNOREE plutot qu'appliquee de travers.");
+							}
+						}
+						a = (b < selFin) ? b + 1 : selFin;
+					}
+				}
+				p = corpsFin;
+			}
+		}
+
+		/// La regle s'applique-t-elle a cet element ?
+		bool CorrespondCSS(const RegleCSS &r, const char *tag, const char *classes, const char *id) noexcept {
+			if (r.type[0] && (!tag || std::strcmp(r.type, tag) != 0))
+				return false;
+			if (r.id[0] && (!id || std::strcmp(r.id, id) != 0))
+				return false;
+			if (r.cls[0]) {
+				if (!classes)
+					return false;
+				// `class` porte une LISTE de noms separes par des blancs
+				const usize n = std::strlen(r.cls);
+				const char *p = classes;
+				while (*p) {
+					while (*p && IsSpace(*p))
+						++p;
+					const char *deb = p;
+					while (*p && !IsSpace(*p))
+						++p;
+					if ((usize)(p - deb) == n && std::strncmp(deb, r.cls, n) == 0)
+						return true;
+				}
+				return false;
+			}
+			return true;
+		}
+
 		/// Fusionne les attributs d'un element sur un style herite.
 		/// Ordre : (1) parent, (2) attribut "style" inline, (3) attributs individuels.
-		NkSVGStyle MergeStyle(const NkSVGStyle &parent, const AttrPair *attrs, int32 n) noexcept {
+		/// LA CASCADE, dans l'ordre de la norme -- et il n'est pas intuitif :
+		///   parent  <  attributs de presentation  <  regles CSS  <  style=""  <  !important
+		/// Le codec appliquait `style=""` AVANT les attributs, donc un `fill="red"`
+		/// ecrase par un `style="fill:blue"` gagnait quand meme. Corrige ici.
+		/// @param regles  les regles du document, ou nullptr (aucun <style>)
+		NkSVGStyle MergeStyle(const NkSVGStyle &parent, const AttrPair *attrs, int32 n,
+							  const NkVector<RegleCSS> *regles = nullptr, const char *tag = nullptr) noexcept {
 			NkSVGStyle s = parent;
 			const char *css = FindAttr(attrs, n, "style");
-			if (css)
-				ApplyCSSStyle(s, css);
+
+			// 1. les attributs de presentation (le plus faible)
 			for (int32 i = 0; i < n; ++i) {
 				if (std::strcmp(attrs[i].name, "style") == 0)
 					continue;
 				ApplyAttrToStyle(s, attrs[i].name, attrs[i].value);
+			}
+
+			// 2. les regles CSS, par SPECIFICITE croissante ; a egalite, la derniere
+			//    ecrite gagne (l'ordre du fichier, comme dans un navigateur).
+			if (regles && !regles->IsEmpty()) {
+				const char *cls = FindAttr(attrs, n, "class");
+				const char *id = FindAttr(attrs, n, "id");
+				for (int32 passe = 0; passe < 2; ++passe) { // 0 = ordinaires, 1 = !important
+					// tri par insertion a la volee : on cherche, a chaque tour, la
+					// regle applicable de rang immediatement superieur au precedent.
+					int32 dernierSpec = -1, dernierOrdre = -1;
+					for (;;) {
+						const RegleCSS *choisie = nullptr;
+						for (uint32 i = 0; i < regles->Size(); ++i) {
+							const RegleCSS &r = (*regles)[i];
+							const int32 rang = r.spec;
+							if (rang < dernierSpec || (rang == dernierSpec && r.ordre <= dernierOrdre))
+								continue;
+							if (!CorrespondCSS(r, tag, cls, id))
+								continue;
+							if (!choisie || rang < choisie->spec ||
+								(rang == choisie->spec && r.ordre < choisie->ordre))
+								choisie = &r;
+						}
+						if (!choisie)
+							break;
+						ApplyCSSStyle(s, choisie->decl, passe == 1);
+						dernierSpec = choisie->spec;
+						dernierOrdre = choisie->ordre;
+					}
+					// 3. le style inline, plus fort que toute regle -- mais dans la
+					//    MEME passe, pour que `!important` d'une regle batte un inline
+					//    ordinaire, comme la norme le demande.
+					if (css)
+						ApplyCSSStyle(s, css, passe == 1);
+				}
+			} else if (css) {
+				ApplyCSSStyle(s, css, false);
+				ApplyCSSStyle(s, css, true);
 			}
 			return s;
 		}
@@ -2040,6 +2306,7 @@ namespace nkentseu {
 		/// Contexte d'instanciation, partage par tous les niveaux de <use>.
 		struct UseCtx {
 				NkVector<IdRange> index;
+				NkVector<RegleCSS> regles; ///< les regles de tous les <style> du document
 				char *nameBuf = nullptr;  ///< buffers PARTAGES : reallouer 1 Mo par <use>
 				char *attrPool = nullptr; ///< couterait plus cher que tout le reste
 				int32 profondeur = 0;
@@ -2357,6 +2624,9 @@ namespace nkentseu {
 			if (!useCtx.indexe) {
 				useCtx.indexe = true;
 				IndexerIds(xml, xml + xmlLen, useCtx.index);
+				// LE CSS AUSSI EST UNE PRE-PASSE : une regle peut etre ecrite APRES
+				// les elements qu'elle habille, et un <style> peut vivre n'importe ou.
+				CollecterCSS(xml, xml + xmlLen, useCtx.regles, skips);
 			}
 			usize nameOff = 0, poolOff = 0;
 
@@ -2461,7 +2731,7 @@ namespace nkentseu {
 					if (h)
 						svgH = ParseFloat(h);
 					// <svg> peut aussi porter fill/stroke par defaut + transform.
-					cur.style = MergeStyle(cur.style, attrs, numAttrs);
+					cur.style = MergeStyle(cur.style, attrs, numAttrs, &useCtx.regles, "svg");
 					UpdateRefs(cur.fillRef, cur.strokeRef, attrs, numAttrs);
 					const char *tr = FindAttr(attrs, numAttrs, "transform");
 					if (tr)
@@ -2476,7 +2746,7 @@ namespace nkentseu {
 					// tag courant. Les <path> enfants heritent ainsi du transform/style.
 					if (kind == 1 && depth + 1 < kMaxDepth) {
 						ParseState next = cur;
-						next.style = MergeStyle(cur.style, attrs, numAttrs);
+						next.style = MergeStyle(cur.style, attrs, numAttrs, &useCtx.regles, "g");
 						UpdateRefs(next.fillRef, next.strokeRef, attrs, numAttrs);
 						const char *tr = FindAttr(attrs, numAttrs, "transform");
 						if (tr)
@@ -2687,9 +2957,8 @@ namespace nkentseu {
 				// SAUTE, pas applique : les classes CSS ne sont pas resolues -> on le dit.
 				if (std::strcmp(tagBuf, "title") == 0 || std::strcmp(tagBuf, "desc") == 0 ||
 					std::strcmp(tagBuf, "metadata") == 0 || std::strcmp(tagBuf, "style") == 0) {
-					if (std::strcmp(tagBuf, "style") == 0 && skips.Noter("style"))
-						logger.Warn("[SVG] <style> saute : les classes CSS ne sont pas resolues (attributs et "
-									"style=\"...\" inline seuls).");
+					// (le contenu de <style> a ete lu par la PRE-PASSE CollecterCSS :
+					//  ici on ne fait que sauter le bloc dans le flux)
 					// Skip jusqu'au closing equivalent.
 					if (kind == 1) {
 						int32 nested = 1;
@@ -2742,7 +3011,7 @@ namespace nkentseu {
 					const float32 uh = hAttr ? ParseFloat(hAttr) : 0.f;
 
 					ParseState inst = cur;
-					inst.style = MergeStyle(cur.style, attrs, numAttrs);
+					inst.style = MergeStyle(cur.style, attrs, numAttrs, &useCtx.regles, "use");
 					UpdateRefs(inst.fillRef, inst.strokeRef, attrs, numAttrs);
 					const char *trU = FindAttr(attrs, numAttrs, "transform");
 					if (trU)
@@ -2823,7 +3092,7 @@ namespace nkentseu {
 				if (std::strcmp(tagBuf, "text") == 0 || std::strcmp(tagBuf, "tspan") == 0) {
 					const bool estText = (tagBuf[0] == 't' && tagBuf[1] == 'e');
 					ParseState loc = cur;
-					loc.style = MergeStyle(cur.style, attrs, numAttrs);
+					loc.style = MergeStyle(cur.style, attrs, numAttrs, &useCtx.regles, tagBuf);
 					UpdateRefs(loc.fillRef, loc.strokeRef, attrs, numAttrs);
 					const char *tr2 = FindAttr(attrs, numAttrs, "transform");
 					if (tr2)
@@ -2909,7 +3178,7 @@ namespace nkentseu {
 					logger.Warn("[SVG] stroke-dasharray non honore : le trait est rendu CONTINU.");
 
 				ParseState local = cur;
-				local.style = MergeStyle(cur.style, attrs, numAttrs);
+				local.style = MergeStyle(cur.style, attrs, numAttrs, &useCtx.regles, tagBuf);
 				UpdateRefs(local.fillRef, local.strokeRef, attrs, numAttrs);
 				const char *tr = FindAttr(attrs, numAttrs, "transform");
 				if (tr)
