@@ -673,9 +673,17 @@ namespace nkentseu {
 		// Consequence agreable : les clips IMBRIQUES se composent tout seuls (leur
 		// intersection est le produit des masques), sans pile de calques a tenir.
 		// ─────────────────────────────────────────────────────────────────────────────
+		// <mask> EST LE MEME MECANISME, a une chose pres : un decoupage ne connait
+		// que DEDANS ou DEHORS (la couverture des formes), tandis qu'un masque prend
+		// une valeur CONTINUE -- la LUMINANCE de ce qu'on y peint (SVG 1.1) ou son
+		// alpha (mask-type="alpha"). Un degrade du noir au blanc dans un <mask> fait
+		// donc un fondu, ce qu'un <clipPath> ne peut pas exprimer. Les deux se
+		// multiplient de la meme facon, et se cumulent : une seule liste les porte.
 		struct ClipPath {
 				char id[64] = {0};
 				bool userSpace = true; ///< clipPathUnits ; objectBoundingBox = false
+				bool masque = false;   ///< <mask> plutot que <clipPath>
+				bool typeAlpha = false; ///< mask-type="alpha" (defaut : luminance)
 				NkVector<Shape> formes;
 
 				ClipPath() = default;
@@ -689,6 +697,8 @@ namespace nkentseu {
 				void Vider() noexcept {
 					id[0] = 0;
 					userSpace = true;
+					masque = false;
+					typeAlpha = false;
 					while (!formes.IsEmpty())
 						formes.PopBack();
 				}
@@ -2161,7 +2171,7 @@ namespace nkentseu {
 			static const char *const kConnus[] = {"svg",	 "g",		 "defs",  "symbol",	  "use",	 "rect",
 												  "circle",	 "ellipse",	 "line",  "polyline", "polygon", "path",
 												  "image",	 "text",	 "tspan", "title",	  "desc",	 "metadata",
-												  "style",	 "clipPath", "stop",  "filter",	  "linearGradient",
+												  "style",	 "clipPath", "mask",  "stop",	  "filter",	  "linearGradient",
 												  "radialGradient"};
 			for (usize i = 0; i < sizeof(kConnus) / sizeof(kConnus[0]); ++i)
 				if (std::strcmp(t, kConnus[i]) == 0)
@@ -2400,7 +2410,7 @@ namespace nkentseu {
 						}
 						continue;
 					}
-					if (std::strcmp(tagBuf, "clipPath") == 0) {
+					if (std::strcmp(tagBuf, "clipPath") == 0 || std::strcmp(tagBuf, "mask") == 0) {
 						if (dansClip) {
 							// LES FORMES DU CLIP SORTENT DE LA LISTE A PEINDRE : elles
 							// decrivent une decoupe, elles ne se dessinent pas.
@@ -2471,13 +2481,18 @@ namespace nkentseu {
 						const char *tr = FindAttr(attrs, numAttrs, "transform");
 						if (tr)
 							next.xform = cur.xform * NkSVGTransform::Parse(tr);
-						const char *clp = FindAttr(attrs, numAttrs, "clip-path");
-						char refClip[64];
-						if (clp && ParseUrlRef(clp, refClip, sizeof(refClip)) &&
-							next.nClips < (int32)(sizeof(next.clipRefs) / sizeof(next.clipRefs[0]))) {
-							std::strncpy(next.clipRefs[next.nClips], refClip, 63);
-							next.clipRefs[next.nClips][63] = 0;
-							++next.nClips;
+						// clip-path ET mask se cumulent dans la MEME liste : tous deux
+						// sont des masques qui se multiplient, seule leur fabrication
+						// differe.
+						for (int32 q = 0; q < 2; ++q) {
+							const char *clp = FindAttr(attrs, numAttrs, q == 0 ? "clip-path" : "mask");
+							char refClip[64];
+							if (clp && ParseUrlRef(clp, refClip, sizeof(refClip)) &&
+								next.nClips < (int32)(sizeof(next.clipRefs) / sizeof(next.clipRefs[0]))) {
+								std::strncpy(next.clipRefs[next.nClips], refClip, 63);
+								next.clipRefs[next.nClips][63] = 0;
+								++next.nClips;
+							}
 						}
 						const char *flt = FindAttr(attrs, numAttrs, "filter");
 						char refFiltre[64];
@@ -2492,16 +2507,26 @@ namespace nkentseu {
 					continue;
 				}
 
-				// ── <clipPath> : ses formes sont CAPTEES, pas peintes ────────────
-				if (std::strcmp(tagBuf, "clipPath") == 0) {
+				// ── <clipPath> et <mask> : leurs formes sont CAPTEES, pas peintes ─
+				if (std::strcmp(tagBuf, "clipPath") == 0 || std::strcmp(tagBuf, "mask") == 0) {
 					curClip.Vider();
+					curClip.masque = (tagBuf[0] == 'm');
 					const char *cid = FindAttr(attrs, numAttrs, "id");
 					if (cid) {
 						std::strncpy(curClip.id, cid, 63);
 						curClip.id[63] = 0;
 					}
-					const char *cu = FindAttr(attrs, numAttrs, "clipPathUnits");
+					const char *cu = FindAttr(attrs, numAttrs, curClip.masque ? "maskContentUnits" : "clipPathUnits");
 					curClip.userSpace = !(cu && std::strcmp(cu, "objectBoundingBox") == 0);
+					if (curClip.masque) {
+						// mask-type, en attribut ou en propriete de style
+						const char *mt = FindAttr(attrs, numAttrs, "mask-type");
+						char buf[32];
+						const char *css = FindAttr(attrs, numAttrs, "style");
+						if (!mt && css && GetCSSProp(css, "mask-type", buf, sizeof(buf)))
+							mt = buf;
+						curClip.typeAlpha = (mt && std::strcmp(mt, "alpha") == 0);
+					}
 					dansClip = true;
 					shapesAvantClip = shapes.Size();
 					// un <clipPath> vit presque toujours dans <defs>, qui bloque la
@@ -2889,8 +2914,8 @@ namespace nkentseu {
 				const char *tr = FindAttr(attrs, numAttrs, "transform");
 				if (tr)
 					local.xform = cur.xform * NkSVGTransform::Parse(tr);
-				{ // un clip-path pose directement sur la forme
-					const char *clp = FindAttr(attrs, numAttrs, "clip-path");
+				for (int32 q = 0; q < 2; ++q) { // clip-path / mask poses sur la forme
+					const char *clp = FindAttr(attrs, numAttrs, q == 0 ? "clip-path" : "mask");
 					char refClip[64];
 					if (clp && ParseUrlRef(clp, refClip, sizeof(refClip)) &&
 						local.nClips < (int32)(sizeof(local.clipRefs) / sizeof(local.clipRefs[0]))) {
@@ -4303,10 +4328,16 @@ namespace nkentseu {
 				const Shape &src = cp->formes[f];
 				Shape loc;
 				loc.style = src.style;
-				loc.style.fill = NkSVGColor::White();
-				loc.style.stroke = NkSVGColor::None();
-				loc.style.opacity = 1.f;
-				loc.style.fillOpacity = 1.f;
+				if (!cp->masque) {
+					// UN DECOUPAGE NE CONNAIT QUE DEDANS / DEHORS : la couleur des
+					// formes du <clipPath> n'a aucun sens, on peint en blanc opaque et
+					// c'est leur COUVERTURE qui devient le masque.
+					loc.style.fill = NkSVGColor::White();
+					loc.style.stroke = NkSVGColor::None();
+					loc.style.opacity = 1.f;
+					loc.style.fillOpacity = 1.f;
+				}
+				// UN MASQUE, lui, garde ses couleurs : c'est leur LUMINANCE qu'on lira.
 				loc.style.visible = true;
 				// `clip-rule` est le fill-rule des formes du clip : il est deja dans
 				// leur style, lu comme n'importe quel attribut.
@@ -4320,14 +4351,37 @@ namespace nkentseu {
 					loc.contourStart.PushBack(src.contourStart[k]);
 					loc.contourLen.PushBack(src.contourLen[k]);
 				}
-				RasterizeShape(tampon, loc, nullptr, nullptr);
+				// LE DEGRADE D'UN MASQUE DOIT ETRE RESOLU COMME LES AUTRES. Sans ca,
+				// `fill="url(#g)"` n'est pas une couleur lisible et retombe sur du
+				// NOIR -- or un masque noir cache tout : le fondu, qui est l'usage
+				// principal d'un <mask>, rendait une image entierement vide.
+				GradPaint gp;
+				bool aGrad = false;
+				if (cp->masque && src.fillRef[0])
+					aGrad = BuildGradPaint(impl, src.fillRef, loc, src.ctm, versDest, gp);
+				if (cp->masque && src.fillRef[0] && !aGrad)
+					continue; // reference morte : ne rien peindre plutot que du noir
+				RasterizeShape(tampon, loc, aGrad ? &gp : nullptr, nullptr);
 			}
 			MasqueCache mc;
 			std::strncpy(mc.id, ref, sizeof(mc.id) - 1);
 			mc.px.Resize((usize)outW * (usize)outH);
 			const uint8 *tp = tampon.Pixels();
-			for (int32 i = 0; i < outW * outH; ++i)
-				mc.px[(uint32)i] = tp[(usize)i * 4u + 3u];
+			for (int32 i = 0; i < outW * outH; ++i) {
+				const usize o = (usize)i * 4u;
+				if (!cp->masque || cp->typeAlpha) {
+					mc.px[(uint32)i] = tp[o + 3u];
+				} else {
+					// LUMINANCE (coefficients de luminosite de sRGB, ceux que la norme
+					// SVG donne pour `mask`), ponderee par l'alpha : un blanc opaque
+					// laisse tout passer, un noir opaque bloque tout, un transparent
+					// aussi.
+					const float32 lum = 0.2125f * (float32)tp[o + 0u] + 0.7154f * (float32)tp[o + 1u] +
+										0.0721f * (float32)tp[o + 2u];
+					const float32 v = lum * ((float32)tp[o + 3u] / 255.f);
+					mc.px[(uint32)i] = (uint8)(v > 255.f ? 255.f : (v < 0.f ? 0.f : v));
+				}
+			}
 			masques.PushBack(std::move(mc));
 			return &masques[masques.Size() - 1].px[0];
 		};

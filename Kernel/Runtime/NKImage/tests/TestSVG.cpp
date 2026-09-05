@@ -1211,6 +1211,85 @@ static void TestClip() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER <mask> — un masque a des NUANCES, un decoupage n'en a pas
+// ─────────────────────────────────────────────────────────────────────────────
+static void TestMask() {
+	std::printf("\n== PALIER <mask> ==\n");
+	char det[640];
+
+	// (a) LA DIFFERENCE AVEC UN CLIP, et c'est tout le palier : un <mask> qui
+	//     contient un DEGRADE du noir au blanc produit un FONDU. Un <clipPath> ne
+	//     sait pas exprimer ca -- il ne connait que dedans et dehors.
+	static const char *kFondu =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"40\" viewBox=\"0 0 100 40\">"
+		"<defs>"
+		"<linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"0\">"
+		"<stop offset=\"0\" stop-color=\"#000000\"/><stop offset=\"1\" stop-color=\"#ffffff\"/></linearGradient>"
+		"<mask id=\"m\"><rect x=\"0\" y=\"0\" width=\"100\" height=\"40\" fill=\"url(#g)\"/></mask>"
+		"</defs>"
+		"<rect x=\"0\" y=\"0\" width=\"100\" height=\"40\" fill=\"#ff0000\" mask=\"url(#m)\"/></svg>";
+	NkImage a = Decoder(kFondu);
+	const int32 a5 = AlphaDe(a, 5, 20), a35 = AlphaDe(a, 35, 20), a65 = AlphaDe(a, 65, 20), a95 = AlphaDe(a, 95, 20);
+	const bool fondu = a.IsValid() && a5 < 30 && a35 < a65 && a65 < a95 && a95 > 220 && a5 < a35;
+	std::snprintf(det, sizeof(det), "alpha du rouge le long du masque degrade : %d / %d / %d / %d (croissant, du "
+								   "transparent a l'opaque)",
+				  a5, a35, a65, a95);
+	Verifier("M1. <mask> avec un degrade : le resultat est un FONDU CONTINU (la LUMINANCE du masque devient "
+			 "l'opacite) -- ce qu'un <clipPath> ne peut pas exprimer",
+			 fondu, det);
+
+	// (b) LUMINANCE, pas simple presence : un carre NOIR opaque dans un masque
+	//     CACHE, alors qu'un carre BLANC opaque montre. Un masque lu comme un clip
+	//     (couverture) montrerait les deux.
+	static const char *kLum =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\">"
+		"<defs><mask id=\"m\">"
+		"<rect x=\"0\" y=\"0\" width=\"50\" height=\"50\" fill=\"#ffffff\"/>"
+		"<rect x=\"50\" y=\"0\" width=\"50\" height=\"50\" fill=\"#000000\"/></mask></defs>"
+		"<rect x=\"0\" y=\"0\" width=\"100\" height=\"50\" fill=\"#0000ff\" mask=\"url(#m)\"/></svg>";
+	NkImage b = Decoder(kLum);
+	const bool luminance = b.IsValid() && Proche(b, 25, 25, 0, 0, 255, 4) && AlphaDe(b, 75, 25) < 20;
+	std::snprintf(det, sizeof(det), "sous le blanc du masque : bleu opaque=%d ; sous le NOIR du masque : alpha=%d "
+								   "(un masque lu comme une simple couverture aurait montre les deux)",
+				  Proche(b, 25, 25, 0, 0, 255, 4) ? 1 : 0, AlphaDe(b, 75, 25));
+	Verifier("M2. c'est la LUMINANCE qui compte : du blanc montre, du NOIR cache -- meme opaque, meme couvrant",
+			 luminance, det);
+
+	// (c) mask-type=\"alpha\" : c'est alors l'ALPHA du masque qui compte, et le noir
+	//     opaque montre.
+	static const char *kAlpha =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"50\" viewBox=\"0 0 100 50\">"
+		"<defs><mask id=\"m\" mask-type=\"alpha\">"
+		"<rect x=\"0\" y=\"0\" width=\"50\" height=\"50\" fill=\"#000000\"/></mask></defs>"
+		"<rect x=\"0\" y=\"0\" width=\"100\" height=\"50\" fill=\"#00ff00\" mask=\"url(#m)\"/></svg>";
+	NkImage c = Decoder(kAlpha);
+	const bool typeAlpha = c.IsValid() && Proche(c, 25, 25, 0, 255, 0, 4) && AlphaDe(c, 75, 25) < 20;
+	std::snprintf(det, sizeof(det), "sous le noir OPAQUE en mask-type=alpha : vert visible=%d ; hors du masque : "
+								   "alpha=%d",
+				  Proche(c, 25, 25, 0, 255, 0, 4) ? 1 : 0, AlphaDe(c, 75, 25));
+	Verifier("M3. mask-type=\"alpha\" : c'est l'ALPHA du masque qui compte, et un noir opaque MONTRE (l'inverse "
+			 "du mode luminance -- ce n'est pas un detail, c'est le contraire)",
+			 typeAlpha, det);
+
+	// (d) un <mask> et un <clip-path> sur le meme element se CUMULENT.
+	static const char *kDeux =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+		"<defs>"
+		"<clipPath id=\"c\"><rect x=\"0\" y=\"0\" width=\"100\" height=\"50\"/></clipPath>"
+		"<mask id=\"m\"><rect x=\"0\" y=\"0\" width=\"50\" height=\"100\" fill=\"#ffffff\"/></mask>"
+		"</defs>"
+		"<rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"#ff8800\" clip-path=\"url(#c)\" "
+		"mask=\"url(#m)\"/></svg>";
+	NkImage d = Decoder(kDeux);
+	const bool cumul = d.IsValid() && AlphaDe(d, 25, 25) > 200 && AlphaDe(d, 75, 25) < 20 &&
+					   AlphaDe(d, 25, 75) < 20 && AlphaDe(d, 75, 75) < 20;
+	std::snprintf(det, sizeof(det), "seul le quart haut-gauche survit : alpha %d / %d / %d / %d", AlphaDe(d, 25, 25),
+				  AlphaDe(d, 75, 25), AlphaDe(d, 25, 75), AlphaDe(d, 75, 75));
+	Verifier("M4. un mask ET un clip-path sur le meme element se CUMULENT (ils se multiplient, comme deux clips)",
+			 cumul, det);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -1218,9 +1297,9 @@ static void TestNonGere() {
 	static const char *kInconnu =
 		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 40 40\">"
 		"<defs><symbol id=\"s\"><rect width=\"5\" height=\"5\"/></symbol>"
-		"<mask id=\"m\"><rect width=\"5\" height=\"5\" fill=\"#fff\"/></mask>"
-		"<mask id=\"m2\"><rect width=\"5\" height=\"5\" fill=\"#fff\"/></mask>"
-		"<pattern id=\"p\"><rect width=\"2\" height=\"2\"/></pattern></defs>"
+		"<pattern id=\"p\"><rect width=\"2\" height=\"2\"/></pattern>"
+		"<marker id=\"k\"><rect width=\"2\" height=\"2\"/></marker>"
+		"<marker id=\"k2\"><rect width=\"2\" height=\"2\"/></marker></defs>"
 		"<use href=\"#s\"/><use href=\"#s\"/>"
 		"<clipPath id=\"c\"><rect width=\"5\" height=\"5\"/></clipPath>"
 		"<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#808080\" stroke=\"#000\" "
@@ -1232,9 +1311,9 @@ static void TestNonGere() {
 	// qui reste a faire y demeure. Verifier les deux sens, c'est empecher deux
 	// mensonges opposes -- annoncer comme saute ce qu'on peint, et taire ce qu'on
 	// saute vraiment.
-	bool maskDit = false, patternDit = false, dashDit = false;
-	bool useEncoreDit = false, clipEncoreDit = false;
-	int32 nbMask = 0, nb = 0;
+	bool markerDit = false, patternDit = false, dashDit = false;
+	bool useEncoreDit = false, clipEncoreDit = false, maskEncoreDit = false;
+	int32 nbMarker = 0, nb = 0;
 	if (img) {
 		nb = img->SkippedCount();
 		for (int32 i = 0; i < nb; ++i) {
@@ -1246,10 +1325,12 @@ static void TestNonGere() {
 				useEncoreDit = true;
 			if (std::strcmp(n, "clipPath") == 0)
 				clipEncoreDit = true;
+			if (std::strcmp(n, "mask") == 0)
+				maskEncoreDit = true;
 			// pas encore faits : ils doivent l'etre, une fois chacun
-			if (std::strcmp(n, "mask") == 0) {
-				maskDit = true;
-				++nbMask;
+			if (std::strcmp(n, "marker") == 0) {
+				markerDit = true;
+				++nbMarker;
 			}
 			if (std::strcmp(n, "pattern") == 0)
 				patternDit = true;
@@ -1261,14 +1342,15 @@ static void TestNonGere() {
 			std::strncat(det, img->SkippedAt(i) ? img->SkippedAt(i) : "?", sizeof(det) - std::strlen(det) - 1);
 			std::strncat(det, " ", sizeof(det) - std::strlen(det) - 1);
 		}
-		std::strncat(det, "| <use> et <clipPath> n'y sont plus (ils sont peints) ",
+		std::strncat(det, "| <use>, <clipPath> et <mask> n'y sont plus (ils sont peints) ",
 					 sizeof(det) - std::strlen(det) - 1);
 		img->Free();
 	}
-	Verifier("Le REGISTRE DES SAUTS suit les paliers, dans LES DEUX SENS : ce qui reste a faire est nomme (mask, "
-			 "pattern, stroke-dasharray) une seule fois par nom -- DEUX <mask> ne donnent qu'une mention --, et "
-			 "<use> comme <clipPath> N'Y SONT PLUS depuis qu'ils sont peints",
-			 img != nullptr && maskDit && patternDit && dashDit && !useEncoreDit && !clipEncoreDit && nbMask == 1,
+	Verifier("Le REGISTRE DES SAUTS suit les paliers, dans LES DEUX SENS : ce qui reste a faire est nomme "
+			 "(marker, pattern, stroke-dasharray) une seule fois par nom -- DEUX <marker> ne donnent qu'une "
+			 "mention --, et <use>, <clipPath>, <mask> N'Y SONT PLUS depuis qu'ils sont peints",
+			 img != nullptr && markerDit && patternDit && dashDit && !useEncoreDit && !clipEncoreDit &&
+				 !maskEncoreDit && nbMarker == 1,
 			 det);
 }
 
@@ -1290,6 +1372,7 @@ int TestSVG_Run() {
 	TestOpacites();
 	TestUse();
 	TestClip();
+	TestMask();
 	TestNonGere();
 	TestTemoinCroise();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);
