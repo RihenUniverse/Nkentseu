@@ -478,6 +478,122 @@ static void TestTexte() {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER 4 — les degrades COMPLETS : gradientTransform partout, fx/fy, href
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Une page 100x100 avec des <defs> et un rect qui les utilise.
+static void PageDegrade(char *out, usize n, const char *defs, const char *fill) {
+	std::snprintf(out, n,
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+				  "<defs>%s</defs>"
+				  "<rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"%s\"/></svg>",
+				  defs, fill);
+}
+
+static void TestDegrades() {
+	std::printf("\n== PALIER 4 : degrades ==\n");
+	char det[640];
+	static char svg[4096];
+
+	// (a) gradientTransform en objectBoundingBox. Un degrade HORIZONTAL tourne de
+	//     90 degres doit devenir VERTICAL. C'etait le defaut : gradientTransform
+	//     n'etait honore qu'en userSpaceOnUse, et IGNORE EN SILENCE ici.
+	PageDegrade(svg, sizeof(svg),
+				"<linearGradient id=\"g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"0\" "
+				"gradientTransform=\"rotate(90 0.5 0.5)\">"
+				"<stop offset=\"0\" stop-color=\"#000000\"/><stop offset=\"1\" stop-color=\"#ffffff\"/>"
+				"</linearGradient>",
+				"url(#g)");
+	NkImage a = Decoder(svg);
+	const int32 hautG = Gris(a, 10, 10), hautD = Gris(a, 90, 10);
+	const int32 basG = Gris(a, 10, 90), basD = Gris(a, 90, 90);
+	// vertical : ca varie du haut vers le bas, et PAS de gauche a droite
+	const bool vertical = a.IsValid() && hautG < basG - 100 && std::abs(hautG - hautD) < 12 &&
+						  std::abs(basG - basD) < 12;
+	std::snprintf(det, sizeof(det), "gris : haut %d/%d, bas %d/%d -- vertical (haut != bas, gauche == droite)=%d",
+				  hautG, hautD, basG, basD, vertical ? 1 : 0);
+	Verifier("4a. gradientTransform est honore AUSSI en objectBoundingBox : « rotate(90) » sur un degrade "
+			 "horizontal le rend VERTICAL (il etait ignore en silence dans ce mode)",
+			 vertical, det);
+
+	// (b) le FOYER d'un radial (fx/fy) : le blanc est AU FOYER, pas au centre.
+	PageDegrade(svg, sizeof(svg),
+				"<radialGradient id=\"r\" cx=\"0.5\" cy=\"0.5\" r=\"0.5\" fx=\"0.2\" fy=\"0.2\">"
+				"<stop offset=\"0\" stop-color=\"#ffffff\"/><stop offset=\"1\" stop-color=\"#000000\"/>"
+				"</radialGradient>",
+				"url(#r)");
+	NkImage b = Decoder(svg);
+	const int32 auFoyer = Gris(b, 20, 20), auCentre = Gris(b, 50, 50), oppose = Gris(b, 80, 80);
+	const bool foyer = b.IsValid() && auFoyer > auCentre + 20 && auCentre > oppose;
+	std::snprintf(det, sizeof(det), "gris au foyer (20,20)=%d ; au centre (50,50)=%d ; a l'oppose (80,80)=%d",
+				  auFoyer, auCentre, oppose);
+	Verifier("4b. <radialGradient fx fy> : le point le plus clair est LE FOYER, pas le centre du cercle", foyer, det);
+
+	// (c) sans fx/fy le foyer EST le centre : le degrade est concentrique.
+	PageDegrade(svg, sizeof(svg),
+				"<radialGradient id=\"r2\" cx=\"0.5\" cy=\"0.5\" r=\"0.5\">"
+				"<stop offset=\"0\" stop-color=\"#ffffff\"/><stop offset=\"1\" stop-color=\"#000000\"/>"
+				"</radialGradient>",
+				"url(#r2)");
+	NkImage c = Decoder(svg);
+	const int32 c0 = Gris(c, 50, 50), c1 = Gris(c, 20, 20), c2 = Gris(c, 80, 80), c3 = Gris(c, 80, 20);
+	const bool concentrique = c.IsValid() && c0 > c1 + 20 && std::abs(c1 - c2) < 12 && std::abs(c1 - c3) < 12;
+	std::snprintf(det, sizeof(det), "centre=%d ; les trois coins a egale distance : %d / %d / %d", c0, c1, c2, c3);
+	Verifier("4c. sans fx/fy, le degrade radial est CONCENTRIQUE : trois points a egale distance du centre ont la "
+			 "meme valeur",
+			 concentrique, det);
+
+	// (d) href : un degrade herite la GEOMETRIE de celui qu'il reference, pas
+	//     seulement ses arrets. Ici la base est VERTICALE ; le fils ne dit rien.
+	PageDegrade(svg, sizeof(svg),
+				"<linearGradient id=\"base\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\">"
+				"<stop offset=\"0\" stop-color=\"#000000\"/><stop offset=\"1\" stop-color=\"#ffffff\"/>"
+				"</linearGradient>"
+				"<linearGradient id=\"fils\" href=\"#base\"/>",
+				"url(#fils)");
+	NkImage d = Decoder(svg);
+	const int32 dh = Gris(d, 50, 10), db = Gris(d, 50, 90), dg = Gris(d, 10, 50), dd = Gris(d, 90, 50);
+	const bool herite = d.IsValid() && dh < db - 100 && std::abs(dg - dd) < 12;
+	std::snprintf(det, sizeof(det), "haut=%d bas=%d (la base est verticale) ; gauche=%d droite=%d (egales)", dh, db,
+				  dg, dd);
+	Verifier("4d. href herite la GEOMETRIE, pas seulement les arrets : un fils muet reprend le x1/y1/x2/y2 de sa "
+			 "base (verticale) au lieu de retomber sur l'horizontale par defaut",
+			 herite, det);
+
+	// (e) spreadMethod=\"repeat\" en userSpaceOnUse : le motif se REPETE.
+	PageDegrade(svg, sizeof(svg),
+				"<linearGradient id=\"rep\" gradientUnits=\"userSpaceOnUse\" x1=\"0\" y1=\"0\" x2=\"25\" y2=\"0\" "
+				"spreadMethod=\"repeat\">"
+				"<stop offset=\"0\" stop-color=\"#000000\"/><stop offset=\"1\" stop-color=\"#ffffff\"/>"
+				"</linearGradient>",
+				"url(#rep)");
+	NkImage e = Decoder(svg);
+	const int32 p0 = Gris(e, 5, 50), p1 = Gris(e, 30, 50), p2 = Gris(e, 55, 50), p3 = Gris(e, 80, 50);
+	const bool repete = e.IsValid() && std::abs(p0 - p1) < 14 && std::abs(p1 - p2) < 14 && std::abs(p2 - p3) < 14 &&
+						Gris(e, 20, 50) > p0 + 100;
+	std::snprintf(det, sizeof(det), "meme phase tous les 25 px : %d / %d / %d / %d ; fin de periode (20,50)=%d", p0,
+				  p1, p2, p3, Gris(e, 20, 50));
+	Verifier("4e. spreadMethod=\"repeat\" (userSpaceOnUse) : le motif se repete tous les 25 px, la meme phase rend "
+			 "la meme valeur",
+			 repete, det);
+
+	// (f) stop-opacity : un arret transparent laisse voir CE QU'IL Y A DESSOUS.
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+				  "<defs><linearGradient id=\"o\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"0\">"
+				  "<stop offset=\"0\" stop-color=\"#ff0000\" stop-opacity=\"1\"/>"
+				  "<stop offset=\"1\" stop-color=\"#ff0000\" stop-opacity=\"0\"/></linearGradient></defs>"
+				  "<rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"url(#o)\"/></svg>");
+	NkImage f = Decoder(svg);
+	const int32 aG = AlphaDe(f, 5, 50), aD = AlphaDe(f, 95, 50);
+	const bool opacite = f.IsValid() && aG > 230 && aD < 25;
+	std::snprintf(det, sizeof(det), "alpha a gauche (stop-opacity 1) = %d ; a droite (stop-opacity 0) = %d", aG, aD);
+	Verifier("4f. stop-opacity : l'arret transparent rend le degrade transparent de son cote (l'alpha varie, pas "
+			 "seulement la couleur)",
+			 opacite, det);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -531,6 +647,7 @@ int TestSVG_Run() {
 	TestRxRy();
 	TestImage();
 	TestTexte();
+	TestDegrades();
 	TestNonGere();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);
 	return (gPass == gTotal) ? 0 : 1;

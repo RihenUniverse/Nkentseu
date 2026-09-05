@@ -26,8 +26,10 @@
 //                     stroke-linejoin (miter/round/bevel), stroke-miterlimit
 // Gradients         : linear + radial, stops (offset/stop-color/stop-opacity),
 //                     gradientUnits (objectBoundingBox + userSpaceOnUse),
-//                     gradientTransform, spreadMethod (pad/reflect/repeat),
-//                     fill/stroke="url(#id)", href (stops herites)
+//                     gradientTransform DANS LES DEUX modes d'unites,
+//                     spreadMethod (pad/reflect/repeat), fx/fy (le FOYER d'un
+//                     radial), fill/stroke="url(#id)", href (arrets ET
+//                     geometrie, unites, matrice, etalement herites)
 // Couleurs          : #RGB, #RRGGBB, #RRGGBBAA, rgb(), rgba(), nom CSS (148 noms)
 //
 // <image>           : href RELATIF au fichier .svg (cf. LoadFromMemory(baseDir))

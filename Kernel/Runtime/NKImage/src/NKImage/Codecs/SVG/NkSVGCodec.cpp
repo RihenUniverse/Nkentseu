@@ -525,6 +525,15 @@ namespace nkentseu {
 				NkSVGTransform xform = NkSVGTransform::Identity(); // gradientTransform
 				float32 x1 = 0.f, y1 = 0.f, x2 = 1.f, y2 = 0.f;	   // linear (defaut bbox 0..1)
 				float32 cx = 0.5f, cy = 0.5f, r = 0.5f;			   // radial
+				float32 fx = 0.5f, fy = 0.5f;					   // radial : le FOYER (defaut = centre)
+				bool hasFocal = false;							   // fx/fy ecrits par l'auteur ?
+				// CE QUI A ETE ECRIT, attribut par attribut. Un gradient qui en
+				// reference un autre (href) n'herite QUE ce qu'il n'a pas dit lui-meme :
+				// sans ces drapeaux on ne peut pas distinguer « absent » de « pose a la
+				// valeur par defaut », et l'heritage devient faux dans un cas sur deux.
+				bool hasX1 = false, hasY1 = false, hasX2 = false, hasY2 = false;
+				bool hasCx = false, hasCy = false, hasR = false;
+				bool hasUnits = false, hasSpread = false, hasXform = false;
 				NkVector<GradStop> stops;
 
 				Gradient() = default;
@@ -2178,10 +2187,14 @@ namespace nkentseu {
 					}
 					const char *gu = FindAttr(attrs, numAttrs, "gradientUnits");
 					curGrad.userSpace = (gu && std::strcmp(gu, "userSpaceOnUse") == 0);
+					curGrad.hasUnits = (gu != nullptr);
 					const char *gt = FindAttr(attrs, numAttrs, "gradientTransform");
-					if (gt)
+					if (gt) {
 						curGrad.xform = NkSVGTransform::Parse(gt);
+						curGrad.hasXform = true;
+					}
 					const char *sp = FindAttr(attrs, numAttrs, "spreadMethod");
+					curGrad.hasSpread = (sp != nullptr);
 					if (sp) {
 						if (std::strcmp(sp, "reflect") == 0)
 							curGrad.spread = GradSpread::Reflect;
@@ -2189,14 +2202,35 @@ namespace nkentseu {
 							curGrad.spread = GradSpread::Repeat;
 					}
 					if (curGrad.kind == GradKind::Linear) {
-						curGrad.x1 = ParsePct(FindAttr(attrs, numAttrs, "x1"), 0.f);
-						curGrad.y1 = ParsePct(FindAttr(attrs, numAttrs, "y1"), 0.f);
-						curGrad.x2 = ParsePct(FindAttr(attrs, numAttrs, "x2"), 1.f);
-						curGrad.y2 = ParsePct(FindAttr(attrs, numAttrs, "y2"), 0.f);
+						const char *a1 = FindAttr(attrs, numAttrs, "x1");
+						const char *b1 = FindAttr(attrs, numAttrs, "y1");
+						const char *a2 = FindAttr(attrs, numAttrs, "x2");
+						const char *b2 = FindAttr(attrs, numAttrs, "y2");
+						curGrad.x1 = ParsePct(a1, 0.f);
+						curGrad.y1 = ParsePct(b1, 0.f);
+						curGrad.x2 = ParsePct(a2, 1.f);
+						curGrad.y2 = ParsePct(b2, 0.f);
+						curGrad.hasX1 = (a1 != nullptr);
+						curGrad.hasY1 = (b1 != nullptr);
+						curGrad.hasX2 = (a2 != nullptr);
+						curGrad.hasY2 = (b2 != nullptr);
 					} else {
-						curGrad.cx = ParsePct(FindAttr(attrs, numAttrs, "cx"), 0.5f);
-						curGrad.cy = ParsePct(FindAttr(attrs, numAttrs, "cy"), 0.5f);
-						curGrad.r = ParsePct(FindAttr(attrs, numAttrs, "r"), 0.5f);
+						const char *ac = FindAttr(attrs, numAttrs, "cx");
+						const char *bc = FindAttr(attrs, numAttrs, "cy");
+						const char *rr = FindAttr(attrs, numAttrs, "r");
+						curGrad.cx = ParsePct(ac, 0.5f);
+						curGrad.cy = ParsePct(bc, 0.5f);
+						curGrad.r = ParsePct(rr, 0.5f);
+						curGrad.hasCx = (ac != nullptr);
+						curGrad.hasCy = (bc != nullptr);
+						curGrad.hasR = (rr != nullptr);
+						// LE FOYER : par defaut il est AU CENTRE (le degrade est alors
+						// concentrique) ; fx/fy le deplacent, et la lumiere se decale.
+						const char *sfx = FindAttr(attrs, numAttrs, "fx");
+						const char *sfy = FindAttr(attrs, numAttrs, "fy");
+						curGrad.fx = sfx ? ParsePct(sfx, curGrad.cx) : curGrad.cx;
+						curGrad.fy = sfy ? ParsePct(sfy, curGrad.cy) : curGrad.cy;
+						curGrad.hasFocal = (sfx != nullptr || sfy != nullptr);
 					}
 					buildingGrad = true;
 					if (kind == 2) { // self-close (ex. gradient referencant un href, sans stops)
@@ -2387,14 +2421,30 @@ namespace nkentseu {
 				int32 dir;
 		};
 
-		// ── Peinture gradient resolue en espace DESTINATION (pixels) ──────────────────
+		// ─────────────────────────────────────────────────────────────────────────────
+		// LA PEINTURE D'UN DEGRADE — ON VA DU PIXEL VERS LE DEGRADE, jamais l'inverse
+		// -----------------------------------------------------------------------------
+		// L'ancienne version transportait la GEOMETRIE du degrade (deux points, ou un
+		// centre et un rayon) vers l'espace des pixels. Ca marche tant que la matrice
+		// ne fait que translater et mettre a l'echelle -- et ca ment des qu'elle
+		// tourne ou cisaille : un cercle transporte par trois nombres redevient un
+		// cercle, alors qu'il doit devenir une ELLIPSE. C'est aussi pour ca que
+		// `gradientTransform` etait silencieusement IGNORE en objectBoundingBox.
+		//
+		// Ici on garde le degrade dans SON espace et on y ramene chaque pixel par une
+		// matrice inverse. Consequences, toutes gratuites : gradientTransform vaut
+		// dans les DEUX modes d'unites, une ellipse est une ellipse, et le foyer
+		// (fx/fy) se pose sans cas particulier.
+		// ─────────────────────────────────────────────────────────────────────────────
 		struct GradPaint {
 				GradKind kind = GradKind::Linear;
 				GradSpread spread = GradSpread::Pad;
 				const GradStop *stops = nullptr;
 				int32 nStops = 0;
-				float32 ax = 0, ay = 0, bx = 1, by = 0; // linear : A->B en pixels
-				float32 cx = 0, cy = 0, rr = 1;			// radial : centre + rayon en pixels
+				NkSVGTransform inv;						  ///< pixel -> espace du degrade
+				float32 x1 = 0, y1 = 0, x2 = 1, y2 = 0;	  // linear, dans SON espace
+				float32 cx = 0, cy = 0, r = 1;			  // radial, dans SON espace
+				float32 fx = 0, fy = 0;					  // le foyer
 		};
 
 		/// Lerp deux couleurs (composantes + alpha).
@@ -2416,15 +2466,35 @@ namespace nkentseu {
 		NkSVGColor EvalGrad(const GradPaint &gp, float32 px, float32 py) noexcept {
 			if (gp.nStops <= 0)
 				return NkSVGColor::Transparent();
+			// le pixel, ramene dans l'espace ou le degrade est decrit
+			gp.inv.Apply(px, py);
 			float32 t;
 			if (gp.kind == GradKind::Linear) {
-				const float32 dx = gp.bx - gp.ax, dy = gp.by - gp.ay;
+				const float32 dx = gp.x2 - gp.x1, dy = gp.y2 - gp.y1;
 				const float32 l2 = dx * dx + dy * dy;
-				t = (l2 > 1e-9f) ? ((px - gp.ax) * dx + (py - gp.ay) * dy) / l2 : 0.f;
+				t = (l2 > 1e-9f) ? ((px - gp.x1) * dx + (py - gp.y1) * dy) / l2 : 0.f;
+			} else if (gp.r <= 1e-6f) {
+				t = 1.f;
 			} else {
-				const float32 dx = px - gp.cx, dy = py - gp.cy;
-				const float32 d = std::sqrt(dx * dx + dy * dy);
-				t = (gp.rr > 1e-6f) ? d / gp.rr : 0.f;
+				// LE FOYER (SVG 1.1 §13.2.3) : le degrade court du foyer F vers le
+				// cercle, le long du rayon qui passe par le pixel. On cherche le
+				// scalaire k tel que F + k (P - F) touche le cercle ; la valeur du
+				// degrade est alors 1/k. Foyer au centre -> on retombe exactement sur
+				// la distance normalisee, sans cas particulier.
+				const float32 dx = px - gp.fx, dy = py - gp.fy;
+				const float32 fcx = gp.fx - gp.cx, fcy = gp.fy - gp.cy;
+				const float32 a = dx * dx + dy * dy;
+				if (a <= 1e-12f) {
+					t = 0.f;
+				} else {
+					const float32 b = dx * fcx + dy * fcy;
+					const float32 c = fcx * fcx + fcy * fcy - gp.r * gp.r;
+					float32 disc = b * b - a * c;
+					if (disc < 0.f)
+						disc = 0.f;
+					const float32 k = (-b + std::sqrt(disc)) / a;
+					t = (k > 1e-6f) ? (1.f / k) : 1.f;
+				}
 			}
 			// spreadMethod.
 			if (gp.spread == GradSpread::Pad) {
@@ -3031,22 +3101,64 @@ namespace nkentseu {
 			if (!g)
 				return false;
 
-			// Stops : ceux du gradient, ou herites via href si vides.
+			// ── L'HERITAGE PAR href ──────────────────────────────────────────
+			// Un gradient qui en reference un autre herite TOUT ce qu'il n'a pas dit
+			// lui-meme : ses arrets, mais aussi sa geometrie, ses unites, sa matrice
+			// et son etalement. N'heriter que les arrets (ce qu'on faisait) donne des
+			// degrades geometriquement FAUX des qu'un fichier factorise ses
+			// definitions -- une pratique courante des exporteurs.
+			const Gradient *base = g->href[0] ? FindGradient(impl, g->href) : nullptr;
 			const Gradient *sg = g;
-			if (g->stops.IsEmpty() && g->href[0]) {
-				const Gradient *h = FindGradient(impl, g->href);
-				if (h)
-					sg = h;
-			}
+			if (g->stops.IsEmpty() && base)
+				sg = base;
 			if (sg->stops.IsEmpty())
 				return false;
 			gp.stops = &sg->stops[0];
 			gp.nStops = (int32)sg->stops.Size();
 			gp.kind = g->kind;
-			gp.spread = g->spread;
+			gp.spread = (g->hasSpread || !base) ? g->spread : base->spread;
+			const bool userSpace = (g->hasUnits || !base) ? g->userSpace : base->userSpace;
+			const NkSVGTransform gxf = (g->hasXform || !base) ? g->xform : base->xform;
+			const float32 gx1 = (g->hasX1 || !base) ? g->x1 : base->x1;
+			const float32 gy1 = (g->hasY1 || !base) ? g->y1 : base->y1;
+			const float32 gx2 = (g->hasX2 || !base) ? g->x2 : base->x2;
+			const float32 gy2 = (g->hasY2 || !base) ? g->y2 : base->y2;
+			const float32 gcx = (g->hasCx || !base) ? g->cx : base->cx;
+			const float32 gcy = (g->hasCy || !base) ? g->cy : base->cy;
+			const float32 gr = (g->hasR || !base) ? g->r : base->r;
+			const bool focal = g->hasFocal || (base && base->hasFocal);
+			const float32 gfx = g->hasFocal ? g->fx : (base && base->hasFocal ? base->fx : gcx);
+			const float32 gfy = g->hasFocal ? g->fy : (base && base->hasFocal ? base->fy : gcy);
 
-			if (!g->userSpace) {
-				// objectBoundingBox : bbox des points (espace destination).
+			gp.x1 = gx1;
+			gp.y1 = gy1;
+			gp.x2 = gx2;
+			gp.y2 = gy2;
+			gp.cx = gcx;
+			gp.cy = gcy;
+			gp.r = gr;
+			gp.fx = focal ? gfx : gcx;
+			gp.fy = focal ? gfy : gcy;
+			// LE FOYER DOIT RESTER DANS LE CERCLE (la norme le ramene sur le bord
+			// sinon) : au-dehors, le rayon ne coupe plus le cercle et la couleur
+			// partirait a l'infini.
+			{
+				const float32 ddx = gp.fx - gp.cx, ddy = gp.fy - gp.cy;
+				const float32 d2 = ddx * ddx + ddy * ddy;
+				if (gp.r > 1e-6f && d2 > gp.r * gp.r * 0.9801f) { // 0.99 r
+					const float32 d = std::sqrt(d2);
+					const float32 k = (gp.r * 0.99f) / d;
+					gp.fx = gp.cx + ddx * k;
+					gp.fy = gp.cy + ddy * k;
+				}
+			}
+
+			// LA MATRICE : espace du degrade -> pixels. On l'inverse une fois par
+			// forme, pas une fois par pixel.
+			NkSVGTransform versPixels;
+			if (!userSpace) {
+				// objectBoundingBox : le degrade est decrit dans le carre unite de la
+				// BOITE de la forme. bbox <- points DEJA transformes (destination).
 				float32 minx = 1e30f, miny = 1e30f, maxx = -1e30f, maxy = -1e30f;
 				for (uint32 k = 0; k < localPts.xs.Size(); ++k) {
 					const float32 x = localPts.xs[k], y = localPts.ys[k];
@@ -3064,39 +3176,15 @@ namespace nkentseu {
 					w = 1.f;
 				if (h <= 0.f)
 					h = 1.f;
-				if (g->kind == GradKind::Linear) {
-					gp.ax = minx + g->x1 * w;
-					gp.ay = miny + g->y1 * h;
-					gp.bx = minx + g->x2 * w;
-					gp.by = miny + g->y2 * h;
-				} else {
-					gp.cx = minx + g->cx * w;
-					gp.cy = miny + g->cy * h;
-					gp.rr = g->r * std::sqrt((w * w + h * h) * 0.5f);
-				}
+				// unite -> boite, PUIS gradientTransform (qui s'applique dans l'espace
+				// du degrade) : c'est cette composition qui manquait.
+				versPixels = NkSVGTransform::Translate(minx, miny) * NkSVGTransform::Scale(w, h) * gxf;
 			} else {
-				// userSpaceOnUse : coords user -> dest via mView * ctm * gradientTransform.
-				const NkSVGTransform total = mView * (ctm * g->xform);
-				if (g->kind == GradKind::Linear) {
-					float32 x = g->x1, y = g->y1;
-					total.Apply(x, y);
-					gp.ax = x;
-					gp.ay = y;
-					x = g->x2;
-					y = g->y2;
-					total.Apply(x, y);
-					gp.bx = x;
-					gp.by = y;
-				} else {
-					float32 x = g->cx, y = g->cy;
-					total.Apply(x, y);
-					gp.cx = x;
-					gp.cy = y;
-					float32 ex = g->cx + g->r, ey = g->cy;
-					total.Apply(ex, ey);
-					gp.rr = std::sqrt((ex - gp.cx) * (ex - gp.cx) + (ey - gp.cy) * (ey - gp.cy));
-				}
+				// userSpaceOnUse : user -> dest, gradientTransform comprise.
+				versPixels = mView * (ctm * gxf);
 			}
+			if (!Inverser(versPixels, gp.inv))
+				return false;
 			return true;
 		}
 
