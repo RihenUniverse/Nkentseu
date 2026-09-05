@@ -770,6 +770,155 @@ static void TestOpacites() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// LE TEMOIN CROISE — deux lecteurs du MEME document, compares en pixels
+// -----------------------------------------------------------------------------
+//  `tests/temoins/` porte trois fichiers ECRITS PAR NkUIDesign (sa sonde 82, le
+//  2026-09-05) : la page exportee en PNG par son peintre, la MEME page exportee
+//  en SVG par son ecrivain, et l'image 2x2 que le document reference.
+//
+//  Ces trois fichiers sont le seul endroit du banc ou l'entree ne vient pas du
+//  test -- et c'est precisement le point : ils viennent d'un AUTRE programme.
+//  Le PNG est la verite du peintre ; le SVG re-rasterise par ce codec doit
+//  tomber au meme endroit. Quand les deux different, l'un des deux a tort, et le
+//  banc dit lequel au lieu de moyenner.
+//
+//  AVANT CE LOT, la sonde 82 de NkUIDesign ne pouvait comparer que les formes et
+//  les degrades : « texte et image : STRUCTURE seulement, le parseur maison ne
+//  sait ni <text> ni <image> ». C'est ce qui change ici.
+// ─────────────────────────────────────────────────────────────────────────────
+static void TestTemoinCroise() {
+	std::printf("\n== TEMOIN CROISE : l'export de NkUIDesign ==\n");
+	char det[900];
+	const char *dossier = "Kernel/Runtime/NKImage/tests/temoins";
+	const char *cheminSvg = "Kernel/Runtime/NKImage/tests/temoins/sonde_export_page.svg";
+	const char *cheminPng = "Kernel/Runtime/NKImage/tests/temoins/sonde_export_page.png";
+
+	NkImage png;
+	const bool pngLu = png.Load(cheminPng, 4) && png.Width() == 200 && png.Height() == 120;
+	NkSVGImage *doc = NkSVGImage::LoadFromFile(cheminSvg);
+	NkImage svg = doc ? doc->Rasterize(0, 0) : NkImage();
+	const bool svgLu = svg.IsValid() && svg.Width() == 200 && svg.Height() == 120;
+	if (!pngLu || !svgLu) {
+		std::snprintf(det, sizeof(det), "PNG lu=%d ; SVG lu=%d -- les temoins sont dans %s", pngLu ? 1 : 0,
+					  svgLu ? 1 : 0, dossier);
+		Verifier("T. les deux temoins de NkUIDesign sont lisibles", false, det);
+		if (doc)
+			doc->Free();
+		return;
+	}
+	(void)dossier;
+
+	// ── (1) LES FORMES : ce que la sonde 82 comparait deja ────────────────
+	const bool rouge = Proche(svg, 15, 15, 255, 0, 0, 3) && Proche(svg, 64, 15, 255, 0, 0, 3) &&
+					   Proche(svg, 15, 44, 255, 0, 0, 3) && Proche(svg, 64, 44, 255, 0, 0, 3);
+	const int32 q15 = Gris(svg, 110, 15), q25 = Gris(svg, 110, 25), q35 = Gris(svg, 110, 35),
+				q45 = Gris(svg, 110, 45);
+	const int32 g15 = Gris(png, 110, 15), g25 = Gris(png, 110, 25), g35 = Gris(png, 110, 35),
+				g45 = Gris(png, 110, 45);
+	auto ecart24 = [](int32 a, int32 b) { return std::abs(a - b) <= 24; };
+	const bool degrade = ecart24(q15, g15) && ecart24(q25, g25) && ecart24(q35, g35) && ecart24(q45, g45);
+	const bool tourne = Proche(svg, 155, 80, 0, 0, 255, 3) && Proche(svg, 155, 63, 0, 0, 255, 3);
+	std::snprintf(det, sizeof(det),
+				  "rect rouge aux quatre points=%d ; degrade SVG %d/%d/%d/%d contre PNG %d/%d/%d/%d (le peintre "
+				  "peint 24 bandes, le codec interpole : ecart <= 24)=%d ; carre tourne=%d",
+				  rouge ? 1 : 0, q15, q25, q35, q45, g15, g25, g35, g45, degrade ? 1 : 0, tourne ? 1 : 0);
+	Verifier("T1. FORMES ET DEGRADES : le SVG re-rasterise tombe sur les memes pixels que le PNG du peintre",
+			 rouge && degrade && tourne, det);
+
+	// ── (2) L'IMAGE : c'est ICI que « structure » devient « pixels » ──────
+	//     Le document pose une image 2x2 (magenta / vert) etiree dans 40x40 en
+	//     preserveAspectRatio="none". Les quatre texels doivent tomber aux memes
+	//     quatre points que dans le PNG -- et etre les MEMES couleurs.
+	uint8 pp[4][4], ps[4][4];
+	const int32 pts[4][2] = {{82, 62}, {117, 62}, {82, 97}, {117, 97}};
+	bool memeImage = true;
+	for (int32 i = 0; i < 4; ++i) {
+		Pixel(png, pts[i][0], pts[i][1], pp[i]);
+		Pixel(svg, pts[i][0], pts[i][1], ps[i]);
+		for (int32 k = 0; k < 3; ++k)
+			if (std::abs((int32)pp[i][k] - (int32)ps[i][k]) > 6)
+				memeImage = false;
+	}
+	std::snprintf(det, sizeof(det),
+				  "PNG (%u,%u,%u) (%u,%u,%u) (%u,%u,%u) (%u,%u,%u) | SVG (%u,%u,%u) (%u,%u,%u) (%u,%u,%u) "
+				  "(%u,%u,%u)",
+				  pp[0][0], pp[0][1], pp[0][2], pp[1][0], pp[1][1], pp[1][2], pp[2][0], pp[2][1], pp[2][2], pp[3][0],
+				  pp[3][1], pp[3][2], ps[0][0], ps[0][1], ps[0][2], ps[1][0], ps[1][1], ps[1][2], ps[2][0], ps[2][1],
+				  ps[2][2], ps[3][0], ps[3][1], ps[3][2]);
+	Verifier("T2. L'IMAGE, EN PIXELS (elle n'etait que « structure ») : les quatre texels du damier 2x2 tombent "
+			 "aux memes points et aux memes couleurs que dans le PNG du peintre",
+			 memeImage, det);
+
+	// ── (3) LE TEXTE : de l'encre au meme endroit ─────────────────────────
+	//     Le document pose « Ab » a 14 px sur un fond blanc, boite (10,60)-(70,90).
+	Encre ep = EncreDe(png, 8, 58, 72, 92);
+	Encre es = EncreDe(svg, 8, 58, 72, 92);
+	const bool encrePresente = es.sombres > 20;
+	// la ligne de base est la MEME : le bas de l'encre doit coincider a 2 px pres
+	const bool memeBase = encrePresente && std::abs(es.ymax - ep.ymax) <= 2;
+	// et le texte commence au meme x
+	const bool memeDepart = encrePresente && std::abs(es.xmin - ep.xmin) <= 3;
+	std::snprintf(det, sizeof(det),
+				  "PNG : %d px d'encre, x[%d..%d] y[%d..%d] | SVG : %d px d'encre, x[%d..%d] y[%d..%d] -- meme "
+				  "ligne de base (%d) et meme depart (%d)",
+				  ep.sombres, ep.xmin, ep.xmax, ep.ymin, ep.ymax, es.sombres, es.xmin, es.xmax, es.ymin, es.ymax,
+				  memeBase ? 1 : 0, memeDepart ? 1 : 0);
+	Verifier("T3. LE TEXTE, EN PIXELS (il n'etait que « structure ») : de l'encre dans la meme boite, posee sur la "
+			 "MEME ligne de base et au meme depart que le peintre",
+			 encrePresente && memeBase && memeDepart, det);
+
+	// ── (4) CE QUE LE TEMOIN MESURE ET QUI N'EST PAS EGAL : LA TAILLE ─────
+	//     `font-size` vaut le CADRATIN (em) en SVG ; NkFontAtlas, lui, echelonne
+	//     par (ascender - descender). Pour Inter les deux different, donc un
+	//     `font-size="14"` ecrit par l'export ne rend PAS la meme hauteur que le
+	//     peintre a 14 px. On MESURE l'ecart et on le NOMME plutot que de plier le
+	//     codec : c'est le SVG qui doit etre juste pour un navigateur.
+	const int32 hp = ep.ymax - ep.ymin + 1, hs = es.ymax - es.ymin + 1;
+	const float32 rapport = (hp > 0) ? (float32)hs / (float32)hp : 0.f;
+	const bool ecartConnu = encrePresente && hp > 0 && rapport > 1.05f && rapport < 1.45f;
+	std::snprintf(det, sizeof(det),
+				  "hauteur d'encre : peintre %d px, codec %d px -> rapport %.3f. LE CODEC SUIT LA NORME (echelle "
+				  "= font-size / unitsPerEm) ; le peintre echelonne par (ascender - descender). L'export ecrit la "
+				  "taille DU PEINTRE dans un attribut qui, en SVG, est un cadratin : un navigateur rendra ce "
+				  "texte comme nous, plus grand que le PNG.",
+				  hp, hs, (double)rapport);
+	Verifier("T4. L'ECART DE TAILLE EST MESURE ET NOMME, pas masque : le texte du SVG est plus haut que celui du "
+			 "PNG parce que l'export ecrit une taille de peintre dans un attribut qui vaut un cadratin",
+			 ecartConnu, det);
+
+	// ── (5) L'OMBRE PORTEE ET LE FOND DE PAGE ────────────────────────────
+	uint8 fp[4], fs[4];
+	Pixel(png, 5, 115, fp);
+	Pixel(svg, 5, 115, fs);
+	bool memeFond = true;
+	for (int32 k = 0; k < 4; ++k)
+		if (std::abs((int32)fp[k] - (int32)fs[k]) > 3)
+			memeFond = false;
+	// l'ombre du rect rouge (dy=4, flou 4) : juste SOUS lui, plus sombre que la page
+	const int32 ombrePng = Gris(png, 40, 53), ombreSvg = Gris(svg, 40, 53);
+	const bool ombre = ombreSvg < 250 && std::abs(ombrePng - ombreSvg) <= 40;
+	std::snprintf(det, sizeof(det),
+				  "fond de page PNG (%u,%u,%u,%u) = SVG (%u,%u,%u,%u), alpha compris -> %d ; sous le rect rouge "
+				  "(l'ombre) : PNG %d, SVG %d",
+				  fp[0], fp[1], fp[2], fp[3], fs[0], fs[1], fs[2], fs[3], memeFond ? 1 : 0, ombrePng, ombreSvg);
+	Verifier("T5. le FOND DE PAGE est identique alpha compris, et l'OMBRE PORTEE assombrit le meme endroit dans "
+			 "les deux lecteurs",
+			 memeFond && ombre, det);
+
+	// ── (6) et ce que le codec a saute sur un fichier REEL ────────────────
+	std::snprintf(det, sizeof(det), "%d chose(s) sautee(s) : ", doc->SkippedCount());
+	for (int32 i = 0; i < doc->SkippedCount(); ++i) {
+		std::strncat(det, doc->SkippedAt(i) ? doc->SkippedAt(i) : "?", sizeof(det) - std::strlen(det) - 1);
+		std::strncat(det, " ", sizeof(det) - std::strlen(det) - 1);
+	}
+	Verifier("T6. sur un fichier REEL produit par une autre application, le codec ne saute plus rien en silence "
+			 "(la liste ci-dessous est vide, ou nommee)",
+			 doc->SkippedCount() == 0, det);
+
+	doc->Free();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -827,6 +976,7 @@ int TestSVG_Run() {
 	TestOmbre();
 	TestOpacites();
 	TestNonGere();
+	TestTemoinCroise();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);
 	return (gPass == gTotal) ? 0 : 1;
 }
