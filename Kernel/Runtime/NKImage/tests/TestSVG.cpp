@@ -1124,13 +1124,103 @@ static void TestUse() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER <clipPath> — ce qui est dehors n'existe pas
+// ─────────────────────────────────────────────────────────────────────────────
+static void TestClip() {
+	std::printf("\n== PALIER <clipPath> ==\n");
+	char det[640];
+
+	// (a) un grand rectangle rouge decoupe par un petit carre : DEDANS il est
+	//     peint, DEHORS il n'existe pas. C'est le cas qui rougit si clip-path est
+	//     ignore -- toute la page serait rouge.
+	static const char *kClip =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+		"<defs><clipPath id=\"c\"><rect x=\"30\" y=\"30\" width=\"40\" height=\"40\"/></clipPath></defs>"
+		"<rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"#ff0000\" clip-path=\"url(#c)\"/></svg>";
+	NkImage a = Decoder(kClip);
+	const bool dedans = Proche(a, 50, 50, 255, 0, 0, 3) && Proche(a, 32, 32, 255, 0, 0, 3) &&
+						Proche(a, 68, 68, 255, 0, 0, 3);
+	const bool dehors = AlphaDe(a, 10, 10) < 20 && AlphaDe(a, 90, 50) < 20 && AlphaDe(a, 50, 90) < 20 &&
+						AlphaDe(a, 28, 50) < 20;
+	std::snprintf(det, sizeof(det),
+				  "dedans (50,50) (32,32) (68,68) rouge=%d ; dehors alpha (10,10)=%d (90,50)=%d (28,50)=%d",
+				  dedans ? 1 : 0, AlphaDe(a, 10, 10), AlphaDe(a, 90, 50), AlphaDe(a, 28, 50));
+	Verifier("C1. clip-path=\"url(#c)\" : la forme n'est peinte QUE dans la decoupe (une page entierement rouge "
+			 "serait le signe d'un clip ignore)",
+			 a.IsValid() && dedans && dehors, det);
+
+	// (b) le clip s'herite d'un <g> et vaut pour TOUT son contenu.
+	static const char *kGroupe =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+		"<defs><clipPath id=\"c\"><rect x=\"0\" y=\"0\" width=\"50\" height=\"100\"/></clipPath></defs>"
+		"<g clip-path=\"url(#c)\">"
+		"<rect x=\"0\" y=\"0\" width=\"100\" height=\"40\" fill=\"#ff0000\"/>"
+		"<rect x=\"0\" y=\"60\" width=\"100\" height=\"40\" fill=\"#0000ff\"/></g></svg>";
+	NkImage b = Decoder(kGroupe);
+	const bool herite = b.IsValid() && Proche(b, 25, 20, 255, 0, 0, 3) && Proche(b, 25, 80, 0, 0, 255, 3) &&
+						AlphaDe(b, 75, 20) < 20 && AlphaDe(b, 75, 80) < 20;
+	std::snprintf(det, sizeof(det), "les DEUX rects du groupe sont coupes a x=50 : rouge (25,20)=%d, bleu (25,80)=%d "
+								   "; a droite alpha=%d / %d",
+				  Proche(b, 25, 20, 255, 0, 0, 3) ? 1 : 0, Proche(b, 25, 80, 0, 0, 255, 3) ? 1 : 0,
+				  AlphaDe(b, 75, 20), AlphaDe(b, 75, 80));
+	Verifier("C2. un clip-path pose sur un <g> vaut pour TOUT son contenu", herite, det);
+
+	// (c) DEUX clips imbriques s'INTERSECTENT : ne reste que ce que les deux gardent.
+	static const char *kDeux =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+		"<defs>"
+		"<clipPath id=\"gauche\"><rect x=\"0\" y=\"0\" width=\"60\" height=\"100\"/></clipPath>"
+		"<clipPath id=\"haut\"><rect x=\"0\" y=\"0\" width=\"100\" height=\"60\"/></clipPath>"
+		"</defs>"
+		"<g clip-path=\"url(#gauche)\"><g clip-path=\"url(#haut)\">"
+		"<rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"#00aa00\"/></g></g></svg>";
+	NkImage c = Decoder(kDeux);
+	// ne survit que le quart haut-gauche (0..60, 0..60)
+	const bool inter = c.IsValid() && Proche(c, 30, 30, 0, 170, 0, 4) && AlphaDe(c, 80, 30) < 20 &&
+					   AlphaDe(c, 30, 80) < 20 && AlphaDe(c, 80, 80) < 20;
+	std::snprintf(det, sizeof(det), "quart haut-gauche peint=%d ; les trois autres quarts : alpha %d / %d / %d",
+				  Proche(c, 30, 30, 0, 170, 0, 4) ? 1 : 0, AlphaDe(c, 80, 30), AlphaDe(c, 30, 80), AlphaDe(c, 80, 80));
+	Verifier("C3. deux clip-path IMBRIQUES s'intersectent (il ne reste que ce que les DEUX gardent)", inter, det);
+
+	// (d) la decoupe suit une forme quelconque, pas seulement un rectangle : ici un
+	//     cercle. Le coin de la boite sort du disque.
+	static const char *kCercle =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+		"<defs><clipPath id=\"rond\"><circle cx=\"50\" cy=\"50\" r=\"30\"/></clipPath></defs>"
+		"<rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"#000000\" clip-path=\"url(#rond)\"/></svg>";
+	NkImage d = Decoder(kCercle);
+	// (50,50) dedans ; (50,25) sur le bord haut du disque -> dedans ; (28,28) hors
+	// (distance 31,1 > 30) ; (10,10) tres loin
+	const bool rond = d.IsValid() && AlphaDe(d, 50, 50) > 200 && AlphaDe(d, 50, 25) > 150 &&
+					  AlphaDe(d, 28, 28) < 60 && AlphaDe(d, 10, 10) < 20;
+	std::snprintf(det, sizeof(det), "alpha : centre=%d, bord haut=%d, coin du carre (28,28)=%d, loin (10,10)=%d",
+				  AlphaDe(d, 50, 50), AlphaDe(d, 50, 25), AlphaDe(d, 28, 28), AlphaDe(d, 10, 10));
+	Verifier("C4. la decoupe epouse une forme QUELCONQUE (un <circle> ici), pas seulement une boite", rond, det);
+
+	// (e) le clip coupe AUSSI le trait, pas seulement le remplissage.
+	static const char *kTrait =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+		"<defs><clipPath id=\"c\"><rect x=\"0\" y=\"0\" width=\"50\" height=\"100\"/></clipPath></defs>"
+		"<rect x=\"10\" y=\"10\" width=\"80\" height=\"80\" fill=\"none\" stroke=\"#ff0000\" stroke-width=\"8\" "
+		"clip-path=\"url(#c)\"/></svg>";
+	NkImage e = Decoder(kTrait);
+	const bool traitCoupe = e.IsValid() && Proche(e, 12, 50, 255, 0, 0, 6) && AlphaDe(e, 88, 50) < 20;
+	std::snprintf(det, sizeof(det), "trait gauche present=%d ; trait droit (hors decoupe) alpha=%d",
+				  Proche(e, 12, 50, 255, 0, 0, 6) ? 1 : 0, AlphaDe(e, 88, 50));
+	Verifier("C5. le decoupage s'applique AUSSI au trait (stroke), pas seulement au remplissage", traitCoupe, det);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
 	std::printf("\n== CE QUI EST SAUTE SE DIT ==\n");
 	static const char *kInconnu =
 		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\" viewBox=\"0 0 40 40\">"
-		"<defs><symbol id=\"s\"><rect width=\"5\" height=\"5\"/></symbol></defs>"
+		"<defs><symbol id=\"s\"><rect width=\"5\" height=\"5\"/></symbol>"
+		"<mask id=\"m\"><rect width=\"5\" height=\"5\" fill=\"#fff\"/></mask>"
+		"<mask id=\"m2\"><rect width=\"5\" height=\"5\" fill=\"#fff\"/></mask>"
+		"<pattern id=\"p\"><rect width=\"2\" height=\"2\"/></pattern></defs>"
 		"<use href=\"#s\"/><use href=\"#s\"/>"
 		"<clipPath id=\"c\"><rect width=\"5\" height=\"5\"/></clipPath>"
 		"<rect x=\"0\" y=\"0\" width=\"40\" height=\"40\" fill=\"#808080\" stroke=\"#000\" "
@@ -1142,20 +1232,27 @@ static void TestNonGere() {
 	// qui reste a faire y demeure. Verifier les deux sens, c'est empecher deux
 	// mensonges opposes -- annoncer comme saute ce qu'on peint, et taire ce qu'on
 	// saute vraiment.
-	bool clipDit = false, dashDit = false, useEncoreDit = false;
-	int32 nbClip = 0, nb = 0;
+	bool maskDit = false, patternDit = false, dashDit = false;
+	bool useEncoreDit = false, clipEncoreDit = false;
+	int32 nbMask = 0, nb = 0;
 	if (img) {
 		nb = img->SkippedCount();
 		for (int32 i = 0; i < nb; ++i) {
 			const char *n = img->SkippedAt(i);
 			if (!n)
 				continue;
+			// GERES depuis leur palier : ils ne doivent PLUS etre annonces comme sautes
 			if (std::strcmp(n, "use") == 0)
-				useEncoreDit = true; // <use> est GERE depuis son palier : plus ici
-			if (std::strcmp(n, "clipPath") == 0) {
-				clipDit = true;
-				++nbClip;
+				useEncoreDit = true;
+			if (std::strcmp(n, "clipPath") == 0)
+				clipEncoreDit = true;
+			// pas encore faits : ils doivent l'etre, une fois chacun
+			if (std::strcmp(n, "mask") == 0) {
+				maskDit = true;
+				++nbMask;
 			}
+			if (std::strcmp(n, "pattern") == 0)
+				patternDit = true;
 			if (std::strcmp(n, "stroke-dasharray") == 0)
 				dashDit = true;
 		}
@@ -1164,12 +1261,15 @@ static void TestNonGere() {
 			std::strncat(det, img->SkippedAt(i) ? img->SkippedAt(i) : "?", sizeof(det) - std::strlen(det) - 1);
 			std::strncat(det, " ", sizeof(det) - std::strlen(det) - 1);
 		}
-		std::strncat(det, "| <use> n'y est plus (il est peint) ", sizeof(det) - std::strlen(det) - 1);
+		std::strncat(det, "| <use> et <clipPath> n'y sont plus (ils sont peints) ",
+					 sizeof(det) - std::strlen(det) - 1);
 		img->Free();
 	}
-	Verifier("Le REGISTRE DES SAUTS suit les paliers : ce qui reste a faire est nomme (clipPath, "
-			 "stroke-dasharray), une seule fois par nom, et <use> N'Y EST PLUS depuis qu'il est peint",
-			 img != nullptr && clipDit && dashDit && !useEncoreDit && nbClip == 1, det);
+	Verifier("Le REGISTRE DES SAUTS suit les paliers, dans LES DEUX SENS : ce qui reste a faire est nomme (mask, "
+			 "pattern, stroke-dasharray) une seule fois par nom -- DEUX <mask> ne donnent qu'une mention --, et "
+			 "<use> comme <clipPath> N'Y SONT PLUS depuis qu'ils sont peints",
+			 img != nullptr && maskDit && patternDit && dashDit && !useEncoreDit && !clipEncoreDit && nbMask == 1,
+			 det);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1189,6 +1289,7 @@ int TestSVG_Run() {
 	TestOmbre();
 	TestOpacites();
 	TestUse();
+	TestClip();
 	TestNonGere();
 	TestTemoinCroise();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);

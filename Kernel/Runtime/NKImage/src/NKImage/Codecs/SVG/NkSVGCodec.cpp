@@ -644,6 +644,13 @@ namespace nkentseu {
 				char filterRef[64] = {0};
 				int32 filterInst = 0; ///< numero D'INSTANCE du groupe filtre (0 = aucun)
 
+				// ── les decoupages herites, du plus exterieur au plus interieur ──
+				//    Plusieurs, parce qu'ils s'INTERSECTENT : un <g clip-path> dans un
+				//    autre <g clip-path> ne garde que ce que les deux gardent.
+				static constexpr int32 kMaxClips = 4;
+				char clipRefs[kMaxClips][64] = {};
+				int32 nClips = 0;
+
 				bool EstImage() const noexcept {
 					return img.IsValid();
 				}
@@ -654,6 +661,37 @@ namespace nkentseu {
 				Shape &operator=(Shape &&) noexcept = default;
 				Shape(const Shape &) = delete;
 				Shape &operator=(const Shape &) = delete;
+		};
+
+		// ─────────────────────────────────────────────────────────────────────────────
+		// <clipPath> — UN DECOUPAGE EST UNE MULTIPLICATION D'ALPHA, PAS UN CALQUE
+		// -----------------------------------------------------------------------------
+		// Contrairement a une ombre (qui a besoin de voir le GROUPE entier avant de
+		// pouvoir etre calculee), un decoupage se decide PIXEL PAR PIXEL et il est
+		// idempotent. Il n'a donc besoin d'aucun calque intermediaire : on multiplie
+		// la couverture de chaque forme par un masque, au moment ou on la peint.
+		// Consequence agreable : les clips IMBRIQUES se composent tout seuls (leur
+		// intersection est le produit des masques), sans pile de calques a tenir.
+		// ─────────────────────────────────────────────────────────────────────────────
+		struct ClipPath {
+				char id[64] = {0};
+				bool userSpace = true; ///< clipPathUnits ; objectBoundingBox = false
+				NkVector<Shape> formes;
+
+				ClipPath() = default;
+				ClipPath(ClipPath &&) noexcept = default;
+				ClipPath &operator=(ClipPath &&) noexcept = default;
+				ClipPath(const ClipPath &) = delete;
+				ClipPath &operator=(const ClipPath &) = delete;
+
+				/// Remise a zero SANS affectation par deplacement : `NkVector<Shape>`
+				/// porte des elements move-only et n'expose pas `operator=(&&)`.
+				void Vider() noexcept {
+					id[0] = 0;
+					userSpace = true;
+					while (!formes.IsEmpty())
+						formes.PopBack();
+				}
 		};
 
 		// ─────────────────────────────────────────────────────────────────────────────
@@ -698,6 +736,8 @@ namespace nkentseu {
 				// distinctes, pas une ombre sur leur union.
 				char filterRef[64] = {0};
 				int32 filterInst = 0;
+				char clipRefs[4][64] = {};
+				int32 nClips = 0;
 		};
 
 		/// Paire (nom, valeur) d'attribut XML. value pointe dans le pool partage.
@@ -2113,6 +2153,22 @@ namespace nkentseu {
 			}
 		}
 
+		/// Le parseur sait-il quoi faire de ce tag ? Une seule liste, pour que
+		/// « connu » veuille dire la meme chose partout -- et pour qu'ajouter un
+		/// palier consiste a l'ajouter ICI aussi, sinon il continuerait a se declarer
+		/// saute alors qu'il est peint.
+		bool TagConnu(const char *t) noexcept {
+			static const char *const kConnus[] = {"svg",	 "g",		 "defs",  "symbol",	  "use",	 "rect",
+												  "circle",	 "ellipse",	 "line",  "polyline", "polygon", "path",
+												  "image",	 "text",	 "tspan", "title",	  "desc",	 "metadata",
+												  "style",	 "clipPath", "stop",  "filter",	  "linearGradient",
+												  "radialGradient"};
+			for (usize i = 0; i < sizeof(kConnus) / sizeof(kConnus[0]); ++i)
+				if (std::strcmp(t, kConnus[i]) == 0)
+					return true;
+			return std::strncmp(t, "fe", 2) == 0; // les primitives de filtre se disent ailleurs
+		}
+
 		/// Retrouve un element par son id (« #id » ou « id »).
 		const IdRange *TrouverId(const UseCtx &ctx, const char *href) noexcept {
 			if (!href)
@@ -2249,7 +2305,8 @@ namespace nkentseu {
 		/// @param etatInit  nullptr a la racine ; sinon l'etat herite du <use> qui
 		///                  instancie ce fragment (sa matrice, son style).
 		void ParseSVGDocument(const char *xml, usize xmlLen, NkVector<Shape> &shapes, NkVector<Gradient> &gradients,
-							  NkVector<Filtre> &filtres, float32 &vbX, float32 &vbY, float32 &vbW, float32 &vbH,
+							  NkVector<Filtre> &filtres, NkVector<ClipPath> &clips, float32 &vbX, float32 &vbY,
+							  float32 &vbW, float32 &vbH,
 							  float32 &svgW, float32 &svgH, SkipList &skips, const char *baseDir,
 							  NkIGlyphSource *glyphes, UseCtx &useCtx,
 							  const ParseState *etatInit = nullptr) noexcept {
@@ -2307,6 +2364,10 @@ namespace nkentseu {
 			TextState texte;
 			Filtre curFiltre;
 			bool dansFiltre = false;
+			ClipPath curClip;
+			bool dansClip = false;
+			int32 defsAvantClip = 0;
+			uint32 shapesAvantClip = 0;
 			int32 prochaineInstance = 0;
 			int32 defsDepth = 0; // > 0 = on est dans <defs> : shapes non rendues
 			bool buildingGrad = false;
@@ -2336,6 +2397,21 @@ namespace nkentseu {
 							filtres.PushBack(curFiltre);
 							curFiltre = Filtre();
 							dansFiltre = false;
+						}
+						continue;
+					}
+					if (std::strcmp(tagBuf, "clipPath") == 0) {
+						if (dansClip) {
+							// LES FORMES DU CLIP SORTENT DE LA LISTE A PEINDRE : elles
+							// decrivent une decoupe, elles ne se dessinent pas.
+							for (uint32 k = shapesAvantClip; k < shapes.Size(); ++k)
+								curClip.formes.PushBack(std::move(shapes[k]));
+							while (shapes.Size() > shapesAvantClip)
+								shapes.PopBack();
+							clips.PushBack(std::move(curClip));
+							curClip.Vider();
+							dansClip = false;
+							defsDepth = defsAvantClip;
 						}
 						continue;
 					}
@@ -2395,6 +2471,14 @@ namespace nkentseu {
 						const char *tr = FindAttr(attrs, numAttrs, "transform");
 						if (tr)
 							next.xform = cur.xform * NkSVGTransform::Parse(tr);
+						const char *clp = FindAttr(attrs, numAttrs, "clip-path");
+						char refClip[64];
+						if (clp && ParseUrlRef(clp, refClip, sizeof(refClip)) &&
+							next.nClips < (int32)(sizeof(next.clipRefs) / sizeof(next.clipRefs[0]))) {
+							std::strncpy(next.clipRefs[next.nClips], refClip, 63);
+							next.clipRefs[next.nClips][63] = 0;
+							++next.nClips;
+						}
 						const char *flt = FindAttr(attrs, numAttrs, "filter");
 						char refFiltre[64];
 						if (flt && ParseUrlRef(flt, refFiltre, sizeof(refFiltre))) {
@@ -2405,6 +2489,31 @@ namespace nkentseu {
 						stack[++depth] = next;
 					}
 					// <g/> self-closed = groupe vide, on ignore.
+					continue;
+				}
+
+				// ── <clipPath> : ses formes sont CAPTEES, pas peintes ────────────
+				if (std::strcmp(tagBuf, "clipPath") == 0) {
+					curClip.Vider();
+					const char *cid = FindAttr(attrs, numAttrs, "id");
+					if (cid) {
+						std::strncpy(curClip.id, cid, 63);
+						curClip.id[63] = 0;
+					}
+					const char *cu = FindAttr(attrs, numAttrs, "clipPathUnits");
+					curClip.userSpace = !(cu && std::strcmp(cu, "objectBoundingBox") == 0);
+					dansClip = true;
+					shapesAvantClip = shapes.Size();
+					// un <clipPath> vit presque toujours dans <defs>, qui bloque la
+					// creation des formes : ici on la REACTIVE, puis on les recupere.
+					defsAvantClip = defsDepth;
+					defsDepth = 0;
+					if (kind == 2) {
+						clips.PushBack(std::move(curClip));
+						curClip.Vider();
+						dansClip = false;
+						defsDepth = defsAvantClip;
+					}
 					continue;
 				}
 
@@ -2575,8 +2684,17 @@ namespace nkentseu {
 				}
 
 				// Contenu de <defs> : definitions seulement, pas de rendu de shape.
-				if (defsDepth > 0)
+				// ⚠️ MAIS ON DIT QUAND MEME CE QU'ON NE SAIT PAS. Ce `continue` etait
+				// place AVANT la branche « element inconnu » : tout ce qui vit dans un
+				// <defs> -- et <mask>, <pattern>, <marker> y vivent presque toujours --
+				// etait donc saute EN SILENCE. Un decodeur muet sur la moitie du
+				// document ou se rangent les definitions est un decodeur qui ment par
+				// omission ; le banc l'a attrape en cherchant « mask » dans le registre.
+				if (defsDepth > 0) {
+					if (!TagConnu(tagBuf) && skips.Noter(tagBuf))
+						logger.Warn("[SVG] element non gere dans <defs>, saute : <{0}>", tagBuf);
 					continue;
+				}
 
 				// ── <use> : INSTANCIER UN ELEMENT DEJA DECRIT AILLEURS ───────────
 				if (std::strcmp(tagBuf, "use") == 0) {
@@ -2668,8 +2786,8 @@ namespace nkentseu {
 
 					++useCtx.profondeur;
 					float32 iw = 0.f, ih = 0.f, jw = 0.f, jh = 0.f, kw = 0.f, kh = 0.f;
-					ParseSVGDocument(fragDeb, (usize)(fragFin - fragDeb), shapes, gradients, filtres, iw, ih, jw, jh,
-									 kw, kh, skips, baseDir, glyphes, useCtx, &inst);
+					ParseSVGDocument(fragDeb, (usize)(fragFin - fragDeb), shapes, gradients, filtres, clips, iw, ih,
+									 jw, jh, kw, kh, skips, baseDir, glyphes, useCtx, &inst);
 					--useCtx.profondeur;
 					continue;
 				}
@@ -2771,6 +2889,16 @@ namespace nkentseu {
 				const char *tr = FindAttr(attrs, numAttrs, "transform");
 				if (tr)
 					local.xform = cur.xform * NkSVGTransform::Parse(tr);
+				{ // un clip-path pose directement sur la forme
+					const char *clp = FindAttr(attrs, numAttrs, "clip-path");
+					char refClip[64];
+					if (clp && ParseUrlRef(clp, refClip, sizeof(refClip)) &&
+						local.nClips < (int32)(sizeof(local.clipRefs) / sizeof(local.clipRefs[0]))) {
+						std::strncpy(local.clipRefs[local.nClips], refClip, 63);
+						local.clipRefs[local.nClips][63] = 0;
+						++local.nClips;
+					}
+				}
 
 				const uint32 shapeBefore = shapes.Size();
 				if (std::strcmp(tagBuf, "rect") == 0)
@@ -2801,6 +2929,11 @@ namespace nkentseu {
 					std::strncpy(shapes[si].filterRef, local.filterRef, 63);
 					shapes[si].filterRef[63] = 0;
 					shapes[si].filterInst = local.filterInst;
+					shapes[si].nClips = local.nClips;
+					for (int32 c = 0; c < local.nClips; ++c) {
+						std::strncpy(shapes[si].clipRefs[c], local.clipRefs[c], 63);
+						shapes[si].clipRefs[c][63] = 0;
+					}
 					std::strncpy(shapes[si].fillRef, local.fillRef, 63);
 					shapes[si].fillRef[63] = 0;
 					std::strncpy(shapes[si].strokeRef, local.strokeRef, 63);
@@ -2810,6 +2943,13 @@ namespace nkentseu {
 
 			if (dansFiltre)
 				filtres.PushBack(curFiltre); // un <filter> jamais ferme
+			if (dansClip) {
+				for (uint32 k = shapesAvantClip; k < shapes.Size(); ++k)
+					curClip.formes.PushBack(std::move(shapes[k]));
+				while (shapes.Size() > shapesAvantClip)
+					shapes.PopBack();
+				clips.PushBack(std::move(curClip));
+			}
 			FinirTexte(shapes, texte, glyphes, skips); // un <text> jamais ferme se pose quand meme
 			if (proprietaireBufs) {
 				NkFree(nameBuf);
@@ -3084,7 +3224,12 @@ namespace nkentseu {
 			}
 		}
 
-		void RasterizeShape(NkImage &img, const Shape &sh, const GradPaint *paint = nullptr) noexcept {
+		/// @param clip  masque alpha (une valeur par pixel de l'image) ou nullptr.
+		///             La couverture de chaque pixel est MULTIPLIEE par lui : c'est
+		///             tout ce qu'est un decoupage, et c'est pour ca qu'il n'a pas
+		///             besoin de calque.
+		void RasterizeShape(NkImage &img, const Shape &sh, const GradPaint *paint = nullptr,
+							const uint8 *clip = nullptr) noexcept {
 			if (sh.contourStart.IsEmpty())
 				return;
 			const NkSVGColor &fill = sh.style.fill;
@@ -3248,10 +3393,19 @@ namespace nkentseu {
 
 				// Blend la row dans l'image (premultiplied alpha src-over).
 				uint8 *dst = pixels + (usize)py * (usize)stride;
+				const uint8 *clipRow = clip ? (clip + (usize)py * (usize)W) : nullptr;
 				for (int32 x = 0; x < W; ++x) {
-					const uint8 c = covRow[x];
+					uint8 c = covRow[x];
 					if (c == 0)
 						continue;
+					if (clipRow) {
+						const int32 m = (int32)clipRow[x];
+						if (m == 0)
+							continue;
+						c = (uint8)(((int32)c * m + 127) / 255);
+						if (c == 0)
+							continue;
+					}
 					// Couleur source : solide ou echantillonnee dans le gradient.
 					int32 srcR, srcG, srcB;
 					float32 baseA;
@@ -3642,10 +3796,21 @@ namespace nkentseu {
 				NkVector<Shape> shapes;
 				NkVector<Gradient> gradients;
 				NkVector<Filtre> filtres;
+				NkVector<ClipPath> clips;
 				float32 vbX = 0, vbY = 0, vbW = 0, vbH = 0;
 				float32 svgW = 0, svgH = 0;
 				SkipList skips; ///< ce que le decodage a saute (dit une fois par nom)
 		};
+
+		/// Trouve un clipPath par id.
+		const ClipPath *TrouverClip(const SVGImageImpl *impl, const char *id) noexcept {
+			if (!impl || !id || !id[0])
+				return nullptr;
+			for (uint32 i = 0; i < impl->clips.Size(); ++i)
+				if (std::strcmp(impl->clips[i].id, id) == 0)
+					return &impl->clips[i];
+			return nullptr;
+		}
 
 		/// Trouve un filtre par id. nullptr si absent (ou sans feDropShadow).
 		const Filtre *TrouverFiltre(const SVGImageImpl *impl, const char *id) noexcept {
@@ -3993,8 +4158,8 @@ namespace nkentseu {
 			return nullptr;
 		new (impl) SVGImageImpl();
 		UseCtx useCtx; // l'index des id vit le temps du decodage, pas au-dela
-		ParseSVGDocument(xml, size, impl->shapes, impl->gradients, impl->filtres, impl->vbX, impl->vbY, impl->vbW,
-						 impl->vbH, impl->svgW, impl->svgH, impl->skips, baseDir, glyphes, useCtx);
+		ParseSVGDocument(xml, size, impl->shapes, impl->gradients, impl->filtres, impl->clips, impl->vbX, impl->vbY,
+						 impl->vbW, impl->vbH, impl->svgW, impl->svgH, impl->skips, baseDir, glyphes, useCtx);
 
 		// Si parsing a echoue (aucun shape ET aucune viewBox), on libere.
 		if (impl->shapes.IsEmpty() && impl->vbW <= 0.f && impl->svgW <= 0.f) {
@@ -4090,6 +4255,107 @@ namespace nkentseu {
 		// Copie locale des shapes + applique le mapping a leurs points, puis
 		// rasterise. On NE modifie PAS l'impl source (pour que Rasterize() puisse
 		// etre appele plusieurs fois avec des tailles differentes).
+		// ── LES MASQUES DE DECOUPE, calcules a la demande et GARDES ────────────
+		//    Un meme <clipPath> sert souvent a des dizaines de formes : le rasteriser
+		//    une fois par forme serait le travail refait pour rien.
+		struct MasqueCache {
+				char id[64] = {0};
+				NkVector<uint8> px;
+		};
+		NkVector<MasqueCache> masques;
+
+		auto masqueDe = [&](const char *ref, const Shape &pour) -> const uint8 * {
+			if (!ref || !ref[0])
+				return nullptr;
+			const ClipPath *cp = TrouverClip(impl, ref);
+			if (!cp || cp->formes.IsEmpty())
+				return nullptr;
+			// objectBoundingBox : le clip est decrit dans le carre unite de la boite
+			// de CETTE forme -- il ne peut donc pas etre partage entre formes.
+			const bool partageable = cp->userSpace;
+			if (partageable) {
+				for (uint32 i = 0; i < masques.Size(); ++i)
+					if (std::strcmp(masques[i].id, ref) == 0)
+						return masques[i].px.IsEmpty() ? nullptr : &masques[i].px[0];
+			}
+			// bbox de la forme a decouper (en destination), pour objectBoundingBox
+			NkSVGTransform versDest = mView;
+			if (!cp->userSpace) {
+				float32 minx = 1e30f, miny = 1e30f, maxx = -1e30f, maxy = -1e30f;
+				for (uint32 k = 0; k < pour.xs.Size(); ++k) {
+					float32 x = pour.xs[k], y = pour.ys[k];
+					mView.Apply(x, y);
+					if (x < minx) minx = x;
+					if (x > maxx) maxx = x;
+					if (y < miny) miny = y;
+					if (y > maxy) maxy = y;
+				}
+				float32 w = maxx - minx, h = maxy - miny;
+				if (w <= 0.f) w = 1.f;
+				if (h <= 0.f) h = 1.f;
+				versDest = NkSVGTransform::Translate(minx, miny) * NkSVGTransform::Scale(w, h);
+			}
+			// on rasterise les formes du clip en BLANC OPAQUE : leur alpha EST le masque
+			NkImage tampon = NkImage::Alloc(outW, outH, NkImagePixelFormat::NK_RGBA32);
+			if (!tampon.IsValid())
+				return nullptr;
+			for (uint32 f = 0; f < cp->formes.Size(); ++f) {
+				const Shape &src = cp->formes[f];
+				Shape loc;
+				loc.style = src.style;
+				loc.style.fill = NkSVGColor::White();
+				loc.style.stroke = NkSVGColor::None();
+				loc.style.opacity = 1.f;
+				loc.style.fillOpacity = 1.f;
+				loc.style.visible = true;
+				// `clip-rule` est le fill-rule des formes du clip : il est deja dans
+				// leur style, lu comme n'importe quel attribut.
+				for (uint32 k = 0; k < src.xs.Size(); ++k) {
+					float32 x = src.xs[k], y = src.ys[k];
+					versDest.Apply(x, y);
+					loc.xs.PushBack(x);
+					loc.ys.PushBack(y);
+				}
+				for (uint32 k = 0; k < src.contourStart.Size(); ++k) {
+					loc.contourStart.PushBack(src.contourStart[k]);
+					loc.contourLen.PushBack(src.contourLen[k]);
+				}
+				RasterizeShape(tampon, loc, nullptr, nullptr);
+			}
+			MasqueCache mc;
+			std::strncpy(mc.id, ref, sizeof(mc.id) - 1);
+			mc.px.Resize((usize)outW * (usize)outH);
+			const uint8 *tp = tampon.Pixels();
+			for (int32 i = 0; i < outW * outH; ++i)
+				mc.px[(uint32)i] = tp[(usize)i * 4u + 3u];
+			masques.PushBack(std::move(mc));
+			return &masques[masques.Size() - 1].px[0];
+		};
+
+		/// L'INTERSECTION des masques herites. Un seul clip : on rend le sien, sans
+		/// copie. Plusieurs : on multiplie -- ne garder que ce que TOUS gardent.
+		NkVector<uint8> clipCompose;
+		auto clipDe = [&](const Shape &src) -> const uint8 * {
+			if (src.nClips <= 0)
+				return nullptr;
+			if (src.nClips == 1)
+				return masqueDe(src.clipRefs[0], src);
+			clipCompose.Clear();
+			clipCompose.Resize((usize)outW * (usize)outH);
+			for (int32 i = 0; i < outW * outH; ++i)
+				clipCompose[(uint32)i] = 255u;
+			bool un = false;
+			for (int32 c = 0; c < src.nClips; ++c) {
+				const uint8 *m = masqueDe(src.clipRefs[c], src);
+				if (!m)
+					continue;
+				un = true;
+				for (int32 i = 0; i < outW * outH; ++i)
+					clipCompose[(uint32)i] = (uint8)(((int32)clipCompose[(uint32)i] * (int32)m[i] + 127) / 255);
+			}
+			return un ? &clipCompose[0] : nullptr;
+		};
+
 		auto peindre = [&](NkImage &cible, const Shape &src) {
 			// ── UNE IMAGE SE POSE (pas de remplissage, pas de trait) ───────────
 			if (src.EstImage()) {
@@ -4132,8 +4398,9 @@ namespace nkentseu {
 			if (src.fillRef[0])
 				hasFillGP = BuildGradPaint(impl, src.fillRef, local, src.ctm, mView, fillGP);
 			const bool fillRefUnresolved = (src.fillRef[0] && !hasFillGP);
+			const uint8 *masque = clipDe(src);
 			if (!fillRefUnresolved)
-				RasterizeShape(cible, local, hasFillGP ? &fillGP : nullptr);
+				RasterizeShape(cible, local, hasFillGP ? &fillGP : nullptr, masque);
 
 			// ── Rasterise le stroke si present ─────────────────────────────────
 			// On construit une nouvelle Shape "ruban" autour des contours et on
@@ -4160,7 +4427,7 @@ namespace nkentseu {
 						hasStrokeGP = BuildGradPaint(impl, src.strokeRef, strokeShape, src.ctm, mView, strokeGP);
 					const bool strokeRefUnresolved = (src.strokeRef[0] && !hasStrokeGP);
 					if (strokeShape.contourStart.Size() > 0 && !strokeRefUnresolved) {
-						RasterizeShape(cible, strokeShape, hasStrokeGP ? &strokeGP : nullptr);
+						RasterizeShape(cible, strokeShape, hasStrokeGP ? &strokeGP : nullptr, masque);
 					}
 				}
 			}
