@@ -306,6 +306,178 @@ static void TestImage() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER 3 — <text> : les contours de NKFont, la ligne de base, l'ancrage
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// L'ENCRE d'une zone : combien de pixels sombres, et ou. C'est la mesure juste
+/// pour du texte -- exiger un pixel PRECIS sur un glyphe reviendrait a figer le
+/// dessin d'une police, qui n'est pas notre contrat.
+struct Encre {
+		int32 sombres = 0;
+		int32 xmin = 1 << 20, xmax = -1, ymin = 1 << 20, ymax = -1;
+};
+
+static Encre EncreDe(const NkImage &im, int32 x0, int32 y0, int32 x1, int32 y1) {
+	Encre e;
+	for (int32 y = y0; y < y1; ++y)
+		for (int32 x = x0; x < x1; ++x) {
+			if (Gris(im, x, y) < 128 && AlphaDe(im, x, y) > 128) {
+				++e.sombres;
+				if (x < e.xmin) e.xmin = x;
+				if (x > e.xmax) e.xmax = x;
+				if (y < e.ymin) e.ymin = y;
+				if (y > e.ymax) e.ymax = y;
+			}
+		}
+	return e;
+}
+
+/// Une page blanche de 200x80 avec le <text> demande dedans.
+static void PageTexte(char *out, usize n, const char *attrsEtContenu) {
+	std::snprintf(out, n,
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"80\" viewBox=\"0 0 200 80\">"
+				  "<rect x=\"0\" y=\"0\" width=\"200\" height=\"80\" fill=\"#ffffff\"/>"
+				  "%s</svg>",
+				  attrsEtContenu);
+}
+
+static void TestTexte() {
+	std::printf("\n== PALIER 3 : <text> ==\n");
+	char det[640];
+	static char svg[4096];
+
+	// (a) LA LIGNE DE BASE. « y » est la ligne de base, pas le haut de la boite :
+	//     un « H » (sans jambage) doit poser TOUTE son encre AU-DESSUS de y.
+	PageTexte(svg, sizeof(svg),
+			  "<text x=\"20\" y=\"60\" font-family=\"Inter\" font-size=\"40\" fill=\"#000000\">H</text>");
+	NkImage a = Decoder(svg);
+	Encre ea = a.IsValid() ? EncreDe(a, 0, 0, 200, 80) : Encre();
+	const bool auDessus = ea.sombres > 60 && ea.ymax <= 61 && ea.ymin > 20 && ea.xmin >= 19;
+	std::snprintf(det, sizeof(det),
+				  "encre=%d px ; boite x[%d..%d] y[%d..%d] ; la ligne de base est y=60 -> rien sous 61=%d",
+				  ea.sombres, ea.xmin, ea.xmax, ea.ymin, ea.ymax, ea.ymax <= 61 ? 1 : 0);
+	Verifier("3a. <text> est PEINT (des glyphes, pas une boite) et « y » est bien la LIGNE DE BASE : un H pose "
+			 "toute son encre au-dessus",
+			 auDessus, det);
+
+	// (b) font-size = le CADRATIN : doubler le corps double la hauteur et
+	//     quadruple (a peu pres) la quantite d'encre.
+	PageTexte(svg, sizeof(svg),
+			  "<text x=\"20\" y=\"60\" font-family=\"Inter\" font-size=\"20\" fill=\"#000000\">H</text>");
+	NkImage b = Decoder(svg);
+	Encre eb = b.IsValid() ? EncreDe(b, 0, 0, 200, 80) : Encre();
+	const int32 h40 = ea.ymax - ea.ymin + 1, h20 = eb.ymax - eb.ymin + 1;
+	const bool proportionnel = eb.sombres > 10 && h20 > 0 && h40 >= 2 * h20 - 3 && h40 <= 2 * h20 + 3 &&
+							   ea.sombres > (eb.sombres * 5) / 2 && ea.sombres < eb.sombres * 6;
+	std::snprintf(det, sizeof(det), "corps 20 : %d px de haut, %d d'encre ; corps 40 : %d px de haut, %d d'encre",
+				  h20, eb.sombres, h40, ea.sombres);
+	Verifier("3b. font-size est une ECHELLE reelle : le corps double donne deux fois la hauteur et ~quatre fois "
+			 "l'encre (les contours suivent, rien n'est etire depuis un atlas)",
+			 proportionnel, det);
+
+	// (c) text-anchor : start / middle / end deplacent le texte AUTOUR de x.
+	PageTexte(svg, sizeof(svg), "<text x=\"100\" y=\"60\" font-family=\"Inter\" font-size=\"30\" fill=\"#000000\" "
+								"text-anchor=\"start\">Ab</text>");
+	Encre s0 = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	PageTexte(svg, sizeof(svg), "<text x=\"100\" y=\"60\" font-family=\"Inter\" font-size=\"30\" fill=\"#000000\" "
+								"text-anchor=\"middle\">Ab</text>");
+	Encre s1 = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	PageTexte(svg, sizeof(svg), "<text x=\"100\" y=\"60\" font-family=\"Inter\" font-size=\"30\" fill=\"#000000\" "
+								"text-anchor=\"end\">Ab</text>");
+	Encre s2 = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	const int32 largeur = s0.xmax - s0.xmin;
+	const bool ancrage = s0.sombres > 40 && s1.sombres > 40 && s2.sombres > 40 && s0.xmin >= 99 && s2.xmax <= 101 &&
+						 s1.xmin < s0.xmin && s1.xmin > s2.xmin &&
+						 std::abs((s0.xmin + s0.xmax) / 2 - (s1.xmin + s1.xmax) / 2 - largeur / 2) <= 3;
+	std::snprintf(det, sizeof(det), "start x[%d..%d] ; middle x[%d..%d] ; end x[%d..%d] (x=100, largeur %d)", s0.xmin,
+				  s0.xmax, s1.xmin, s1.xmax, s2.xmin, s2.xmax, largeur);
+	Verifier("3c. text-anchor : « start » commence a x, « end » y finit, « middle » centre dessus -- la largeur "
+			 "totale est donc bien mesuree AVANT de poser les glyphes",
+			 ancrage, det);
+
+	// (d) fill : le texte prend sa couleur (et pas le noir par defaut).
+	PageTexte(svg, sizeof(svg),
+			  "<text x=\"20\" y=\"60\" font-family=\"Inter\" font-size=\"40\" fill=\"#ff0000\">H</text>");
+	NkImage d = Decoder(svg);
+	int32 rouges = 0;
+	for (int32 y = 10; y < 62; ++y)
+		for (int32 x = 18; x < 70; ++x)
+			if (Proche(d, x, y, 255, 0, 0, 6))
+				++rouges;
+	std::snprintf(det, sizeof(det), "%d pixels rouges purs dans la boite du glyphe", rouges);
+	Verifier("3d. <text fill=\"#ff0000\"> : les glyphes prennent la couleur demandee", rouges > 40, det);
+
+	// (e) <tspan> : il continue le texte, et un x/y explicite REPOSITIONNE.
+	PageTexte(svg, sizeof(svg), "<text x=\"20\" y=\"40\" font-family=\"Inter\" font-size=\"20\" fill=\"#000000\">"
+								"H<tspan x=\"120\" y=\"70\">H</tspan></text>");
+	NkImage e = Decoder(svg);
+	Encre haut = EncreDe(e, 0, 0, 200, 50);
+	Encre bas = EncreDe(e, 0, 50, 200, 80);
+	const bool tspan = haut.sombres > 10 && bas.sombres > 10 && haut.xmin >= 19 && haut.xmin < 40 &&
+					   bas.xmin >= 119 && bas.xmin < 145;
+	std::snprintf(det, sizeof(det), "premier H : x[%d..%d] y[%d..%d] ; le <tspan x=120 y=70> : x[%d..%d] y[%d..%d]",
+				  haut.xmin, haut.xmax, haut.ymin, haut.ymax, bas.xmin, bas.xmax, bas.ymin, bas.ymax);
+	Verifier("3e. <tspan x= y=> REPOSITIONNE le curseur (les deux H sont a deux endroits distincts, pas empiles)",
+			 tspan, det);
+
+	// (f) une police INTROUVABLE : on rend quand meme, avec Inter, et ON LE DIT.
+	static const char *kInconnue =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"80\" viewBox=\"0 0 200 80\">"
+		"<rect x=\"0\" y=\"0\" width=\"200\" height=\"80\" fill=\"#ffffff\"/>"
+		"<text x=\"20\" y=\"60\" font-family=\"UnePoliceQuiNExistePas\" font-size=\"40\">H</text></svg>";
+	NkSVGImage *img = NkSVGImage::LoadFromMemory((const uint8 *)kInconnue, std::strlen(kInconnue));
+	bool repliDit = false;
+	int32 encreRepli = 0;
+	if (img) {
+		for (int32 i = 0; i < img->SkippedCount(); ++i) {
+			const char *n = img->SkippedAt(i);
+			if (n && std::strncmp(n, "police:", 7) == 0)
+				repliDit = true;
+		}
+		NkImage r = img->Rasterize(0, 0);
+		encreRepli = EncreDe(r, 0, 0, 200, 80).sombres;
+		img->Free();
+	}
+	std::snprintf(det, sizeof(det), "repli nomme=%d ; encre du texte replie=%d px", repliDit ? 1 : 0, encreRepli);
+	Verifier("3f. une font-family INTROUVABLE : le texte est peint avec la police de repli (Inter) ET le repli est "
+			 "NOMME -- rendre autre chose que ce qui est demande sans le dire serait le vrai defaut",
+			 repliDit && encreRepli > 60, det);
+
+	// (g) l'INDENTATION d'un fichier ne devient pas du texte : sans
+	//     xml:space=\"preserve\", les blancs sont reduits et les bords rognes.
+	static const char *kBlancs =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"80\" viewBox=\"0 0 200 80\">"
+		"<rect x=\"0\" y=\"0\" width=\"200\" height=\"80\" fill=\"#ffffff\"/>"
+		"<text x=\"20\" y=\"60\" font-family=\"Inter\" font-size=\"30\" fill=\"#000000\">\n      H\n   </text></svg>";
+	Encre blancs = EncreDe(Decoder(kBlancs), 0, 0, 200, 80);
+	const bool rogne = blancs.sombres > 20 && blancs.xmin >= 19 && blancs.xmin < 32;
+	std::snprintf(det, sizeof(det), "le H indente commence a x=%d (x demande : 20 -- les blancs de tete sont rognes)",
+				  blancs.xmin);
+	Verifier("3g. les blancs de mise en forme du FICHIER ne deviennent pas du texte : sans xml:space=\"preserve\" "
+			 "ils sont rognes, le glyphe commence bien a x",
+			 rogne, det);
+	// (h) L'AVANCE : trois H cote a cote occupent ~trois fois la largeur d'un seul.
+	//     Sans avance, les glyphes s'EMPILENT au meme x -- la boite resterait
+	//     celle d'un seul glyphe, et l'encre serait a peine plus dense.
+	PageTexte(svg, sizeof(svg),
+			  "<text x=\"20\" y=\"60\" font-family=\"Inter\" font-size=\"30\" fill=\"#000000\">H</text>");
+	Encre un = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	PageTexte(svg, sizeof(svg),
+			  "<text x=\"20\" y=\"60\" font-family=\"Inter\" font-size=\"30\" fill=\"#000000\">HHH</text>");
+	Encre trois = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	const int32 l1 = un.xmax - un.xmin + 1, l3 = trois.xmax - trois.xmin + 1;
+	const bool avance = un.sombres > 20 && l1 > 0 && l3 >= 2 * l1 && trois.sombres >= 2 * un.sombres &&
+						trois.ymin == un.ymin && trois.ymax == un.ymax;
+	std::snprintf(det, sizeof(det), "un H : %d px de large, %d d'encre ; trois H : %d px de large, %d d'encre "
+								   "(meme hauteur y[%d..%d] contre y[%d..%d])",
+				  l1, un.sombres, l3, trois.sombres, trois.ymin, trois.ymax, un.ymin, un.ymax);
+	Verifier("3h. L'AVANCE d'un glyphe a l'autre : trois H occupent au moins deux fois la largeur d'un seul et "
+			 "portent au moins deux fois l'encre -- ils ne s'empilent pas",
+			 avance, det);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -358,6 +530,7 @@ int TestSVG_Run() {
 	std::printf("\n===== BANC DU CODEC SVG (NkSVGCodec) =====\n");
 	TestRxRy();
 	TestImage();
+	TestTexte();
 	TestNonGere();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);
 	return (gPass == gTotal) ? 0 : 1;

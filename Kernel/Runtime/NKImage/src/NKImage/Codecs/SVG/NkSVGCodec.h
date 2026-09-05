@@ -35,7 +35,15 @@
 //                     NKImage) ; preserveAspectRatio meet / slice / none ;
 //                     opacity ; transform du groupe parent, rotation comprise
 //
-// Pas supporte : <text>, <use>, <symbol>, <defs><style> (classes CSS), patterns,
+// <text>/<tspan>    : x, y (LIGNE DE BASE), font-family (repli sur Inter, DIT),
+//                     font-size (= le CADRATIN em, comme la norme), font-weight
+//                     (>= 600 : graisse SIMULEE par un trait, dit), fill,
+//                     fill-opacity, text-anchor start/middle/end, xml:space.
+//                     Rendu par les CONTOURS de NKFont, jamais par un atlas :
+//                     un SVG se re-rasterise a toute taille et porte des
+//                     matrices qui tournent.
+//
+// Pas supporte : <use>, <symbol>, <defs><style> (classes CSS), patterns,
 //                masks, clipPath, filters. TOUT CE QUI EST SAUTE SE DIT une fois
 //                (journal + SkippedCount() / SkippedAt()).
 //

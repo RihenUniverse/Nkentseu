@@ -50,6 +50,8 @@
 #include "NKMemory/NkAllocator.h"
 #include "NKContainers/Sequential/NkVector.h"
 #include "NKContainers/String/Encoding/NkBase64.h"
+#include "NKFont/Core/NkFontParser.h"
+#include "NKFont/Embedded/NkFontEmbedded.h"
 #include "NKLogger/NkLog.h"
 #include <cmath>
 #include <cstring>
@@ -1566,6 +1568,351 @@ namespace nkentseu {
 			shapes.PushBack(std::move(s2));
 		}
 
+		// ═════════════════════════════════════════════════════════════════════════════
+		// SECTION 7bis — <text> : LES CONTOURS DES GLYPHES, par NKFont
+		// -----------------------------------------------------------------------------
+		// CHERCHER AVANT D'ECRIRE (porte du 28/08) : NKFont porte deja tout ce qu'il
+		// faut, une couche plus bas -- `NkGetGlyphShape` rend les contours d'un glyphe
+		// (TrueType et CFF), `NkScaleForEmToPixels` l'echelle, `NkGetGlyphHMetrics`
+		// l'avance. On ne rasterise donc AUCUN glyphe ici : on les convertit en
+		// contours et on les donne au rasteriseur qui remplit deja tout le reste.
+		//
+		// POURQUOI LES CONTOURS ET PAS L'ATLAS. L'atlas de NkFontAtlas est rasterise
+		// A UNE TAILLE en pixels ; un SVG se re-rasterise a n'importe quelle taille
+		// (c'est son interet) et porte des matrices qui tournent. Un atlas etire par
+		// une matrice rend flou -- c'est exactement ce que la sonde 81 de NkUIDesign
+		// mesure et refuse. Les contours, eux, suivent la matrice sans perte, passent
+		// par le meme anticrenelage que les formes, et acceptent un degrade.
+		//
+		// ⚠️ CE QUE `font-size` VEUT DIRE. En SVG c'est le CADRATIN (em) : l'echelle
+		// est `font-size / unitsPerEm`. NkFontAtlas, lui, appelle
+		// `NkScaleForPixelHeight` = px / (ascender - descender). Pour Inter les deux
+		// different d'environ 21 % ; on suit LA NORME, et l'ecart avec le peintre est
+		// mesure et nomme par le banc du temoin croise plutot que masque.
+		// ═════════════════════════════════════════════════════════════════════════════
+
+		/// Une police ouverte pendant le temps d'un decodage.
+		struct FaceChargee {
+				char famille[64] = {0};
+				uint8 *ttf = nullptr; ///< buffer decompresse (nous appartient)
+				nkfont::NkFontFaceInfo info;
+				bool ok = false;
+		};
+
+		/// Les polices ouvertes pour CE document. Ouvrir une police coute une
+		/// decompression et un parsing de tables : on ne le fait qu'une fois par
+		/// famille, et on rend tout a la fin du decodage.
+		struct FontCache {
+				static constexpr int32 kMax = 4;
+				FaceChargee faces[kMax];
+				int32 nb = 0;
+
+				/// Le premier nom d'une liste « Inter, sans-serif » -> "Inter",
+				/// guillemets et espaces retires.
+				static void PremiereFamille(const char *liste, char *out, usize outSz) noexcept {
+					out[0] = 0;
+					if (!liste)
+						return;
+					const char *p = SkipWS(liste);
+					usize i = 0;
+					while (*p && *p != ',' && i + 1 < outSz) {
+						if (*p != '"' && *p != '\'')
+							out[i++] = *p;
+						++p;
+					}
+					while (i > 0 && IsSpace(out[i - 1]))
+						--i;
+					out[i] = 0;
+				}
+
+				/// La police embarquee dont le nom correspond, sinon Inter -- et on DIT
+				/// le repli : un texte rendu dans une autre police que celle demandee
+				/// n'est pas une erreur, mais le taire en serait une.
+				nkfont::NkFontFaceInfo *Obtenir(const char *fontFamily, SkipList &skips) noexcept {
+					char fam[64];
+					PremiereFamille(fontFamily, fam, sizeof(fam));
+					if (!fam[0])
+						std::strncpy(fam, "Inter", sizeof(fam) - 1);
+
+					for (int32 i = 0; i < nb; ++i)
+						if (StrCaseCmp(faces[i].famille, fam) == 0)
+							return faces[i].ok ? &faces[i].info : nullptr;
+					if (nb >= kMax)
+						return nb > 0 && faces[0].ok ? &faces[0].info : nullptr;
+
+					// la police embarquee du meme nom, sinon Inter
+					int32 nbEmb = 0;
+					const NkEmbeddedFontData *toutes = NkFontEmbedded::GetAll(&nbEmb);
+					NkEmbeddedFontId choisie = NkEmbeddedFontId::Inter;
+					bool trouvee = false;
+					for (int32 i = 0; i < nbEmb && toutes; ++i) {
+						if (toutes[i].name && StrCaseCmp(toutes[i].name, fam) == 0) {
+							choisie = (NkEmbeddedFontId)i;
+							trouvee = true;
+							break;
+						}
+					}
+					if (!trouvee) {
+						char cle[80];
+						std::snprintf(cle, sizeof(cle), "police:%s", fam);
+						if (skips.Noter(cle))
+							logger.Warn("[SVG] <text font-family=\"{0}\"> : police indisponible -- repli sur Inter "
+										"(embarquee). La forme des glyphes n'est PAS celle demandee.",
+										fam);
+					}
+					const NkEmbeddedFontData *d = NkFontEmbedded::GetData(choisie);
+					FaceChargee &f = faces[nb++];
+					std::strncpy(f.famille, fam, sizeof(f.famille) - 1);
+					if (!d) {
+						if (skips.Noter("police-absente"))
+							logger.Warn("[SVG] <text> : AUCUNE police embarquee dans ce binaire -- le texte n'est "
+										"pas peint.");
+						return nullptr;
+					}
+					uint32 taille = 0;
+					f.ttf = NkFontEmbedded::DecompressData(*d, &taille);
+					if (!f.ttf || taille == 0) {
+						logger.Warn("[SVG] <text> : decompression de la police « {0} » echouee.", d->name);
+						return nullptr;
+					}
+					f.ok = nkfont::NkInitFontFace(&f.info, f.ttf, (nkft_size)taille, 0);
+					if (!f.ok) {
+						logger.Warn("[SVG] <text> : police « {0} » illisible (tables).", d->name);
+						return nullptr;
+					}
+					return &f.info;
+				}
+
+				void Liberer() noexcept {
+					for (int32 i = 0; i < nb; ++i) {
+						if (faces[i].ok)
+							nkfont::NkFreeFontFace(&faces[i].info);
+						if (faces[i].ttf)
+							NkFontEmbedded::FreeDecompressedData(faces[i].ttf);
+						faces[i].ttf = nullptr;
+						faces[i].ok = false;
+					}
+					nb = 0;
+				}
+		};
+
+		/// Un morceau de texte : le contenu direct d'un <text>, ou celui d'un <tspan>.
+		struct TextFragment {
+				char txt[512] = {0};
+				float32 fontSize = 16.f;
+				char famille[64] = {0};
+				int32 weight = 400;
+				NkSVGStyle style;
+				char fillRef[64] = {0};
+				bool posX = false, posY = false; ///< le fragment repositionne le curseur
+				float32 x = 0.f, y = 0.f;
+		};
+
+		/// L'etat d'un <text> en cours : on accumule les fragments jusqu'a </text>,
+		/// PARCE QUE `text-anchor` a besoin de la largeur TOTALE, qu'on ne connait
+		/// qu'a la fermeture. Poser les glyphes au fil de l'eau aurait interdit
+		/// « middle » et « end », ou impose une seconde passe.
+		struct TextState {
+				bool actif = false;
+				float32 x = 0.f, y = 0.f;
+				int32 anchor = 0; ///< 0 start, 1 middle, 2 end
+				bool preserve = false;
+				NkSVGTransform xform = NkSVGTransform::Identity();
+				NkVector<TextFragment> frags;
+		};
+
+		/// Decode les entites XML et applique la regle des blancs de SVG :
+		/// sans xml:space="preserve", les blancs sont reduits a UN espace et les
+		/// bords sont rognes -- sans quoi l'INDENTATION du fichier deviendrait du
+		/// texte visible.
+		void NettoyerTexte(const char *src, usize n, bool preserve, char *out, usize outSz) noexcept {
+			usize o = 0;
+			bool blancPrec = true; // rogne les blancs de tete
+			for (usize i = 0; i < n && o + 1 < outSz; ++i) {
+				char c = src[i];
+				if (c == '&') { // entites
+					if (std::strncmp(src + i, "&amp;", 5) == 0) { c = '&'; i += 4; }
+					else if (std::strncmp(src + i, "&lt;", 4) == 0) { c = '<'; i += 3; }
+					else if (std::strncmp(src + i, "&gt;", 4) == 0) { c = '>'; i += 3; }
+					else if (std::strncmp(src + i, "&quot;", 6) == 0) { c = '"'; i += 5; }
+					else if (std::strncmp(src + i, "&apos;", 6) == 0) { c = '\''; i += 5; }
+					else if (src[i + 1] == '#') {
+						usize j = i + 2;
+						int32 code = 0;
+						if (src[j] == 'x' || src[j] == 'X') {
+							++j;
+							while (j < n && HexDigit(src[j]) >= 0)
+								code = code * 16 + HexDigit(src[j++]);
+						} else {
+							while (j < n && IsDigit(src[j]))
+								code = code * 10 + (src[j++] - '0');
+						}
+						if (j < n && src[j] == ';' && code > 0) {
+							char buf[8];
+							const int32 nb = NkFontEncodeUTF8((NkFontCodepoint)code, buf, (nkft_int32)sizeof(buf));
+							for (int32 k = 0; k < nb && o + 1 < outSz; ++k)
+								out[o++] = buf[k];
+							i = j;
+							blancPrec = false;
+							continue;
+						}
+					}
+				}
+				if (!preserve && IsSpace(c)) {
+					if (blancPrec)
+						continue;
+					c = ' ';
+					blancPrec = true;
+				} else {
+					blancPrec = false;
+				}
+				out[o++] = c;
+			}
+			if (!preserve)
+				while (o > 0 && out[o - 1] == ' ')
+					--o;
+			out[o] = 0;
+		}
+
+		/// La largeur d'un fragment, en unites utilisateur (somme des avances).
+		/// Le CRENAGE n'est PAS applique : le peintre de NKGui ne l'applique pas non
+		/// plus (`x += g->advanceX`), et le temoin croise compare les deux.
+		float32 LargeurFragment(nkfont::NkFontFaceInfo *face, const TextFragment &fr) noexcept {
+			if (!face)
+				return 0.f;
+			const float32 ech = nkfont::NkScaleForEmToPixels(face, fr.fontSize);
+			const char *p = fr.txt;
+			const char *end = p + std::strlen(p);
+			float32 w = 0.f;
+			while (p < end) {
+				const NkFontCodepoint cp = NkFontDecodeUTF8(&p, end);
+				if (cp == 0u)
+					break;
+				const nkft_int32 gid = (nkft_int32)nkfont::NkFindGlyphIndex(face, cp);
+				nkft_int32 aw = 0, lsb = 0;
+				nkfont::NkGetGlyphHMetrics(face, (NkGlyphId)gid, &aw, &lsb);
+				w += (float32)aw * ech;
+			}
+			return w;
+		}
+
+		/// Pose les contours d'un fragment dans @p sh, a partir de (penX, penY).
+		/// penX avance. Y est INVERSE : la police monte, l'ecran descend.
+		void ContoursDuFragment(Shape &sh, nkfont::NkFontFaceInfo *face, const TextFragment &fr, float32 &penX,
+								float32 penY) noexcept {
+			if (!face)
+				return;
+			const float32 ech = nkfont::NkScaleForEmToPixels(face, fr.fontSize);
+			PathBuilder pb(sh);
+			const char *p = fr.txt;
+			const char *end = p + std::strlen(p);
+			while (p < end) {
+				const NkFontCodepoint cp = NkFontDecodeUTF8(&p, end);
+				if (cp == 0u)
+					break;
+				const NkGlyphId gid = nkfont::NkFindGlyphIndex(face, cp);
+				nkft_int32 aw = 0, lsb = 0;
+				nkfont::NkGetGlyphHMetrics(face, gid, &aw, &lsb);
+				nkfont::NkFontVertexBuffer vb;
+				if (gid != 0 && nkfont::NkGetGlyphShape(face, gid, &vb)) {
+					float32 cx = 0.f, cy = 0.f;
+					bool ouvert = false;
+					for (uint32 i = 0; i < vb.count; ++i) {
+						const nkfont::NkFontVertex &v = vb.verts[i];
+						const float32 vx = penX + (float32)v.x * ech;
+						const float32 vy = penY - (float32)v.y * ech;
+						switch (v.type) {
+							case nkfont::NK_FONT_VERTEX_MOVE:
+								if (ouvert)
+									pb.Close(); // un contour de glyphe est TOUJOURS ferme :
+												// sans ca, le remplissage nonzero fuit
+								pb.StartContour(vx, vy);
+								ouvert = true;
+								break;
+							case nkfont::NK_FONT_VERTEX_LINE:
+								pb.LineTo(vx, vy);
+								break;
+							case nkfont::NK_FONT_VERTEX_CURVE:
+								FlattenQuad(pb, cx, cy, penX + (float32)v.cx * ech, penY - (float32)v.cy * ech, vx, vy);
+								break;
+							case nkfont::NK_FONT_VERTEX_CUBIC:
+								FlattenCubic(pb, cx, cy, penX + (float32)v.cx * ech, penY - (float32)v.cy * ech,
+											 penX + (float32)v.cx1 * ech, penY - (float32)v.cy1 * ech, vx, vy);
+								break;
+							default:
+								break;
+						}
+						cx = vx;
+						cy = vy;
+					}
+					if (ouvert)
+						pb.Close();
+				}
+				penX += (float32)aw * ech;
+			}
+		}
+
+		/// Ferme un <text> : c'est ICI qu'on connait la largeur totale, donc l'ancrage.
+		void FinirTexte(NkVector<Shape> &shapes, TextState &ts, FontCache &polices, SkipList &skips) noexcept {
+			if (!ts.actif)
+				return;
+			ts.actif = false;
+			if (ts.frags.IsEmpty())
+				return;
+
+			// largeur totale (les fragments qui repositionnent le curseur ouvrent une
+			// nouvelle sequence : l'ancrage ne vaut que pour celle en cours)
+			float32 largeur = 0.f;
+			for (uint32 i = 0; i < ts.frags.Size(); ++i) {
+				nkfont::NkFontFaceInfo *face = polices.Obtenir(ts.frags[i].famille, skips);
+				largeur += LargeurFragment(face, ts.frags[i]);
+			}
+			float32 penX = ts.x;
+			if (ts.anchor == 1)
+				penX -= largeur * 0.5f;
+			else if (ts.anchor == 2)
+				penX -= largeur;
+			float32 penY = ts.y;
+
+			Shape sh;
+			sh.style = ts.frags[0].style;
+			// LES GLYPHES SE REMPLISSENT EN NONZERO. Un `fill-rule="evenodd"` herite
+			// d'un ancetre creverait les contre-formes (le O deviendrait plein, le e
+			// perdrait son oeil) : la regle du texte n'est pas celle du dessin.
+			sh.style.fillEvenOdd = false;
+			std::strncpy(sh.fillRef, ts.frags[0].fillRef, 63);
+
+			bool grasSimule = false;
+			for (uint32 i = 0; i < ts.frags.Size(); ++i) {
+				TextFragment &fr = ts.frags[i];
+				nkfont::NkFontFaceInfo *face = polices.Obtenir(fr.famille, skips);
+				if (fr.posX)
+					penX = fr.x;
+				if (fr.posY)
+					penY = fr.y;
+				ContoursDuFragment(sh, face, fr, penX, penY);
+				if (fr.weight >= 600)
+					grasSimule = true;
+			}
+			if (sh.contourStart.IsEmpty())
+				return;
+			// FAUSSE GRAISSE : les polices embarquees n'ont qu'une coupe. Un
+			// font-weight >= 600 est rendu par un TRAIT de la couleur du remplissage
+			// autour du glyphe -- plus d'encre, la meme forme. Ce n'est pas un vrai
+			// Bold dessine par un typographe, et c'est dit.
+			if (grasSimule) {
+				sh.style.stroke = sh.style.fill;
+				sh.style.strokeOpacity = sh.style.fillOpacity;
+				sh.style.strokeWidth = ts.frags[0].fontSize * 0.03f;
+				if (skips.Noter("font-weight"))
+					logger.Warn("[SVG] font-weight >= 600 : la police embarquee n'a qu'une coupe -- graisse "
+								"SIMULEE par un trait (ce n'est pas un vrai Bold).");
+			}
+			ApplyTransform(sh, ts.xform);
+			sh.ctm = ts.xform;
+			shapes.PushBack(std::move(sh));
+		}
+
 		// ─────────────────────────────────────────────────────────────────────────────
 		// SECTION 8 — Parser XML stream-based avec stack <g>
 		// ─────────────────────────────────────────────────────────────────────────────
@@ -1718,6 +2065,8 @@ namespace nkentseu {
 
 			int32 numAttrs = 0;
 			bool gotSvg = false;
+			TextState texte;
+			FontCache polices;
 			int32 defsDepth = 0; // > 0 = on est dans <defs> : shapes non rendues
 			bool buildingGrad = false;
 			Gradient curGrad; // gradient en cours de construction (stops)
@@ -1735,6 +2084,12 @@ namespace nkentseu {
 
 				if (kind == 3) {
 					// Closing tag : depile la stack / la profondeur defs / finalise un gradient.
+					if (std::strcmp(tagBuf, "text") == 0) {
+						FinirTexte(shapes, texte, polices, skips);
+						continue;
+					}
+					if (std::strcmp(tagBuf, "tspan") == 0)
+						continue;
 					if (std::strcmp(tagBuf, "g") == 0 && depth > 0) {
 						--depth;
 					} else if (std::strcmp(tagBuf, "defs") == 0 && defsDepth > 0) {
@@ -1886,6 +2241,93 @@ namespace nkentseu {
 				if (defsDepth > 0)
 					continue;
 
+				// ── <text> / <tspan> : le contenu VIT ENTRE LES BALISES ──────────
+				//    Le lecteur de tags saute le texte ; ici on le prend a la source,
+				//    depuis la position juste apres le « > » de la balise ouvrante.
+				if (std::strcmp(tagBuf, "text") == 0 || std::strcmp(tagBuf, "tspan") == 0) {
+					const bool estText = (tagBuf[0] == 't' && tagBuf[1] == 'e');
+					ParseState loc = cur;
+					loc.style = MergeStyle(cur.style, attrs, numAttrs);
+					UpdateRefs(loc.fillRef, loc.strokeRef, attrs, numAttrs);
+					const char *tr2 = FindAttr(attrs, numAttrs, "transform");
+					if (tr2)
+						loc.xform = cur.xform * NkSVGTransform::Parse(tr2);
+
+					if (estText) {
+						FinirTexte(shapes, texte, polices, skips); // un <text> non ferme
+						texte = TextState();
+						texte.actif = true;
+						texte.x = ParseFloat(FindAttr(attrs, numAttrs, "x"));
+						texte.y = ParseFloat(FindAttr(attrs, numAttrs, "y"));
+						texte.xform = loc.xform;
+						const char *anc = FindAttr(attrs, numAttrs, "text-anchor");
+						if (anc && std::strcmp(anc, "middle") == 0)
+							texte.anchor = 1;
+						else if (anc && (std::strcmp(anc, "end") == 0))
+							texte.anchor = 2;
+						const char *esp = FindAttr(attrs, numAttrs, "xml:space");
+						texte.preserve = (esp && std::strcmp(esp, "preserve") == 0);
+						if (FindAttr(attrs, numAttrs, "dominant-baseline") && skips.Noter("dominant-baseline"))
+							logger.Warn("[SVG] dominant-baseline non honore : y est la LIGNE DE BASE.");
+						if (FindAttr(attrs, numAttrs, "textLength") && skips.Noter("textLength"))
+							logger.Warn("[SVG] textLength non honore : le texte n'est ni etire ni comprime.");
+					}
+					if (!texte.actif) {
+						// un <tspan> hors de tout <text> : rien a poser
+						continue;
+					}
+
+					TextFragment fr;
+					fr.style = loc.style;
+					std::strncpy(fr.fillRef, loc.fillRef, 63);
+					const char *fs = FindAttr(attrs, numAttrs, "font-size");
+					if (!fs && estText)
+						fs = nullptr;
+					fr.fontSize = fs ? ParseFloat(fs)
+									 : (texte.frags.IsEmpty() ? 16.f : texte.frags[texte.frags.Size() - 1].fontSize);
+					const char *ff = FindAttr(attrs, numAttrs, "font-family");
+					if (!ff && !texte.frags.IsEmpty())
+						ff = texte.frags[texte.frags.Size() - 1].famille;
+					if (ff) {
+						std::strncpy(fr.famille, ff, sizeof(fr.famille) - 1);
+						fr.famille[sizeof(fr.famille) - 1] = 0;
+					}
+					const char *fw = FindAttr(attrs, numAttrs, "font-weight");
+					if (fw) {
+						if (StrCaseCmp(fw, "bold") == 0)
+							fr.weight = 700;
+						else if (StrCaseCmp(fw, "normal") == 0)
+							fr.weight = 400;
+						else
+							fr.weight = (int32)ParseFloat(fw);
+					} else if (!texte.frags.IsEmpty()) {
+						fr.weight = texte.frags[texte.frags.Size() - 1].weight;
+					}
+					if (!estText) { // un <tspan> peut repositionner le curseur
+						const char *tx = FindAttr(attrs, numAttrs, "x");
+						const char *ty = FindAttr(attrs, numAttrs, "y");
+						if (tx) {
+							fr.posX = true;
+							fr.x = ParseFloat(tx);
+						}
+						if (ty) {
+							fr.posY = true;
+							fr.y = ParseFloat(ty);
+						}
+					}
+					if (kind == 1) { // le contenu court jusqu'au prochain '<'
+						const char *deb = xml;
+						const char *fin = deb;
+						while (fin < xmlEnd && *fin != '<')
+							++fin;
+						if (fin > deb)
+							NettoyerTexte(deb, (usize)(fin - deb), texte.preserve, fr.txt, sizeof(fr.txt));
+					}
+					if (fr.txt[0])
+						texte.frags.PushBack(fr);
+					continue;
+				}
+
 				// Element shape : compose le state local = cur + attrs propres.
 				if (FindAttr(attrs, numAttrs, "stroke-dasharray") && skips.Noter("stroke-dasharray"))
 					logger.Warn("[SVG] stroke-dasharray non honore : le trait est rendu CONTINU.");
@@ -1930,6 +2372,8 @@ namespace nkentseu {
 				}
 			}
 
+			FinirTexte(shapes, texte, polices, skips); // un <text> jamais ferme se pose quand meme
+			polices.Liberer();
 			NkFree(nameBuf);
 			NkFree(attrPool);
 		}
