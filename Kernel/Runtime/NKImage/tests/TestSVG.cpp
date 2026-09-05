@@ -959,6 +959,171 @@ static void TestTemoinCroise() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER <use> / <symbol> — instancier par reference
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Combien de pixels different entre deux images (au-dela de @p tol par canal) ?
+/// C'est LE critere d'une instanciation : le fichier a <use> doit rendre CE QUE
+/// RENDRAIT sa version aplatie -- pas « a peu pres », pas « aux points qu'on a
+/// choisi de regarder ». On compare TOUT.
+static int32 PixelsDifferents(const NkImage &a, const NkImage &b, int32 tol) {
+	if (!a.IsValid() || !b.IsValid() || a.Width() != b.Width() || a.Height() != b.Height())
+		return -1;
+	int32 n = 0;
+	for (int32 y = 0; y < a.Height(); ++y)
+		for (int32 x = 0; x < a.Width(); ++x) {
+			uint8 pa[4], pb[4];
+			Pixel(a, x, y, pa);
+			Pixel(b, x, y, pb);
+			for (int32 k = 0; k < 4; ++k)
+				if (std::abs((int32)pa[k] - (int32)pb[k]) > tol) {
+					++n;
+					break;
+				}
+		}
+	return n;
+}
+
+static void TestUse() {
+	std::printf("\n== PALIER <use> / <symbol> ==\n");
+	char det[640];
+
+	// (a) LE TEMOIN DU PALIER : un fichier a <use> IMBRIQUES contre sa version
+	//     APLATIE, ecrite a la main juste en dessous. Les deux doivent rendre les
+	//     memes pixels -- tous.
+	//     « brique » = un carre rouge et un carre bleu ; « paire » = deux briques
+	//     dont une decalee ; la page instancie « paire » deux fois, a deux places.
+	static const char *kUse =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\">"
+		"<defs>"
+		"<g id=\"brique\">"
+		"<rect x=\"0\" y=\"0\" width=\"10\" height=\"10\" fill=\"#ff0000\"/>"
+		"<rect x=\"10\" y=\"0\" width=\"10\" height=\"10\" fill=\"#0000ff\"/>"
+		"</g>"
+		"<g id=\"paire\">"
+		"<use href=\"#brique\"/>"
+		"<use href=\"#brique\" x=\"0\" y=\"20\"/>"
+		"</g>"
+		"</defs>"
+		"<use href=\"#paire\" x=\"10\" y=\"10\"/>"
+		"<use href=\"#paire\" x=\"60\" y=\"60\"/>"
+		"</svg>";
+	static const char *kPlat =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\">"
+		"<g><g><rect x=\"10\" y=\"10\" width=\"10\" height=\"10\" fill=\"#ff0000\"/>"
+		"<rect x=\"20\" y=\"10\" width=\"10\" height=\"10\" fill=\"#0000ff\"/></g>"
+		"<g><rect x=\"10\" y=\"30\" width=\"10\" height=\"10\" fill=\"#ff0000\"/>"
+		"<rect x=\"20\" y=\"30\" width=\"10\" height=\"10\" fill=\"#0000ff\"/></g></g>"
+		"<g><g><rect x=\"60\" y=\"60\" width=\"10\" height=\"10\" fill=\"#ff0000\"/>"
+		"<rect x=\"70\" y=\"60\" width=\"10\" height=\"10\" fill=\"#0000ff\"/></g>"
+		"<g><rect x=\"60\" y=\"80\" width=\"10\" height=\"10\" fill=\"#ff0000\"/>"
+		"<rect x=\"70\" y=\"80\" width=\"10\" height=\"10\" fill=\"#0000ff\"/></g></g>"
+		"</svg>";
+	NkImage avecUse = Decoder(kUse);
+	NkImage aplati = Decoder(kPlat);
+	const int32 diff = PixelsDifferents(avecUse, aplati, 2);
+	// et le rendu n'est pas vide : les quatre briques sont bien la
+	const bool contenu = Proche(avecUse, 15, 15, 255, 0, 0, 3) && Proche(avecUse, 25, 15, 0, 0, 255, 3) &&
+						 Proche(avecUse, 15, 35, 255, 0, 0, 3) && Proche(avecUse, 65, 85, 255, 0, 0, 3) &&
+						 Proche(avecUse, 75, 65, 0, 0, 255, 3);
+	std::snprintf(det, sizeof(det), "%d pixel(s) different(s) sur %d ; les quatre briques instanciees sont la=%d",
+				  diff, avecUse.IsValid() ? avecUse.Width() * avecUse.Height() : 0, contenu ? 1 : 0);
+	Verifier("U1. <use> IMBRIQUES (un <use> dans un <g> lui-meme instancie par <use>) rend EXACTEMENT la meme "
+			 "image que la version aplatie ecrite a la main -- tous les pixels compares",
+			 diff == 0 && contenu, det);
+
+	// (b) un <defs> ne se rend PAS la ou il est defini : sans les <use>, la page
+	//     est vide. C'est ce qui distingue « instancier » de « dessiner deux fois ».
+	static const char *kDefsSeul =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+		"<defs><g id=\"b\"><rect x=\"0\" y=\"0\" width=\"60\" height=\"60\" fill=\"#ff0000\"/></g></defs>"
+		"<symbol id=\"s\"><rect x=\"0\" y=\"0\" width=\"60\" height=\"60\" fill=\"#00ff00\"/></symbol>"
+		"</svg>";
+	NkImage vide = Decoder(kDefsSeul);
+	const bool rienRendu = vide.IsValid() && AlphaDe(vide, 30, 30) < 20 && AlphaDe(vide, 5, 5) < 20;
+	std::snprintf(det, sizeof(det), "alpha au centre=%d -- ni le <defs> ni le <symbol> ne se peignent d'eux-memes",
+				  AlphaDe(vide, 30, 30));
+	Verifier("U2. <defs> ET <symbol> ne se rendent PAS la ou ils sont definis (seul <use> les instancie)", rienRendu,
+			 det);
+
+	// (c) <symbol viewBox> instancie avec width/height : il est MIS A L'ECHELLE.
+	static const char *kSymbole =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+		"<symbol id=\"carre\" viewBox=\"0 0 10 10\">"
+		"<rect x=\"0\" y=\"0\" width=\"10\" height=\"10\" fill=\"#ff0000\"/></symbol>"
+		"<use href=\"#carre\" x=\"20\" y=\"20\" width=\"60\" height=\"60\"/></svg>";
+	NkImage sym = Decoder(kSymbole);
+	// le carre de 10 devient 60x60 a partir de (20,20) : plein a (50,50) et (25,25),
+	// vide juste a cote (85,85) et avant (15,15)
+	const bool echelle = sym.IsValid() && Proche(sym, 50, 50, 255, 0, 0, 3) && Proche(sym, 25, 25, 255, 0, 0, 3) &&
+						 Proche(sym, 75, 75, 255, 0, 0, 3) && AlphaDe(sym, 85, 85) < 20 && AlphaDe(sym, 15, 15) < 20;
+	std::snprintf(det, sizeof(det),
+				  "rouge en (25,25) (50,50) (75,75) ; alpha en (15,15)=%d et (85,85)=%d -- le symbole de 10 unites "
+				  "occupe bien 60 px a partir de (20,20)",
+				  AlphaDe(sym, 15, 15), AlphaDe(sym, 85, 85));
+	Verifier("U3. <symbol viewBox> instancie avec width/height est MIS A L'ECHELLE (sa viewBox devient le repere "
+			 "de la boite du <use>)",
+			 echelle, det);
+
+	// (d) le <use> herite du STYLE et compose les TRANSFORMATIONS.
+	static const char *kStyle =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+		"<defs><g id=\"c\"><rect x=\"0\" y=\"0\" width=\"20\" height=\"20\"/></g></defs>"
+		"<g transform=\"translate(50 0)\"><use href=\"#c\" x=\"10\" y=\"10\" fill=\"#00ff00\"/></g></svg>";
+	NkImage st = Decoder(kStyle);
+	// translate(50) du parent + x/y du use : le carre va de (60,10) a (80,30), en VERT
+	const bool compose = st.IsValid() && Proche(st, 70, 20, 0, 255, 0, 3) && AlphaDe(st, 20, 20) < 20;
+	std::snprintf(det, sizeof(det), "vert en (70,20)=%d (translate du parent + x/y du use) ; rien en (20,20) : "
+								   "alpha=%d",
+				  Proche(st, 70, 20, 0, 255, 0, 3) ? 1 : 0, AlphaDe(st, 20, 20));
+	Verifier("U4. <use> COMPOSE la transformation de son parent, la sienne et ses x/y, et transmet son style "
+			 "(fill herite jusqu'au contenu instancie)",
+			 compose, det);
+
+	// (e) UNE REFERENCE CIRCULAIRE ne fait pas exploser la pile : elle est bornee
+	//     ET NOMMEE. Un decodeur qui plante sur un fichier tordu est un decodeur
+	//     qu'on ne peut pas exposer a des fichiers venus d'ailleurs.
+	static const char *kBoucle =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+		"<defs><g id=\"boucle\"><rect x=\"0\" y=\"0\" width=\"5\" height=\"5\" fill=\"#000\"/>"
+		"<use href=\"#boucle\" x=\"1\" y=\"1\"/></g></defs>"
+		"<use href=\"#boucle\"/></svg>";
+	NkSVGImage *b = NkSVGImage::LoadFromMemory((const uint8 *)kBoucle, std::strlen(kBoucle));
+	bool recursionDite = false;
+	int32 formes = 0;
+	if (b) {
+		formes = b->ShapeCount();
+		for (int32 i = 0; i < b->SkippedCount(); ++i) {
+			const char *n = b->SkippedAt(i);
+			if (n && std::strcmp(n, "use-recursion") == 0)
+				recursionDite = true;
+		}
+		b->Free();
+	}
+	std::snprintf(det, sizeof(det), "%d forme(s) produites, la garde a arrete l'instanciation et l'a NOMMEE=%d",
+				  formes, recursionDite ? 1 : 0);
+	Verifier("U5. une REFERENCE CIRCULAIRE est bornee ET NOMMEE (le decodeur ne plante pas, et ne se tait pas)",
+			 b != nullptr && recursionDite && formes > 0 && formes <= 16, det);
+
+	// (f) une cible INTROUVABLE : rien n'est instancie, et c'est dit.
+	static const char *kAbsent =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+		"<use href=\"#jamaisDefini\"/></svg>";
+	NkSVGImage *a2 = NkSVGImage::LoadFromMemory((const uint8 *)kAbsent, std::strlen(kAbsent));
+	bool absentDit = false;
+	if (a2) {
+		for (int32 i = 0; i < a2->SkippedCount(); ++i) {
+			const char *n = a2->SkippedAt(i);
+			if (n && std::strcmp(n, "use-cible-absente") == 0)
+				absentDit = true;
+		}
+		a2->Free();
+	}
+	std::snprintf(det, sizeof(det), "cible absente nommee=%d", absentDit ? 1 : 0);
+	Verifier("U6. <use> vers une cible INTROUVABLE : rien n'est instancie, et c'est dit", absentDit, det);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -973,35 +1138,38 @@ static void TestNonGere() {
 		"</svg>";
 	NkSVGImage *img = NkSVGImage::LoadFromMemory((const uint8 *)kInconnu, std::strlen(kInconnu));
 	char det[512] = {0};
-	bool useDit = false, clipDit = false, dashDit = false, useUneFois = true;
-	int32 nb = 0;
+	// LE REGISTRE SUIT LES PALIERS : ce qui vient d'etre implemente le QUITTE, ce
+	// qui reste a faire y demeure. Verifier les deux sens, c'est empecher deux
+	// mensonges opposes -- annoncer comme saute ce qu'on peint, et taire ce qu'on
+	// saute vraiment.
+	bool clipDit = false, dashDit = false, useEncoreDit = false;
+	int32 nbClip = 0, nb = 0;
 	if (img) {
 		nb = img->SkippedCount();
-		int32 nbUse = 0;
 		for (int32 i = 0; i < nb; ++i) {
 			const char *n = img->SkippedAt(i);
 			if (!n)
 				continue;
-			if (std::strcmp(n, "use") == 0) {
-				useDit = true;
-				++nbUse;
-			}
-			if (std::strcmp(n, "clipPath") == 0)
+			if (std::strcmp(n, "use") == 0)
+				useEncoreDit = true; // <use> est GERE depuis son palier : plus ici
+			if (std::strcmp(n, "clipPath") == 0) {
 				clipDit = true;
+				++nbClip;
+			}
 			if (std::strcmp(n, "stroke-dasharray") == 0)
 				dashDit = true;
 		}
-		useUneFois = (nbUse == 1); // DEUX <use> dans le fichier, UNE seule mention
 		std::snprintf(det, sizeof(det), "%d nom(s) saute(s) : ", nb);
 		for (int32 i = 0; i < nb; ++i) {
 			std::strncat(det, img->SkippedAt(i) ? img->SkippedAt(i) : "?", sizeof(det) - std::strlen(det) - 1);
 			std::strncat(det, " ", sizeof(det) - std::strlen(det) - 1);
 		}
+		std::strncat(det, "| <use> n'y est plus (il est peint) ", sizeof(det) - std::strlen(det) - 1);
 		img->Free();
 	}
-	Verifier("Les elements et attributs NON GERES sont nommes (use, clipPath, stroke-dasharray), et DEUX <use> ne "
-			 "donnent QU'UNE mention (une fois par nom, jamais en silence, jamais en boucle)",
-			 img != nullptr && useDit && clipDit && dashDit && useUneFois, det);
+	Verifier("Le REGISTRE DES SAUTS suit les paliers : ce qui reste a faire est nomme (clipPath, "
+			 "stroke-dasharray), une seule fois par nom, et <use> N'Y EST PLUS depuis qu'il est peint",
+			 img != nullptr && clipDit && dashDit && !useEncoreDit && nbClip == 1, det);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1020,6 +1188,7 @@ int TestSVG_Run() {
 	TestDegrades();
 	TestOmbre();
 	TestOpacites();
+	TestUse();
 	TestNonGere();
 	TestTemoinCroise();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);

@@ -1953,6 +1953,179 @@ namespace nkentseu {
 		}
 
 
+		// ═════════════════════════════════════════════════════════════════════════════
+		// SECTION 7ter — <use> / <symbol> : INSTANCIER PAR REFERENCE
+		// -----------------------------------------------------------------------------
+		// MESURE QUI A DECIDE DE CE PALIER : les 10 SVG de `Resources/` portent 1691
+		// <path>, 1677 <g>... et 824 <use>. Un decodeur qui ignore <use> ne rend PAS
+		// ces fichiers -- il en rend le decor.
+		//
+		// COMMENT, SANS DOM. Le parseur est un flux : il ne peut pas « revenir » sur
+		// un element deja passe, ni voir un element pas encore lu (un <use> peut
+		// referencer ce qui vient APRES lui). D'ou deux temps :
+		//   1. UN INDEX, construit une fois : id -> l'intervalle du sous-arbre dans le
+		//      buffer. Une passe lineaire, une pile de profondeurs, aucune copie ;
+		//   2. a <use href="#id">, ON RE-PARSE ce fragment -- le meme code, avec un
+		//      etat initial (matrice et style du <use>). Une instanciation N'EST QUE
+		//      ca : relire le meme texte dans un autre repere.
+		// Ecrire un second chemin de rendu pour les elements instancies aurait fait
+		// diverger les deux (le depot a deja paye ce prix : « le peintre a ete ecrit
+		// deux fois, independamment »).
+		//
+		// LA RECURSION EST BORNEE ET LE DIT : <use> peut se referencer lui-meme,
+		// directement ou en cycle. On s'arrete a une profondeur fixe et on NOMME le
+		// cas -- une pile qui explose ne laisse aucun message, un compteur si.
+		// ═════════════════════════════════════════════════════════════════════════════
+
+		/// Un element referencable : son id, et OU il vit dans le buffer.
+		struct IdRange {
+				char id[64] = {0};
+				char tag[32] = {0};
+				const char *debComplet = nullptr; ///< le '<' du tag ouvrant
+				const char *finComplet = nullptr; ///< juste apres le '>' de la fermeture
+				const char *debInterieur = nullptr;
+				const char *finInterieur = nullptr;
+		};
+
+		/// Contexte d'instanciation, partage par tous les niveaux de <use>.
+		struct UseCtx {
+				NkVector<IdRange> index;
+				char *nameBuf = nullptr;  ///< buffers PARTAGES : reallouer 1 Mo par <use>
+				char *attrPool = nullptr; ///< couterait plus cher que tout le reste
+				int32 profondeur = 0;
+				bool indexe = false;
+		};
+
+		constexpr int32 kProfondeurUseMax = 12;
+
+		/// Construit l'index des id. Une passe, une pile : O(n).
+		void IndexerIds(const char *deb, const char *fin, NkVector<IdRange> &out) noexcept {
+			struct Ouvert {
+					int32 idx;	  ///< entree dans `out`, ou -1 si l'element n'a pas d'id
+					char tag[32]; ///< pour apparier la fermeture
+			};
+			constexpr int32 kMaxPile = 64;
+			Ouvert pile[kMaxPile];
+			int32 nPile = 0;
+
+			const char *p = deb;
+			while (p < fin) {
+				while (p < fin && *p != '<')
+					++p;
+				if (p >= fin)
+					break;
+				const char *debTag = p;
+				++p;
+				// commentaire / PI / doctype : sautes en bloc
+				if (p + 2 < fin && p[0] == '!' && p[1] == '-' && p[2] == '-') {
+					p += 3;
+					while (p + 2 < fin && !(p[0] == '-' && p[1] == '-' && p[2] == '>'))
+						++p;
+					p = (p + 2 < fin) ? p + 3 : fin;
+					continue;
+				}
+				if (p < fin && (*p == '?' || *p == '!')) {
+					while (p < fin && *p != '>')
+						++p;
+					if (p < fin)
+						++p;
+					continue;
+				}
+				// fermeture </tag>
+				if (p < fin && *p == '/') {
+					++p;
+					char nom[32];
+					int32 ni = 0;
+					while (p < fin && *p != '>' && !IsSpace(*p) && ni + 1 < (int32)sizeof(nom))
+						nom[ni++] = *p++;
+					nom[ni] = 0;
+					while (p < fin && *p != '>')
+						++p;
+					if (p < fin)
+						++p;
+					if (nPile > 0 && std::strcmp(pile[nPile - 1].tag, nom) == 0) {
+						--nPile;
+						const int32 idx = pile[nPile].idx;
+						if (idx >= 0) {
+							out[(uint32)idx].finInterieur = debTag;
+							out[(uint32)idx].finComplet = p;
+						}
+					}
+					continue;
+				}
+				// ouverture
+				char nom[32];
+				int32 ni = 0;
+				while (p < fin && *p != '>' && *p != '/' && !IsSpace(*p) && ni + 1 < (int32)sizeof(nom))
+					nom[ni++] = *p++;
+				nom[ni] = 0;
+				// l'attribut id="..." se lit a la main : on ne veut pas des buffers du
+				// parseur complet pour une passe d'indexation
+				char id[64];
+				id[0] = 0;
+				const char *q = p;
+				while (q < fin && *q != '>') {
+					if ((q[0] == 'i' || q[0] == 'I') && (q[1] == 'd' || q[1] == 'D') && q > p &&
+						(IsSpace(q[-1]) || q[-1] == '"' || q[-1] == '\'')) {
+						const char *r = q + 2;
+						while (r < fin && IsSpace(*r))
+							++r;
+						if (r < fin && *r == '=') {
+							++r;
+							while (r < fin && IsSpace(*r))
+								++r;
+							if (r < fin && (*r == '"' || *r == '\'')) {
+								const char quote = *r++;
+								int32 ii = 0;
+								while (r < fin && *r != quote && ii + 1 < (int32)sizeof(id))
+									id[ii++] = *r++;
+								id[ii] = 0;
+								break;
+							}
+						}
+					}
+					++q;
+				}
+				while (p < fin && *p != '>')
+					++p;
+				const bool selfClose = (p > debTag && p[-1] == '/');
+				if (p < fin)
+					++p;
+
+				int32 idx = -1;
+				if (id[0] && out.Size() < 4096u) {
+					IdRange r;
+					std::strncpy(r.id, id, sizeof(r.id) - 1);
+					std::strncpy(r.tag, nom, sizeof(r.tag) - 1);
+					r.debComplet = debTag;
+					r.debInterieur = p;
+					r.finInterieur = p;
+					r.finComplet = p;
+					out.PushBack(r);
+					idx = (int32)out.Size() - 1;
+				}
+				if (!selfClose && nPile < kMaxPile) {
+					pile[nPile].idx = idx;
+					std::strncpy(pile[nPile].tag, nom, sizeof(pile[nPile].tag) - 1);
+					pile[nPile].tag[sizeof(pile[nPile].tag) - 1] = 0;
+					++nPile;
+				}
+			}
+		}
+
+		/// Retrouve un element par son id (« #id » ou « id »).
+		const IdRange *TrouverId(const UseCtx &ctx, const char *href) noexcept {
+			if (!href)
+				return nullptr;
+			const char *id = (*href == '#') ? href + 1 : href;
+			if (!*id)
+				return nullptr;
+			for (uint32 i = 0; i < ctx.index.Size(); ++i)
+				if (std::strcmp(ctx.index[i].id, id) == 0)
+					return &ctx.index[i];
+			return nullptr;
+		}
+
 		// ─────────────────────────────────────────────────────────────────────────────
 		// SECTION 8 — Parser XML stream-based avec stack <g>
 		// ─────────────────────────────────────────────────────────────────────────────
@@ -2072,26 +2245,51 @@ namespace nkentseu {
 		}
 
 		/// Parse l'ensemble du document SVG -> liste de shapes + gradients + viewBox + dim.
+		/// @param useCtx    index des id + buffers partages (instanciation par <use>)
+		/// @param etatInit  nullptr a la racine ; sinon l'etat herite du <use> qui
+		///                  instancie ce fragment (sa matrice, son style).
 		void ParseSVGDocument(const char *xml, usize xmlLen, NkVector<Shape> &shapes, NkVector<Gradient> &gradients,
 							  NkVector<Filtre> &filtres, float32 &vbX, float32 &vbY, float32 &vbW, float32 &vbH,
 							  float32 &svgW, float32 &svgH, SkipList &skips, const char *baseDir,
-							  NkIGlyphSource *glyphes) noexcept {
-			vbX = vbY = 0.f;
-			vbW = 0.f;
-			vbH = 0.f;
-			svgW = 0.f;
-			svgH = 0.f;
+							  NkIGlyphSource *glyphes, UseCtx &useCtx,
+							  const ParseState *etatInit = nullptr) noexcept {
+			const bool racine = (etatInit == nullptr);
+			if (racine) {
+				vbX = vbY = 0.f;
+				vbW = 0.f;
+				vbH = 0.f;
+				svgW = 0.f;
+				svgH = 0.f;
+			}
 
 			constexpr usize kAttrPoolSize = 1024 * 1024; // 1 MB par tag
 			constexpr usize kNameBufSize = 64 * 1024;	 // 64 KB noms d'attrs
-			char *nameBuf = (char *)NkAlloc(kNameBufSize);
-			char *attrPool = (char *)NkAlloc(kAttrPoolSize);
+			// LES BUFFERS SONT PARTAGES par tous les niveaux d'instanciation : en
+			// reallouer 1 Mo a chaque <use> couterait plus cher que tout le reste du
+			// decodage (824 <use> mesures dans Resources/). C'est sur parce que les
+			// valeurs d'attributs sont COPIEES avant toute recursion.
+			const bool proprietaireBufs = (useCtx.nameBuf == nullptr);
+			if (proprietaireBufs) {
+				useCtx.nameBuf = (char *)NkAlloc(kNameBufSize);
+				useCtx.attrPool = (char *)NkAlloc(kAttrPoolSize);
+			}
+			char *nameBuf = useCtx.nameBuf;
+			char *attrPool = useCtx.attrPool;
 			if (!nameBuf || !attrPool) {
-				if (nameBuf)
-					NkFree(nameBuf);
-				if (attrPool)
-					NkFree(attrPool);
+				if (proprietaireBufs) {
+					if (nameBuf)
+						NkFree(nameBuf);
+					if (attrPool)
+						NkFree(attrPool);
+					useCtx.nameBuf = nullptr;
+					useCtx.attrPool = nullptr;
+				}
 				return;
+			}
+			// L'INDEX, une seule fois pour tout le document.
+			if (!useCtx.indexe) {
+				useCtx.indexe = true;
+				IndexerIds(xml, xml + xmlLen, useCtx.index);
 			}
 			usize nameOff = 0, poolOff = 0;
 
@@ -2102,7 +2300,7 @@ namespace nkentseu {
 			constexpr int32 kMaxDepth = 64;
 			ParseState stack[kMaxDepth];
 			int32 depth = 0;
-			stack[0] = {};
+			stack[0] = etatInit ? *etatInit : ParseState{};
 
 			int32 numAttrs = 0;
 			bool gotSvg = false;
@@ -2143,7 +2341,8 @@ namespace nkentseu {
 					}
 					if (std::strcmp(tagBuf, "g") == 0 && depth > 0) {
 						--depth;
-					} else if (std::strcmp(tagBuf, "defs") == 0 && defsDepth > 0) {
+					} else if ((std::strcmp(tagBuf, "defs") == 0 || std::strcmp(tagBuf, "symbol") == 0) &&
+							   defsDepth > 0) {
 						--defsDepth;
 					} else if ((std::strcmp(tagBuf, "linearGradient") == 0 ||
 								std::strcmp(tagBuf, "radialGradient") == 0) &&
@@ -2262,6 +2461,15 @@ namespace nkentseu {
 						++defsDepth;
 					continue;
 				}
+				// <symbol> NE SE REND PAS LA OU IL EST DEFINI -- seulement instancie
+				// par <use>, et <use> lui passe alors son INTERIEUR : cette balise
+				// n'apparait donc jamais dans un fragment instancie. Une seule regle,
+				// sans exception a verifier.
+				if (std::strcmp(tagBuf, "symbol") == 0) {
+					if (kind == 1)
+						++defsDepth;
+					continue;
+				}
 
 				// Gradients : <linearGradient> / <radialGradient> (+ <stop> enfants).
 				if (std::strcmp(tagBuf, "linearGradient") == 0 || std::strcmp(tagBuf, "radialGradient") == 0) {
@@ -2369,6 +2577,102 @@ namespace nkentseu {
 				// Contenu de <defs> : definitions seulement, pas de rendu de shape.
 				if (defsDepth > 0)
 					continue;
+
+				// ── <use> : INSTANCIER UN ELEMENT DEJA DECRIT AILLEURS ───────────
+				if (std::strcmp(tagBuf, "use") == 0) {
+					// TOUT CE QU'ON LIT DU <use> EST COPIE MAINTENANT : la recursion
+					// reutilise les memes buffers d'attributs et les ecrasera.
+					const char *hrefAttr = FindAttr(attrs, numAttrs, "href");
+					if (!hrefAttr)
+						hrefAttr = FindAttr(attrs, numAttrs, "xlink:href");
+					char href[128];
+					href[0] = 0;
+					if (hrefAttr) {
+						std::strncpy(href, hrefAttr, sizeof(href) - 1);
+						href[sizeof(href) - 1] = 0;
+					}
+					const float32 ux = ParseFloat(FindAttr(attrs, numAttrs, "x"));
+					const float32 uy = ParseFloat(FindAttr(attrs, numAttrs, "y"));
+					const char *wAttr = FindAttr(attrs, numAttrs, "width");
+					const char *hAttr = FindAttr(attrs, numAttrs, "height");
+					const float32 uw = wAttr ? ParseFloat(wAttr) : 0.f;
+					const float32 uh = hAttr ? ParseFloat(hAttr) : 0.f;
+
+					ParseState inst = cur;
+					inst.style = MergeStyle(cur.style, attrs, numAttrs);
+					UpdateRefs(inst.fillRef, inst.strokeRef, attrs, numAttrs);
+					const char *trU = FindAttr(attrs, numAttrs, "transform");
+					if (trU)
+						inst.xform = cur.xform * NkSVGTransform::Parse(trU);
+					// x / y d'un <use> valent une TRANSLATION, appliquee APRES son
+					// propre transform (SVG 1.1 §5.6).
+					if (ux != 0.f || uy != 0.f)
+						inst.xform = inst.xform * NkSVGTransform::Translate(ux, uy);
+
+					const IdRange *cible = TrouverId(useCtx, href);
+					if (!cible) {
+						if (skips.Noter("use-cible-absente"))
+							logger.Warn("[SVG] <use href=\"{0}\"> : cible introuvable -- rien n'est instancie.",
+										href);
+						continue;
+					}
+					// LA GARDE DE RECURSION. Un <use> peut se referencer lui-meme, ou
+					// deux <use> se referencer mutuellement. Une pile qui explose ne
+					// laisse aucun message ; un compteur, si.
+					if (useCtx.profondeur >= kProfondeurUseMax) {
+						if (skips.Noter("use-recursion"))
+							logger.Warn("[SVG] <use> : profondeur d'instanciation {0} atteinte (reference "
+										"circulaire ?) -- on s'arrete la.",
+										kProfondeurUseMax);
+						continue;
+					}
+
+					// <symbol> et <svg> : on instancie leur INTERIEUR (leur propre
+					// balise ne se rend pas), et leur viewBox devient une echelle si
+					// le <use> donne une taille.
+					const bool conteneur =
+						(std::strcmp(cible->tag, "symbol") == 0 || std::strcmp(cible->tag, "svg") == 0);
+					const char *fragDeb = conteneur ? cible->debInterieur : cible->debComplet;
+					const char *fragFin = conteneur ? cible->finInterieur : cible->finComplet;
+					if (!fragDeb || !fragFin || fragFin <= fragDeb)
+						continue;
+					if (conteneur && uw > 0.f && uh > 0.f) {
+						// la viewBox du symbole, relue a la main dans son tag ouvrant
+						float32 sx = 1.f, sy = 1.f;
+						const char *vbp = cible->debComplet;
+						while (vbp < cible->debInterieur && std::strncmp(vbp, "viewBox", 7) != 0)
+							++vbp;
+						if (vbp < cible->debInterieur) {
+							vbp += 7;
+							while (vbp < cible->debInterieur && (*vbp == '=' || *vbp == '"' || *vbp == '\'' ||
+																 IsSpace(*vbp)))
+								++vbp;
+							const float32 bx = ParseFloat(vbp, &vbp);
+							vbp = SkipWSComma(vbp);
+							const float32 by = ParseFloat(vbp, &vbp);
+							vbp = SkipWSComma(vbp);
+							const float32 bw = ParseFloat(vbp, &vbp);
+							vbp = SkipWSComma(vbp);
+							const float32 bh = ParseFloat(vbp, &vbp);
+							if (bw > 0.f && bh > 0.f) {
+								sx = uw / bw;
+								sy = uh / bh;
+								inst.xform = inst.xform * NkSVGTransform::Scale(sx, sy) *
+											 NkSVGTransform::Translate(-bx, -by);
+							}
+						}
+					} else if (!conteneur && (wAttr || hAttr) && skips.Noter("use-taille")) {
+						logger.Warn("[SVG] <use width/height> n'a d'effet que sur un <symbol> ou un <svg> : "
+									"ignore ici (norme SVG 1.1 §5.6).");
+					}
+
+					++useCtx.profondeur;
+					float32 iw = 0.f, ih = 0.f, jw = 0.f, jh = 0.f, kw = 0.f, kh = 0.f;
+					ParseSVGDocument(fragDeb, (usize)(fragFin - fragDeb), shapes, gradients, filtres, iw, ih, jw, jh,
+									 kw, kh, skips, baseDir, glyphes, useCtx, &inst);
+					--useCtx.profondeur;
+					continue;
+				}
 
 				// ── <text> / <tspan> : le contenu VIT ENTRE LES BALISES ──────────
 				//    Le lecteur de tags saute le texte ; ici on le prend a la source,
@@ -2507,8 +2811,12 @@ namespace nkentseu {
 			if (dansFiltre)
 				filtres.PushBack(curFiltre); // un <filter> jamais ferme
 			FinirTexte(shapes, texte, glyphes, skips); // un <text> jamais ferme se pose quand meme
-			NkFree(nameBuf);
-			NkFree(attrPool);
+			if (proprietaireBufs) {
+				NkFree(nameBuf);
+				NkFree(attrPool);
+				useCtx.nameBuf = nullptr;
+				useCtx.attrPool = nullptr;
+			}
 		}
 
 		// ─────────────────────────────────────────────────────────────────────────────
@@ -3684,8 +3992,9 @@ namespace nkentseu {
 		if (!impl)
 			return nullptr;
 		new (impl) SVGImageImpl();
+		UseCtx useCtx; // l'index des id vit le temps du decodage, pas au-dela
 		ParseSVGDocument(xml, size, impl->shapes, impl->gradients, impl->filtres, impl->vbX, impl->vbY, impl->vbW,
-						 impl->vbH, impl->svgW, impl->svgH, impl->skips, baseDir, glyphes);
+						 impl->vbH, impl->svgW, impl->svgH, impl->skips, baseDir, glyphes, useCtx);
 
 		// Si parsing a echoue (aucun shape ET aucune viewBox), on libere.
 		if (impl->shapes.IsEmpty() && impl->vbW <= 0.f && impl->svgW <= 0.f) {
