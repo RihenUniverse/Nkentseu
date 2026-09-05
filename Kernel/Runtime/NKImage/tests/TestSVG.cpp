@@ -594,6 +594,182 @@ static void TestDegrades() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER 5 — <filter><feDropShadow> : l'ombre est l'alpha du GROUPE
+// ─────────────────────────────────────────────────────────────────────────────
+static void TestOmbre() {
+	std::printf("\n== PALIER 5 : <feDropShadow> ==\n");
+	char det[640];
+	static char svg[4096];
+
+	// (a) une ombre NETTE (stdDeviation=0) decalee de +12,+12 : elle est SOUS la
+	//     forme, decalee, et de la couleur demandee.
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\">"
+				  "<defs><filter id=\"o\" x=\"-50%%\" y=\"-50%%\" width=\"200%%\" height=\"200%%\">"
+				  "<feDropShadow dx=\"12\" dy=\"12\" stdDeviation=\"0\" flood-color=\"#ff0000\" "
+				  "flood-opacity=\"1\"/></filter></defs>"
+				  "<g filter=\"url(#o)\"><rect x=\"20\" y=\"20\" width=\"50\" height=\"50\" fill=\"#000000\"/></g>"
+				  "</svg>");
+	NkImage a = Decoder(svg);
+	// la forme : (20..70) ; l'ombre : (32..82). En (75,75) il n'y a QUE l'ombre.
+	const bool forme = Proche(a, 45, 45, 0, 0, 0, 4);
+	const bool ombreLa = Proche(a, 75, 75, 255, 0, 0, 6);
+	const bool ombreDessous = Proche(a, 45, 45, 0, 0, 0, 4); // au centre : la forme, pas l'ombre
+	const bool rienAvant = AlphaDe(a, 10, 10) < 20;			 // avant la forme : rien
+	const bool net = a.IsValid() && forme && ombreLa && ombreDessous && rienAvant;
+	std::snprintf(det, sizeof(det), "forme noire au centre=%d ; ombre rouge en (75,75)=%d ; alpha en (10,10)=%d",
+				  forme ? 1 : 0, ombreLa ? 1 : 0, AlphaDe(a, 10, 10));
+	Verifier("5a. <feDropShadow dx dy> : une ombre de la couleur demandee, DECALEE, et posee SOUS la forme (le "
+			 "centre reste noir, pas rouge)",
+			 net, det);
+
+	// (b) le FLOU : avec stdDeviation, le bord de l'ombre n'est plus franc --
+	//     il existe des valeurs INTERMEDIAIRES la ou l'ombre nette n'en a pas.
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\">"
+				  "<defs><filter id=\"o\"><feDropShadow dx=\"12\" dy=\"12\" stdDeviation=\"4\" "
+				  "flood-color=\"#ff0000\"/></filter></defs>"
+				  "<g filter=\"url(#o)\"><rect x=\"20\" y=\"20\" width=\"50\" height=\"50\" fill=\"#000000\"/></g>"
+				  "</svg>");
+	NkImage b = Decoder(svg);
+	// LE BORD DE L'OMBRE EST A x=82 (le rect 20..70, decale de 12). Un flou se
+	// mesure DE PART ET D'AUTRE de ce bord, a un demi ecart-type : DEHORS l'alpha
+	// apparait, DEDANS il diminue. Une simple dilatation ne ferait que le premier ;
+	// exiger les deux, c'est exiger une vraie transition.
+	const int32 dehorsNet = AlphaDe(a, 84, 50), dehorsFlou = AlphaDe(b, 84, 50);
+	const int32 dedansNet = AlphaDe(a, 80, 50), dedansFlou = AlphaDe(b, 80, 50);
+	const int32 coeur = AlphaDe(b, 75, 75);
+	const bool floute = b.IsValid() && dehorsNet == 0 && dehorsFlou > 40 && dedansNet > 250 &&
+						dedansFlou < dedansNet - 40 && coeur > 150;
+	std::snprintf(det, sizeof(det),
+				  "a 2 px DEHORS du bord : net=%d flou=%d ; a 2 px DEDANS : net=%d flou=%d ; coeur de l'ombre=%d",
+				  dehorsNet, dehorsFlou, dedansNet, dedansFlou, coeur);
+	Verifier("5b. stdDeviation FLOUTE vraiment l'ombre : l'alpha apparait dehors ET diminue dedans (une "
+			 "transition, pas une dilatation), sans vider le coeur",
+			 floute, det);
+
+	// (c) flood-opacity : l'ombre est plus transparente, la forme ne bouge pas.
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\">"
+				  "<defs><filter id=\"o\"><feDropShadow dx=\"12\" dy=\"12\" stdDeviation=\"0\" "
+				  "flood-color=\"#ff0000\" flood-opacity=\"0.25\"/></filter></defs>"
+				  "<g filter=\"url(#o)\"><rect x=\"20\" y=\"20\" width=\"50\" height=\"50\" fill=\"#000000\"/></g>"
+				  "</svg>");
+	NkImage c = Decoder(svg);
+	const int32 a25 = AlphaDe(c, 75, 75);
+	const bool opac = c.IsValid() && a25 > 45 && a25 < 80 && Proche(c, 45, 45, 0, 0, 0, 4);
+	std::snprintf(det, sizeof(det), "alpha de l'ombre a flood-opacity=0.25 : %d (attendu ~64) ; la forme est "
+								   "intacte=%d",
+				  a25, Proche(c, 45, 45, 0, 0, 0, 4) ? 1 : 0);
+	Verifier("5c. flood-opacity attenue l'ombre SANS toucher a la forme", opac, det);
+
+	// (d) une primitive de filtre non geree est NOMMEE (elle change l'image :
+	//     la sauter en silence ferait croire que le filtre a ete applique).
+	static const char *kAutre =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+		"<defs><filter id=\"f\"><feGaussianBlur stdDeviation=\"3\"/><feTurbulence baseFrequency=\"0.1\"/>"
+		"</filter></defs><g filter=\"url(#f)\"><rect x=\"5\" y=\"5\" width=\"30\" height=\"30\" fill=\"#000\"/></g>"
+		"</svg>";
+	NkSVGImage *img = NkSVGImage::LoadFromMemory((const uint8 *)kAutre, std::strlen(kAutre));
+	bool blurDit = false, turbDit = false;
+	if (img) {
+		for (int32 i = 0; i < img->SkippedCount(); ++i) {
+			const char *n = img->SkippedAt(i);
+			if (n && std::strcmp(n, "feGaussianBlur") == 0)
+				blurDit = true;
+			if (n && std::strcmp(n, "feTurbulence") == 0)
+				turbDit = true;
+		}
+		// et le groupe est peint QUAND MEME : perdre l'effet vaut mieux que perdre
+		// la forme
+		NkImage r = img->Rasterize(0, 0);
+		blurDit = blurDit && Proche(r, 20, 20, 0, 0, 0, 4);
+		img->Free();
+	}
+	std::snprintf(det, sizeof(det), "feGaussianBlur nomme (et la forme peinte quand meme)=%d ; feTurbulence "
+								   "nomme=%d",
+				  blurDit ? 1 : 0, turbDit ? 1 : 0);
+	Verifier("5d. les primitives de filtre AUTRES que feDropShadow sont NOMMEES, et le groupe est peint quand "
+			 "meme (perdre l'effet vaut mieux que perdre la forme)",
+			 blurDit && turbDit, det);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PALIER 6 — opacites composees et mix-blend-mode
+// ─────────────────────────────────────────────────────────────────────────────
+static void TestOpacites() {
+	std::printf("\n== PALIER 6 : opacites et fusion ==\n");
+	char det[640];
+	static char svg[4096];
+
+	// (a) opacity ET fill-opacity se COMPOSENT : 0.5 x 0.5 = 0.25.
+	//     Un noir a 25 % sur du blanc donne 191.
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+				  "<rect x=\"0\" y=\"0\" width=\"60\" height=\"60\" fill=\"#ffffff\"/>"
+				  "<rect x=\"10\" y=\"10\" width=\"40\" height=\"40\" fill=\"#000000\" opacity=\"0.5\" "
+				  "fill-opacity=\"0.5\"/></svg>");
+	NkImage a = Decoder(svg);
+	const int32 g = Gris(a, 30, 30);
+	const bool compose = a.IsValid() && g > 180 && g < 202;
+	std::snprintf(det, sizeof(det), "gris obtenu %d (0.5 x 0.5 = 0.25 de noir sur blanc -> ~191 ; une seule des "
+								   "deux opacites donnerait ~128)",
+				  g);
+	Verifier("6a. opacity ET fill-opacity se COMPOSENT (0,25 au total, pas 0,5)", compose, det);
+
+	// (b) mix-blend-mode:multiply -- un gris a 50 % sur du rouge donne du rouge
+	//     sombre : le vert et le bleu restent a zero, le rouge est divise par deux.
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+				  "<rect x=\"0\" y=\"0\" width=\"60\" height=\"60\" fill=\"#ff0000\"/>"
+				  "<rect x=\"10\" y=\"10\" width=\"40\" height=\"40\" fill=\"#808080\" "
+				  "style=\"mix-blend-mode:multiply\"/></svg>");
+	NkImage b = Decoder(svg);
+	uint8 pb[4];
+	{
+		uint8 tmp[4];
+		Pixel(b, 30, 30, tmp);
+		pb[0] = tmp[0];
+		pb[1] = tmp[1];
+		pb[2] = tmp[2];
+		pb[3] = tmp[3];
+	}
+	const bool multiplie = b.IsValid() && pb[0] > 118 && pb[0] < 138 && pb[1] < 8 && pb[2] < 8;
+	std::snprintf(det, sizeof(det), "(%u,%u,%u) -- multiply de #808080 sur #ff0000 attend ~(128,0,0), le mode "
+								   "ignore aurait laisse (128,128,128)",
+				  pb[0], pb[1], pb[2]);
+	Verifier("6b. mix-blend-mode:multiply est PEINT (le fond rouge assombrit la source grise)", multiplie, det);
+
+	// (c) screen : la meme source ECLAIRCIT au lieu d'assombrir.
+	std::snprintf(svg, sizeof(svg),
+				  "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+				  "<rect x=\"0\" y=\"0\" width=\"60\" height=\"60\" fill=\"#ff0000\"/>"
+				  "<rect x=\"10\" y=\"10\" width=\"40\" height=\"40\" fill=\"#808080\" "
+				  "style=\"mix-blend-mode:screen\"/></svg>");
+	NkImage c = Decoder(svg);
+	uint8 pc[4];
+	Pixel(c, 30, 30, pc);
+	const bool ecran = c.IsValid() && pc[0] > 245 && pc[1] > 118 && pc[1] < 138 && pc[2] > 118 && pc[2] < 138;
+	std::snprintf(det, sizeof(det), "(%u,%u,%u) -- screen attend ~(255,128,128)", pc[0], pc[1], pc[2]);
+	Verifier("6c. mix-blend-mode:screen est PEINT (la source eclaircit le fond)", ecran, det);
+
+	// (d) un mode NON gere est nomme et rendu en « normal » -- pas devine.
+	static const char *kAutre =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+		"<rect x=\"0\" y=\"0\" width=\"60\" height=\"60\" fill=\"#ff0000\"/>"
+		"<rect x=\"10\" y=\"10\" width=\"40\" height=\"40\" fill=\"#808080\" "
+		"style=\"mix-blend-mode:overlay\"/></svg>";
+	NkImage d = Decoder(kAutre);
+	uint8 pd[4];
+	Pixel(d, 30, 30, pd);
+	const bool normal = d.IsValid() && pd[0] > 118 && pd[0] < 138 && pd[1] > 118 && pd[1] < 138;
+	std::snprintf(det, sizeof(det), "(%u,%u,%u) -- « overlay » n'est pas peint : la source est posee telle quelle",
+				  pd[0], pd[1], pd[2]);
+	Verifier("6d. un mix-blend-mode non gere (overlay) est rendu en NORMAL, pas approche par un autre mode", normal,
+			 det);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -648,6 +824,8 @@ int TestSVG_Run() {
 	TestImage();
 	TestTexte();
 	TestDegrades();
+	TestOmbre();
+	TestOpacites();
 	TestNonGere();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);
 	return (gPass == gTotal) ? 0 : 1;

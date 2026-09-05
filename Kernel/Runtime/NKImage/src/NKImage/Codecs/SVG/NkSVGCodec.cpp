@@ -550,6 +550,14 @@ namespace nkentseu {
 			None	  ///< etire aux deux dimensions, le rapport est perdu
 		};
 
+		// ── <filter> : la seule primitive PEINTE est <feDropShadow> ──────────
+		struct Filtre {
+				char id[64] = {0};
+				bool ombre = false; ///< au moins un feDropShadow lu
+				float32 dx = 0.f, dy = 0.f, ecartType = 0.f;
+				NkSVGColor couleur = NkSVGColor::Black();
+		};
+
 		/// Shape interne = un path flatten en polyligne(s), + style cumule + CTM applique.
 		/// Les xs/ys sont en COORDONNEES DESTINATION (apres ctm + view->out scaling).
 		/// Une shape peut aussi porter une IMAGE (<image>) : ses quatre coins sont
@@ -570,6 +578,10 @@ namespace nkentseu {
 				NkImage img;						 ///< pixels decodes ; invalide = ce n'est pas une image
 				float32 ix = 0, iy = 0, iw = 0, ih = 0; ///< la boite, en espace UTILISATEUR (avant ctm)
 				FitKind fit = FitKind::Meet;
+
+				// ── le filtre du groupe qui porte cette forme ────────────────
+				char filterRef[64] = {0};
+				int32 filterInst = 0; ///< numero D'INSTANCE du groupe filtre (0 = aucun)
 
 				bool EstImage() const noexcept {
 					return img.IsValid();
@@ -620,6 +632,11 @@ namespace nkentseu {
 				NkSVGTransform xform = NkSVGTransform::Identity();
 				char fillRef[64] = {0}; // herite via cascade <g>
 				char strokeRef[64] = {0};
+				// Le filtre s'herite comme le reste, MAIS avec un numero d'instance :
+				// deux groupes freres qui portent le MEME filtre sont deux ombres
+				// distinctes, pas une ombre sur leur union.
+				char filterRef[64] = {0};
+				int32 filterInst = 0;
 		};
 
 		/// Paire (nom, valeur) d'attribut XML. value pointe dans le pool partage.
@@ -1028,6 +1045,16 @@ namespace nkentseu {
 					s.strokeLineJoin = NkSVGLineJoin::Bevel;
 				else
 					s.strokeLineJoin = NkSVGLineJoin::Miter;
+			} else if (std::strcmp(name, "mix-blend-mode") == 0) {
+				// PEINTS parce qu'ils ne coutent rien : le rasteriseur lit deja la
+				// destination pour composer. Les autres modes demanderaient un calque
+				// isole par groupe -- ils sont nommes au decodage, pas devines.
+				if (std::strcmp(value, "multiply") == 0)
+					s.blend = NkSVGBlend::Multiply;
+				else if (std::strcmp(value, "screen") == 0)
+					s.blend = NkSVGBlend::Screen;
+				else
+					s.blend = NkSVGBlend::Normal;
 			} else if (std::strcmp(name, "stroke-miterlimit") == 0) {
 				const float32 ml = ParseFloat(value);
 				s.strokeMiterLimit = (ml >= 1.f) ? ml : 1.f;
@@ -2042,8 +2069,8 @@ namespace nkentseu {
 
 		/// Parse l'ensemble du document SVG -> liste de shapes + gradients + viewBox + dim.
 		void ParseSVGDocument(const char *xml, usize xmlLen, NkVector<Shape> &shapes, NkVector<Gradient> &gradients,
-							  float32 &vbX, float32 &vbY, float32 &vbW, float32 &vbH, float32 &svgW, float32 &svgH,
-							  SkipList &skips, const char *baseDir) noexcept {
+							  NkVector<Filtre> &filtres, float32 &vbX, float32 &vbY, float32 &vbW, float32 &vbH,
+							  float32 &svgW, float32 &svgH, SkipList &skips, const char *baseDir) noexcept {
 			vbX = vbY = 0.f;
 			vbW = 0.f;
 			vbH = 0.f;
@@ -2076,6 +2103,9 @@ namespace nkentseu {
 			bool gotSvg = false;
 			TextState texte;
 			FontCache polices;
+			Filtre curFiltre;
+			bool dansFiltre = false;
+			int32 prochaineInstance = 0;
 			int32 defsDepth = 0; // > 0 = on est dans <defs> : shapes non rendues
 			bool buildingGrad = false;
 			Gradient curGrad; // gradient en cours de construction (stops)
@@ -2099,6 +2129,14 @@ namespace nkentseu {
 					}
 					if (std::strcmp(tagBuf, "tspan") == 0)
 						continue;
+					if (std::strcmp(tagBuf, "filter") == 0) {
+						if (dansFiltre) {
+							filtres.PushBack(curFiltre);
+							curFiltre = Filtre();
+							dansFiltre = false;
+						}
+						continue;
+					}
 					if (std::strcmp(tagBuf, "g") == 0 && depth > 0) {
 						--depth;
 					} else if (std::strcmp(tagBuf, "defs") == 0 && defsDepth > 0) {
@@ -2154,9 +2192,62 @@ namespace nkentseu {
 						const char *tr = FindAttr(attrs, numAttrs, "transform");
 						if (tr)
 							next.xform = cur.xform * NkSVGTransform::Parse(tr);
+						const char *flt = FindAttr(attrs, numAttrs, "filter");
+						char refFiltre[64];
+						if (flt && ParseUrlRef(flt, refFiltre, sizeof(refFiltre))) {
+							std::strncpy(next.filterRef, refFiltre, 63);
+							next.filterRef[63] = 0;
+							next.filterInst = ++prochaineInstance;
+						}
 						stack[++depth] = next;
 					}
 					// <g/> self-closed = groupe vide, on ignore.
+					continue;
+				}
+
+				// ── <filter> et ses primitives ───────────────────────────────────
+				if (std::strcmp(tagBuf, "filter") == 0) {
+					curFiltre = Filtre();
+					const char *fid = FindAttr(attrs, numAttrs, "id");
+					if (fid) {
+						std::strncpy(curFiltre.id, fid, 63);
+						curFiltre.id[63] = 0;
+					}
+					dansFiltre = true;
+					if (kind == 2) { // <filter/> vide
+						filtres.PushBack(curFiltre);
+						curFiltre = Filtre();
+						dansFiltre = false;
+					}
+					continue;
+				}
+				if (std::strncmp(tagBuf, "fe", 2) == 0) {
+					if (std::strcmp(tagBuf, "feDropShadow") == 0 && dansFiltre) {
+						curFiltre.ombre = true;
+						curFiltre.dx = ParseFloat(FindAttr(attrs, numAttrs, "dx"));
+						curFiltre.dy = ParseFloat(FindAttr(attrs, numAttrs, "dy"));
+						const char *sd = FindAttr(attrs, numAttrs, "stdDeviation");
+						curFiltre.ecartType = sd ? ParseFloat(sd) : 2.f;
+						const char *fc = FindAttr(attrs, numAttrs, "flood-color");
+						curFiltre.couleur = fc ? NkSVGColor::Parse(fc) : NkSVGColor::Black();
+						const char *fo = FindAttr(attrs, numAttrs, "flood-opacity");
+						if (fo) {
+							float32 o = ParseFloat(fo);
+							if (o < 0.f)
+								o = 0.f;
+							if (o > 1.f)
+								o = 1.f;
+							curFiltre.couleur.a = (uint8)((float32)curFiltre.couleur.a * o);
+						}
+						curFiltre.couleur.none = false;
+					} else if (skips.Noter(tagBuf)) {
+						// LES AUTRES PRIMITIVES SONT NOMMEES : un flou, une matrice de
+						// couleurs ou une turbulence qu'on saute change l'image ; le
+						// taire ferait croire que le filtre a ete applique.
+						logger.Warn("[SVG] primitive de filtre non geree, sautee : <{0}> (seul <feDropShadow> est "
+									"peint).",
+									tagBuf);
+					}
 					continue;
 				}
 
@@ -2399,6 +2490,9 @@ namespace nkentseu {
 				// Propage le CTM + les refs de gradient aux shapes nouvellement creees.
 				for (uint32 si = shapeBefore; si < shapes.Size(); ++si) {
 					shapes[si].ctm = local.xform;
+					std::strncpy(shapes[si].filterRef, local.filterRef, 63);
+					shapes[si].filterRef[63] = 0;
+					shapes[si].filterInst = local.filterInst;
 					std::strncpy(shapes[si].fillRef, local.fillRef, 63);
 					shapes[si].fillRef[63] = 0;
 					std::strncpy(shapes[si].strokeRef, local.strokeRef, 63);
@@ -2406,6 +2500,8 @@ namespace nkentseu {
 				}
 			}
 
+			if (dansFiltre)
+				filtres.PushBack(curFiltre); // un <filter> jamais ferme
 			FinirTexte(shapes, texte, polices, skips); // un <text> jamais ferme se pose quand meme
 			polices.Liberer();
 			NkFree(nameBuf);
@@ -2866,6 +2962,27 @@ namespace nkentseu {
 						continue;
 					const int32 invA = 255 - sa;
 					uint8 *px = dst + (usize)x * 4;
+					// ── mix-blend-mode : la couleur SOURCE est melangee au FOND avant
+					//    d'etre composee. Formule de CSS Compositing :
+					//    Cs' = (1 - da) Cs + da B(Cb, Cs). A fond transparent (da = 0)
+					//    on retombe exactement sur la source : un mode de fusion ne
+					//    change rien la ou il n'y a rien, et c'est ce qu'on veut.
+					if (sh.style.blend != NkSVGBlend::Normal) {
+						const float32 da = (float32)px[3] / 255.f;
+						int32 *sc[3] = {&srcR, &srcG, &srcB};
+						for (int32 k = 0; k < 3; ++k) {
+							const float32 cs = (float32)(*sc[k]) / 255.f;
+							const float32 cb = (float32)px[k] / 255.f;
+							const float32 b = (sh.style.blend == NkSVGBlend::Multiply) ? (cs * cb)
+																					  : (cs + cb - cs * cb);
+							float32 v = (1.f - da) * cs + da * b;
+							if (v < 0.f)
+								v = 0.f;
+							if (v > 1.f)
+								v = 1.f;
+							*sc[k] = (int32)(v * 255.f + 0.5f);
+						}
+					}
 					px[0] = (uint8)((srcR * sa + (int32)px[0] * invA + 127) / 255);
 					px[1] = (uint8)((srcG * sa + (int32)px[1] * invA + 127) / 255);
 					px[2] = (uint8)((srcB * sa + (int32)px[2] * invA + 127) / 255);
@@ -3070,15 +3187,164 @@ namespace nkentseu {
 			}
 		}
 
+		// ─────────────────────────────────────────────────────────────────────────────
+		// <feDropShadow> — L'OMBRE EST L'ALPHA DU GROUPE, FLOUTE, DECALE, TEINTE
+		// -----------------------------------------------------------------------------
+		// Un filtre ne s'applique pas a une forme mais a un GROUPE : deux rectangles
+		// qui se chevauchent sous le meme <g filter> portent UNE ombre commune, pas
+		// deux. Il faut donc un CALQUE -- rendre le groupe a part, puis composer. La
+		// forme de l'ombre ne depend que de l'ALPHA du calque (feDropShadow est
+		// monochrome) : on ne floute qu'un canal, pas quatre.
+		//
+		// Le flou gaussien est SEPARABLE : deux passes a une dimension au lieu d'une
+		// convolution carree. Pour un rayon de 3 ecarts-types, ca fait 6σ additions
+		// par pixel au lieu de 36σ² -- la difference entre « instantane » et « on
+		// attend ».
+		// ─────────────────────────────────────────────────────────────────────────────
+
+		/// Flou gaussien separable d'un canal 8 bits, en place (via un tampon).
+		void FlouGaussien(uint8 *canal, int32 W, int32 H, float32 sigma) noexcept {
+			if (sigma < 0.05f || W <= 0 || H <= 0)
+				return;
+			int32 rayon = (int32)std::ceil(sigma * 3.f);
+			if (rayon < 1)
+				rayon = 1;
+			if (rayon > 128)
+				rayon = 128; // borne : au-dela le noyau coute plus que le resultat ne montre
+			const int32 n = rayon * 2 + 1;
+			float32 poids[257];
+			float32 somme = 0.f;
+			const float32 deux = 2.f * sigma * sigma;
+			for (int32 i = 0; i < n; ++i) {
+				const float32 d = (float32)(i - rayon);
+				poids[i] = std::exp(-(d * d) / deux);
+				somme += poids[i];
+			}
+			for (int32 i = 0; i < n; ++i)
+				poids[i] /= somme;
+
+			uint8 *tmp = (uint8 *)NkAlloc((usize)W * (usize)H);
+			if (!tmp)
+				return;
+			// passe horizontale
+			for (int32 y = 0; y < H; ++y) {
+				const uint8 *ligne = canal + (usize)y * (usize)W;
+				uint8 *sortie = tmp + (usize)y * (usize)W;
+				for (int32 x = 0; x < W; ++x) {
+					float32 acc = 0.f;
+					for (int32 i = 0; i < n; ++i) {
+						int32 sx = x + i - rayon;
+						if (sx < 0)
+							sx = 0;
+						if (sx >= W)
+							sx = W - 1;
+						acc += (float32)ligne[sx] * poids[i];
+					}
+					sortie[x] = (uint8)(acc + 0.5f);
+				}
+			}
+			// passe verticale
+			for (int32 y = 0; y < H; ++y) {
+				for (int32 x = 0; x < W; ++x) {
+					float32 acc = 0.f;
+					for (int32 i = 0; i < n; ++i) {
+						int32 sy = y + i - rayon;
+						if (sy < 0)
+							sy = 0;
+						if (sy >= H)
+							sy = H - 1;
+						acc += (float32)tmp[(usize)sy * (usize)W + (usize)x] * poids[i];
+					}
+					canal[(usize)y * (usize)W + (usize)x] = (uint8)(acc + 0.5f);
+				}
+			}
+			NkFree(tmp);
+		}
+
+		/// Compose @p calque (RGBA, alpha droit) sur @p dst, en « dessus » ordinaire.
+		void ComposerCalque(NkImage &dst, const NkImage &calque) noexcept {
+			const int32 W = dst.Width(), H = dst.Height();
+			uint8 *d = dst.Pixels();
+			const uint8 *s2 = calque.Pixels();
+			if (!d || !s2)
+				return;
+			for (int32 y = 0; y < H; ++y) {
+				for (int32 x = 0; x < W; ++x) {
+					const usize o = ((usize)y * (usize)W + (usize)x) * 4u;
+					const int32 sa = (int32)s2[o + 3];
+					if (sa <= 0)
+						continue;
+					const int32 invA = 255 - sa;
+					for (int32 k = 0; k < 3; ++k)
+						d[o + k] = (uint8)(((int32)s2[o + k] * sa + (int32)d[o + k] * invA + 127) / 255);
+					const int32 a2 = (int32)d[o + 3] + sa - ((int32)d[o + 3] * sa + 127) / 255;
+					d[o + 3] = (uint8)(a2 > 255 ? 255 : a2);
+				}
+			}
+		}
+
+		/// Pose l'ombre du calque SOUS lui : son alpha floute, decale et teinte.
+		void PoserOmbre(NkImage &dst, const NkImage &calque, const Filtre &fl, float32 echX, float32 echY) noexcept {
+			const int32 W = dst.Width(), H = dst.Height();
+			const uint8 *src = calque.Pixels();
+			uint8 *d = dst.Pixels();
+			if (!src || !d || W <= 0 || H <= 0)
+				return;
+			uint8 *masque = (uint8 *)NkAlloc((usize)W * (usize)H);
+			if (!masque)
+				return;
+			for (int32 i = 0; i < W * H; ++i)
+				masque[i] = src[(usize)i * 4u + 3u];
+			// l'ecart-type est en unites UTILISATEUR : il suit l'echelle de sortie,
+			// sinon une ombre nette a 1x deviendrait floue a 3x (ou l'inverse).
+			FlouGaussien(masque, W, H, fl.ecartType * (echX + echY) * 0.5f);
+			const float32 dx = fl.dx * echX, dy = fl.dy * echY;
+			const int32 idx = (int32)(dx + (dx >= 0.f ? 0.5f : -0.5f));
+			const int32 idy = (int32)(dy + (dy >= 0.f ? 0.5f : -0.5f));
+			const float32 teinteA = (float32)fl.couleur.a / 255.f;
+			for (int32 y = 0; y < H; ++y) {
+				for (int32 x = 0; x < W; ++x) {
+					const int32 sx = x - idx, sy = y - idy;
+					if (sx < 0 || sy < 0 || sx >= W || sy >= H)
+						continue;
+					const int32 m = (int32)masque[(usize)sy * (usize)W + (usize)sx];
+					if (m <= 0)
+						continue;
+					const int32 sa = (int32)((float32)m * teinteA + 0.5f);
+					if (sa <= 0)
+						continue;
+					const usize o = ((usize)y * (usize)W + (usize)x) * 4u;
+					const int32 invA = 255 - sa;
+					d[o + 0] = (uint8)(((int32)fl.couleur.r * sa + (int32)d[o + 0] * invA + 127) / 255);
+					d[o + 1] = (uint8)(((int32)fl.couleur.g * sa + (int32)d[o + 1] * invA + 127) / 255);
+					d[o + 2] = (uint8)(((int32)fl.couleur.b * sa + (int32)d[o + 2] * invA + 127) / 255);
+					const int32 a2 = (int32)d[o + 3] + sa - ((int32)d[o + 3] * sa + 127) / 255;
+					d[o + 3] = (uint8)(a2 > 255 ? 255 : a2);
+				}
+			}
+			NkFree(masque);
+		}
+
 		/// Donnees opaques d'un NkSVGImage : shapes vectorielles + dimensions natives.
 		/// Pointe par NkSVGImage::mImpl (PIMPL).
 		struct SVGImageImpl {
 				NkVector<Shape> shapes;
 				NkVector<Gradient> gradients;
+				NkVector<Filtre> filtres;
 				float32 vbX = 0, vbY = 0, vbW = 0, vbH = 0;
 				float32 svgW = 0, svgH = 0;
 				SkipList skips; ///< ce que le decodage a saute (dit une fois par nom)
 		};
+
+		/// Trouve un filtre par id. nullptr si absent (ou sans feDropShadow).
+		const Filtre *TrouverFiltre(const SVGImageImpl *impl, const char *id) noexcept {
+			if (!impl || !id || !id[0])
+				return nullptr;
+			for (uint32 i = 0; i < impl->filtres.Size(); ++i)
+				if (std::strcmp(impl->filtres[i].id, id) == 0)
+					return impl->filtres[i].ombre ? &impl->filtres[i] : nullptr;
+			return nullptr;
+		}
 
 		/// Trouve un gradient par id (recherche lineaire). nullptr si absent.
 		const Gradient *FindGradient(const SVGImageImpl *impl, const char *id) noexcept {
@@ -3403,8 +3669,8 @@ namespace nkentseu {
 		if (!impl)
 			return nullptr;
 		new (impl) SVGImageImpl();
-		ParseSVGDocument(xml, size, impl->shapes, impl->gradients, impl->vbX, impl->vbY, impl->vbW, impl->vbH,
-						 impl->svgW, impl->svgH, impl->skips, baseDir);
+		ParseSVGDocument(xml, size, impl->shapes, impl->gradients, impl->filtres, impl->vbX, impl->vbY, impl->vbW,
+						 impl->vbH, impl->svgW, impl->svgH, impl->skips, baseDir);
 
 		// Si parsing a echoue (aucun shape ET aucune viewBox), on libere.
 		if (impl->shapes.IsEmpty() && impl->vbW <= 0.f && impl->svgW <= 0.f) {
@@ -3500,8 +3766,7 @@ namespace nkentseu {
 		// Copie locale des shapes + applique le mapping a leurs points, puis
 		// rasterise. On NE modifie PAS l'impl source (pour que Rasterize() puisse
 		// etre appele plusieurs fois avec des tailles differentes).
-		for (uint32 i = 0; i < impl->shapes.Size(); ++i) {
-			const Shape &src = impl->shapes[i];
+		auto peindre = [&](NkImage &cible, const Shape &src) {
 			// ── UNE IMAGE SE POSE (pas de remplissage, pas de trait) ───────────
 			if (src.EstImage()) {
 				Shape poseur;
@@ -3519,8 +3784,8 @@ namespace nkentseu {
 				}
 				// les pixels sont REFERENCES, jamais copies ni deplaces : Rasterize()
 				// reste const et rejouable a plusieurs tailles, comme son contrat le dit.
-				RasterizeImage(img, poseur, src.img, mView * src.ctm);
-				continue;
+				RasterizeImage(cible, poseur, src.img, mView * src.ctm);
+				return;
 			}
 			// Construit un Shape transforme localement (sans toucher la source).
 			Shape local;
@@ -3544,7 +3809,7 @@ namespace nkentseu {
 				hasFillGP = BuildGradPaint(impl, src.fillRef, local, src.ctm, mView, fillGP);
 			const bool fillRefUnresolved = (src.fillRef[0] && !hasFillGP);
 			if (!fillRefUnresolved)
-				RasterizeShape(img, local, hasFillGP ? &fillGP : nullptr);
+				RasterizeShape(cible, local, hasFillGP ? &fillGP : nullptr);
 
 			// ── Rasterise le stroke si present ─────────────────────────────────
 			// On construit une nouvelle Shape "ruban" autour des contours et on
@@ -3571,10 +3836,50 @@ namespace nkentseu {
 						hasStrokeGP = BuildGradPaint(impl, src.strokeRef, strokeShape, src.ctm, mView, strokeGP);
 					const bool strokeRefUnresolved = (src.strokeRef[0] && !hasStrokeGP);
 					if (strokeShape.contourStart.Size() > 0 && !strokeRefUnresolved) {
-						RasterizeShape(img, strokeShape, hasStrokeGP ? &strokeGP : nullptr);
+						RasterizeShape(cible, strokeShape, hasStrokeGP ? &strokeGP : nullptr);
 					}
 				}
 			}
+		};
+
+		// ─────────────────────────────────────────────────────────────────────────
+		// L'ORDRE DE PEINTURE : forme par forme, SAUF un groupe filtre, qui part
+		// dans un calque. Les formes d'un meme <g filter> se suivent (parcours en
+		// profondeur), et chaque OUVERTURE de groupe filtre a son propre numero
+		// d'instance : deux freres qui portent le meme filtre font deux ombres, pas
+		// une ombre sur leur union.
+		// ─────────────────────────────────────────────────────────────────────────
+		const float32 echX = std::sqrt(mView.a * mView.a + mView.b * mView.b);
+		const float32 echY = std::sqrt(mView.c * mView.c + mView.d * mView.d);
+		uint32 i = 0;
+		while (i < impl->shapes.Size()) {
+			const int32 inst = impl->shapes[i].filterInst;
+			if (inst == 0) {
+				peindre(img, impl->shapes[i]);
+				++i;
+				continue;
+			}
+			uint32 j = i;
+			while (j < impl->shapes.Size() && impl->shapes[j].filterInst == inst)
+				++j;
+			const Filtre *fl = TrouverFiltre(impl, impl->shapes[i].filterRef);
+			NkImage calque;
+			if (fl)
+				calque = NkImage::Alloc(outW, outH, NkImagePixelFormat::NK_RGBA32);
+			if (!fl || !calque.IsValid()) {
+				// filtre inconnu, sans feDropShadow, ou memoire refusee : on peint le
+				// groupe TEL QUEL. Perdre l'ombre est un moindre mal ; perdre le
+				// groupe n'en serait pas un.
+				for (uint32 k = i; k < j; ++k)
+					peindre(img, impl->shapes[k]);
+				i = j;
+				continue;
+			}
+			for (uint32 k = i; k < j; ++k)
+				peindre(calque, impl->shapes[k]);
+			PoserOmbre(img, calque, *fl, echX, echY); // l'ombre D'ABORD : elle est DESSOUS
+			ComposerCalque(img, calque);
+			i = j;
 		}
 		return img;
 	}

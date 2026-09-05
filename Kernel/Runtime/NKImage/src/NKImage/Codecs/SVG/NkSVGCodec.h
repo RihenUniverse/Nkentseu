@@ -45,8 +45,18 @@
 //                     un SVG se re-rasterise a toute taille et porte des
 //                     matrices qui tournent.
 //
+// <filter>          : <feDropShadow> (dx, dy, stdDeviation, flood-color,
+//                     flood-opacity) sur un <g filter="url(#id)"> -- le groupe
+//                     est rendu dans un calque, son ALPHA floute (gaussienne
+//                     separable), decale, teinte, puis pose DESSOUS. Les autres
+//                     primitives fe* sont NOMMEES et sautees.
+// Opacite / fusion  : opacity, fill-opacity et stroke-opacity COMPOSEES ;
+//                     mix-blend-mode multiply et screen peints, les autres
+//                     nommes et rendus en normal.
+//
 // Pas supporte : <use>, <symbol>, <defs><style> (classes CSS), patterns,
-//                masks, clipPath, filters. TOUT CE QUI EST SAUTE SE DIT une fois
+//                masks, clipPath, les primitives de filtre autres que
+//                feDropShadow. TOUT CE QUI EST SAUTE SE DIT une fois
 //                (journal + SkippedCount() / SkippedAt()).
 //
 // AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
@@ -93,6 +103,13 @@ namespace nkentseu {
 			}
 	};
 
+	// ── LE MODE DE FUSION (mix-blend-mode) ────────────────────────────────────
+	// Seuls `multiply` et `screen` sont PEINTS : le rasteriseur lit deja le pixel
+	// de destination pour composer, donc ils ne coutent rien de plus. Les autres
+	// (overlay, difference, hue...) demanderaient une passe par groupe isole ;
+	// ils sont NOMMES au decodage et rendus en « normal », jamais taus.
+	enum class NkSVGBlend : uint8 { Normal = 0, Multiply, Screen };
+
 	// ── Terminaisons / jointures de trait (stroke-linecap / stroke-linejoin) ──
 	enum class NkSVGLineCap : uint8 { Butt = 0, Round, Square };
 	enum class NkSVGLineJoin : uint8 { Miter = 0, Round, Bevel };
@@ -110,6 +127,7 @@ namespace nkentseu {
 			NkSVGLineCap strokeLineCap = NkSVGLineCap::Butt;	 ///< stroke-linecap
 			NkSVGLineJoin strokeLineJoin = NkSVGLineJoin::Miter; ///< stroke-linejoin
 			float32 strokeMiterLimit = 4.f;						 ///< stroke-miterlimit
+			NkSVGBlend blend = NkSVGBlend::Normal;				 ///< mix-blend-mode
 	};
 
 	// ── Matrice affine 2D (a,b,c,d,e,f) = [a c e; b d f; 0 0 1] ──────────────
