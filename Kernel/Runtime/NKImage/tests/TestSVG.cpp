@@ -1499,6 +1499,69 @@ static void TestDash() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER <pattern> — une tuile, repetee
+// ─────────────────────────────────────────────────────────────────────────────
+static void TestPattern() {
+	std::printf("\n== PALIER <pattern> ==\n");
+	char det[640];
+
+	// (a) un damier : une tuile de 20x20 contenant un carre rouge de 10x10 en haut
+	//     a gauche. Le motif doit se REPETER -- on verifie la meme chose a trois
+	//     periodes de distance.
+	static const char *kDamier =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+		"<defs><pattern id=\"p\" patternUnits=\"userSpaceOnUse\" x=\"0\" y=\"0\" width=\"20\" height=\"20\">"
+		"<rect x=\"0\" y=\"0\" width=\"10\" height=\"10\" fill=\"#ff0000\"/></pattern></defs>"
+		"<rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"url(#p)\"/></svg>";
+	NkImage a = Decoder(kDamier);
+	// dans chaque tuile : (5,5) rouge, (15,5) vide, (5,15) vide
+	const bool t0 = Proche(a, 5, 5, 255, 0, 0, 6) && AlphaDe(a, 15, 5) < 40 && AlphaDe(a, 5, 15) < 40;
+	const bool t1 = Proche(a, 25, 25, 255, 0, 0, 6) && AlphaDe(a, 35, 25) < 40;
+	const bool t2 = Proche(a, 65, 45, 255, 0, 0, 6) && AlphaDe(a, 75, 45) < 40;
+	std::snprintf(det, sizeof(det), "tuile 1 (5,5)=%d ; tuile 2 (25,25)=%d ; tuile 4 (65,45)=%d -- le motif se "
+								   "repete a l'identique",
+				  t0 ? 1 : 0, t1 ? 1 : 0, t2 ? 1 : 0);
+	Verifier("P1. <pattern> : la tuile se REPETE sur toute la forme (meme dessin a trois periodes de distance)",
+			 a.IsValid() && t0 && t1 && t2, det);
+
+	// (b) le motif est ancre par x/y : le decaler decale TOUT le carrelage.
+	static const char *kDecale =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+		"<defs><pattern id=\"p\" patternUnits=\"userSpaceOnUse\" x=\"10\" y=\"0\" width=\"20\" height=\"20\">"
+		"<rect x=\"0\" y=\"0\" width=\"10\" height=\"10\" fill=\"#ff0000\"/></pattern></defs>"
+		"<rect x=\"0\" y=\"0\" width=\"100\" height=\"100\" fill=\"url(#p)\"/></svg>";
+	NkImage b = Decoder(kDecale);
+	const bool decale = b.IsValid() && AlphaDe(b, 5, 5) < 40 && Proche(b, 15, 5, 255, 0, 0, 6);
+	std::snprintf(det, sizeof(det), "avec x=10 : (5,5) alpha=%d (etait rouge), (15,5) rouge=%d", AlphaDe(b, 5, 5),
+				  Proche(b, 15, 5, 255, 0, 0, 6) ? 1 : 0);
+	Verifier("P2. x / y du <pattern> ancrent le carrelage (le decaler decale tout)", decale, det);
+
+	// (c) le motif ne DEBORDE PAS de la forme qu'il remplit.
+	static const char *kBorne =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+		"<defs><pattern id=\"p\" patternUnits=\"userSpaceOnUse\" width=\"20\" height=\"20\">"
+		"<rect x=\"0\" y=\"0\" width=\"20\" height=\"20\" fill=\"#0000ff\"/></pattern></defs>"
+		"<rect x=\"20\" y=\"20\" width=\"40\" height=\"40\" fill=\"url(#p)\"/></svg>";
+	NkImage c = Decoder(kBorne);
+	const bool borne = c.IsValid() && Proche(c, 40, 40, 0, 0, 255, 6) && AlphaDe(c, 10, 10) < 40 &&
+					   AlphaDe(c, 80, 80) < 40;
+	std::snprintf(det, sizeof(det), "dans la forme (40,40) bleu=%d ; dehors : alpha %d / %d",
+				  Proche(c, 40, 40, 0, 0, 255, 6) ? 1 : 0, AlphaDe(c, 10, 10), AlphaDe(c, 80, 80));
+	Verifier("P3. le motif ne remplit QUE la forme qui le reference (il ne deborde pas sur la page)", borne, det);
+
+	// (d) un motif INTROUVABLE ne peint rien -- surtout pas un aplat noir. Une
+	//     reference morte n'est pas une couleur.
+	static const char *kAbsent =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"60\" height=\"60\" viewBox=\"0 0 60 60\">"
+		"<rect x=\"0\" y=\"0\" width=\"60\" height=\"60\" fill=\"url(#jamais)\"/></svg>";
+	NkImage d = Decoder(kAbsent);
+	const bool rien = d.IsValid() && AlphaDe(d, 30, 30) < 20;
+	std::snprintf(det, sizeof(det), "alpha au centre=%d (un aplat NOIR serait le defaut classique)",
+				  AlphaDe(d, 30, 30));
+	Verifier("P4. une reference de motif MORTE ne peint rien -- pas un aplat noir", rien, det);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -1520,8 +1583,9 @@ static void TestNonGere() {
 	// qui reste a faire y demeure. Verifier les deux sens, c'est empecher deux
 	// mensonges opposes -- annoncer comme saute ce qu'on peint, et taire ce qu'on
 	// saute vraiment.
-	bool markerDit = false, patternDit = false;
-	bool useEncoreDit = false, clipEncoreDit = false, maskEncoreDit = false, dashEncoreDit = false;
+	bool markerDit = false;
+	bool useEncoreDit = false, clipEncoreDit = false, maskEncoreDit = false, dashEncoreDit = false,
+		 patternEncoreDit = false;
 	int32 nbMarker = 0, nb = 0;
 	if (img) {
 		nb = img->SkippedCount();
@@ -1542,7 +1606,7 @@ static void TestNonGere() {
 				++nbMarker;
 			}
 			if (std::strcmp(n, "pattern") == 0)
-				patternDit = true;
+				patternEncoreDit = true; // GERE depuis son palier
 			if (std::strcmp(n, "stroke-dasharray") == 0)
 				dashEncoreDit = true; // GERE depuis son palier
 		}
@@ -1551,15 +1615,15 @@ static void TestNonGere() {
 			std::strncat(det, img->SkippedAt(i) ? img->SkippedAt(i) : "?", sizeof(det) - std::strlen(det) - 1);
 			std::strncat(det, " ", sizeof(det) - std::strlen(det) - 1);
 		}
-		std::strncat(det, "| <use>, <clipPath>, <mask>, stroke-dasharray n'y sont plus ",
+		std::strncat(det, "| <use>, <clipPath>, <mask>, <pattern>, stroke-dasharray n'y sont plus ",
 					 sizeof(det) - std::strlen(det) - 1);
 		img->Free();
 	}
 	Verifier("Le REGISTRE DES SAUTS suit les paliers, dans LES DEUX SENS : ce qui reste a faire est nomme "
-			 "(marker, pattern) une seule fois par nom -- DEUX <marker> ne donnent qu'une mention --, et <use>, "
-			 "<clipPath>, <mask>, stroke-dasharray N'Y SONT PLUS depuis qu'ils sont peints",
-			 img != nullptr && markerDit && patternDit && !useEncoreDit && !clipEncoreDit && !maskEncoreDit &&
-				 !dashEncoreDit && nbMarker == 1,
+			 "(marker) une seule fois par nom -- DEUX <marker> ne donnent qu'une mention --, et <use>, "
+			 "<clipPath>, <mask>, <pattern>, stroke-dasharray N'Y SONT PLUS depuis qu'ils sont peints",
+			 img != nullptr && markerDit && !useEncoreDit && !clipEncoreDit && !maskEncoreDit && !dashEncoreDit &&
+				 !patternEncoreDit && nbMarker == 1,
 			 det);
 }
 
@@ -1584,6 +1648,7 @@ int TestSVG_Run() {
 	TestMask();
 	TestCSS();
 	TestDash();
+	TestPattern();
 	TestNonGere();
 	TestTemoinCroise();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);

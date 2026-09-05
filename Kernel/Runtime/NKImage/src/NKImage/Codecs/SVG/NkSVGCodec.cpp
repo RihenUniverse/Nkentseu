@@ -673,6 +673,45 @@ namespace nkentseu {
 		// Consequence agreable : les clips IMBRIQUES se composent tout seuls (leur
 		// intersection est le produit des masques), sans pile de calques a tenir.
 		// ─────────────────────────────────────────────────────────────────────────────
+		// ─────────────────────────────────────────────────────────────────────────────
+		// <pattern> — UNE TUILE, RASTERISEE UNE FOIS, ECHANTILLONNEE EN MODULO
+		// -----------------------------------------------------------------------------
+		// Un motif se peint comme un degrade : on ne transporte pas la geometrie vers
+		// les pixels, on ramene CHAQUE PIXEL dans l'espace du motif (matrice inverse),
+		// puis on prend le reste de la division par la periode. Une seule tuile est
+		// rasterisee, quelle que soit la surface a couvrir -- carreler en repetant le
+		// rendu des formes couterait le nombre de repetitions.
+		// ─────────────────────────────────────────────────────────────────────────────
+		struct Motif {
+				char id[64] = {0};
+				char href[64] = {0};   ///< un pattern peut heriter d'un autre
+				float32 x = 0.f, y = 0.f, w = 0.f, h = 0.f;
+				bool userSpace = false;			  ///< patternUnits (defaut objectBoundingBox)
+				bool contenuUserSpace = true;	  ///< patternContentUnits (defaut userSpaceOnUse)
+				bool aViewBox = false;
+				float32 vbX = 0.f, vbY = 0.f, vbW = 0.f, vbH = 0.f;
+				NkSVGTransform xform = NkSVGTransform::Identity(); ///< patternTransform
+				NkVector<Shape> formes;
+
+				Motif() = default;
+				Motif(Motif &&) noexcept = default;
+				Motif &operator=(Motif &&) noexcept = default;
+				Motif(const Motif &) = delete;
+				Motif &operator=(const Motif &) = delete;
+
+				void Vider() noexcept {
+					id[0] = 0;
+					href[0] = 0;
+					x = y = w = h = 0.f;
+					userSpace = false;
+					contenuUserSpace = true;
+					aViewBox = false;
+					xform = NkSVGTransform::Identity();
+					while (!formes.IsEmpty())
+						formes.PopBack();
+				}
+		};
+
 		// <mask> EST LE MEME MECANISME, a une chose pres : un decoupage ne connait
 		// que DEDANS ou DEHORS (la couverture des formes), tandis qu'un masque prend
 		// une valeur CONTINUE -- la LUMINANCE de ce qu'on y peint (SVG 1.1) ou son
@@ -2465,7 +2504,7 @@ namespace nkentseu {
 			static const char *const kConnus[] = {"svg",	 "g",		 "defs",  "symbol",	  "use",	 "rect",
 												  "circle",	 "ellipse",	 "line",  "polyline", "polygon", "path",
 												  "image",	 "text",	 "tspan", "title",	  "desc",	 "metadata",
-												  "style",	 "clipPath", "mask",  "stop",	  "filter",	  "linearGradient",
+												  "style",	 "clipPath", "mask",  "pattern",  "stop",  "filter",  "linearGradient",
 												  "radialGradient"};
 			for (usize i = 0; i < sizeof(kConnus) / sizeof(kConnus[0]); ++i)
 				if (std::strcmp(t, kConnus[i]) == 0)
@@ -2609,7 +2648,8 @@ namespace nkentseu {
 		/// @param etatInit  nullptr a la racine ; sinon l'etat herite du <use> qui
 		///                  instancie ce fragment (sa matrice, son style).
 		void ParseSVGDocument(const char *xml, usize xmlLen, NkVector<Shape> &shapes, NkVector<Gradient> &gradients,
-							  NkVector<Filtre> &filtres, NkVector<ClipPath> &clips, float32 &vbX, float32 &vbY,
+							  NkVector<Filtre> &filtres, NkVector<ClipPath> &clips, NkVector<Motif> &motifs,
+							  float32 &vbX, float32 &vbY,
 							  float32 &vbW, float32 &vbH,
 							  float32 &svgW, float32 &svgH, SkipList &skips, const char *baseDir,
 							  NkIGlyphSource *glyphes, UseCtx &useCtx,
@@ -2675,6 +2715,10 @@ namespace nkentseu {
 			bool dansClip = false;
 			int32 defsAvantClip = 0;
 			uint32 shapesAvantClip = 0;
+			Motif curMotif;
+			bool dansMotif = false;
+			int32 defsAvantMotif = 0;
+			uint32 shapesAvantMotif = 0;
 			int32 prochaineInstance = 0;
 			int32 defsDepth = 0; // > 0 = on est dans <defs> : shapes non rendues
 			bool buildingGrad = false;
@@ -2704,6 +2748,19 @@ namespace nkentseu {
 							filtres.PushBack(curFiltre);
 							curFiltre = Filtre();
 							dansFiltre = false;
+						}
+						continue;
+					}
+					if (std::strcmp(tagBuf, "pattern") == 0) {
+						if (dansMotif) {
+							for (uint32 k = shapesAvantMotif; k < shapes.Size(); ++k)
+								curMotif.formes.PushBack(std::move(shapes[k]));
+							while (shapes.Size() > shapesAvantMotif)
+								shapes.PopBack();
+							motifs.PushBack(std::move(curMotif));
+							curMotif.Vider();
+							dansMotif = false;
+							defsDepth = defsAvantMotif;
 						}
 						continue;
 					}
@@ -2801,6 +2858,57 @@ namespace nkentseu {
 						stack[++depth] = next;
 					}
 					// <g/> self-closed = groupe vide, on ignore.
+					continue;
+				}
+
+				// ── <pattern> : ses formes sont CAPTEES pour devenir une tuile ───
+				if (std::strcmp(tagBuf, "pattern") == 0) {
+					curMotif.Vider();
+					const char *pid = FindAttr(attrs, numAttrs, "id");
+					if (pid) {
+						std::strncpy(curMotif.id, pid, 63);
+						curMotif.id[63] = 0;
+					}
+					const char *ph = FindAttr(attrs, numAttrs, "href");
+					if (!ph)
+						ph = FindAttr(attrs, numAttrs, "xlink:href");
+					if (ph) {
+						std::strncpy(curMotif.href, (*ph == '#') ? ph + 1 : ph, 63);
+						curMotif.href[63] = 0;
+					}
+					curMotif.x = ParsePct(FindAttr(attrs, numAttrs, "x"), 0.f);
+					curMotif.y = ParsePct(FindAttr(attrs, numAttrs, "y"), 0.f);
+					curMotif.w = ParsePct(FindAttr(attrs, numAttrs, "width"), 0.f);
+					curMotif.h = ParsePct(FindAttr(attrs, numAttrs, "height"), 0.f);
+					const char *pu = FindAttr(attrs, numAttrs, "patternUnits");
+					curMotif.userSpace = (pu && std::strcmp(pu, "userSpaceOnUse") == 0);
+					const char *pcu = FindAttr(attrs, numAttrs, "patternContentUnits");
+					curMotif.contenuUserSpace = !(pcu && std::strcmp(pcu, "objectBoundingBox") == 0);
+					const char *pt = FindAttr(attrs, numAttrs, "patternTransform");
+					if (pt)
+						curMotif.xform = NkSVGTransform::Parse(pt);
+					const char *pvb = FindAttr(attrs, numAttrs, "viewBox");
+					if (pvb) {
+						const char *pp = pvb;
+						curMotif.vbX = ParseFloat(pp, &pp);
+						pp = SkipWSComma(pp);
+						curMotif.vbY = ParseFloat(pp, &pp);
+						pp = SkipWSComma(pp);
+						curMotif.vbW = ParseFloat(pp, &pp);
+						pp = SkipWSComma(pp);
+						curMotif.vbH = ParseFloat(pp, &pp);
+						curMotif.aViewBox = (curMotif.vbW > 0.f && curMotif.vbH > 0.f);
+					}
+					dansMotif = true;
+					shapesAvantMotif = shapes.Size();
+					defsAvantMotif = defsDepth;
+					defsDepth = 0; // ses formes doivent EXISTER pour devenir la tuile
+					if (kind == 2) {
+						motifs.PushBack(std::move(curMotif));
+						curMotif.Vider();
+						dansMotif = false;
+						defsDepth = defsAvantMotif;
+					}
 					continue;
 				}
 
@@ -3107,8 +3215,8 @@ namespace nkentseu {
 
 					++useCtx.profondeur;
 					float32 iw = 0.f, ih = 0.f, jw = 0.f, jh = 0.f, kw = 0.f, kh = 0.f;
-					ParseSVGDocument(fragDeb, (usize)(fragFin - fragDeb), shapes, gradients, filtres, clips, iw, ih,
-									 jw, jh, kw, kh, skips, baseDir, glyphes, useCtx, &inst);
+					ParseSVGDocument(fragDeb, (usize)(fragFin - fragDeb), shapes, gradients, filtres, clips, motifs,
+									 iw, ih, jw, jh, kw, kh, skips, baseDir, glyphes, useCtx, &inst);
 					--useCtx.profondeur;
 					continue;
 				}
@@ -3268,6 +3376,13 @@ namespace nkentseu {
 					shapes.PopBack();
 				clips.PushBack(std::move(curClip));
 			}
+			if (dansMotif) {
+				for (uint32 k = shapesAvantMotif; k < shapes.Size(); ++k)
+					curMotif.formes.PushBack(std::move(shapes[k]));
+				while (shapes.Size() > shapesAvantMotif)
+					shapes.PopBack();
+				motifs.PushBack(std::move(curMotif));
+			}
 			FinirTexte(shapes, texte, glyphes, skips); // un <text> jamais ferme se pose quand meme
 			if (proprietaireBufs) {
 				NkFree(nameBuf);
@@ -3310,6 +3425,15 @@ namespace nkentseu {
 				float32 x1 = 0, y1 = 0, x2 = 1, y2 = 0;	  // linear, dans SON espace
 				float32 cx = 0, cy = 0, r = 1;			  // radial, dans SON espace
 				float32 fx = 0, fy = 0;					  // le foyer
+		};
+
+		/// Peinture par MOTIF : une tuile deja rasterisee, plus la matrice qui ramene
+		/// un pixel dans l'espace du motif. Le carrelage est un simple modulo.
+		struct MotifPaint {
+				const NkImage *tuile = nullptr;
+				NkSVGTransform inv;		 ///< pixel -> espace du motif
+				float32 periodeX = 1.f;	 ///< la periode, en pixels de la tuile
+				float32 periodeY = 1.f;
 		};
 
 		/// Lerp deux couleurs (composantes + alpha).
@@ -3547,7 +3671,7 @@ namespace nkentseu {
 		///             tout ce qu'est un decoupage, et c'est pour ca qu'il n'a pas
 		///             besoin de calque.
 		void RasterizeShape(NkImage &img, const Shape &sh, const GradPaint *paint = nullptr,
-							const uint8 *clip = nullptr) noexcept {
+							const uint8 *clip = nullptr, const MotifPaint *motif = nullptr) noexcept {
 			if (sh.contourStart.IsEmpty())
 				return;
 			const NkSVGColor &fill = sh.style.fill;
@@ -3560,7 +3684,7 @@ namespace nkentseu {
 			// En mode gradient, l'alpha varie par pixel -> on ne pre-calcule que le facteur global.
 			const float32 styleA = sh.style.opacity * sh.style.fillOpacity;
 			const float32 alphaF = (float32)fill.a / 255.f * styleA;
-			if (!paint && alphaF <= 0.f)
+			if (!paint && !motif && alphaF <= 0.f)
 				return;
 
 			const int32 W = img.Width();
@@ -3727,7 +3851,22 @@ namespace nkentseu {
 					// Couleur source : solide ou echantillonnee dans le gradient.
 					int32 srcR, srcG, srcB;
 					float32 baseA;
-					if (paint) {
+					if (motif && motif->tuile && motif->tuile->IsValid()) {
+						// LE PIXEL REVIENT DANS L'ESPACE DU MOTIF, puis modulo : c'est
+						// tout le carrelage. Une tuile, quelle que soit la surface.
+						float32 mx = (float32)x + 0.5f, my = (float32)py + 0.5f;
+						motif->inv.Apply(mx, my);
+						float32 u = mx - motif->periodeX * std::floor(mx / motif->periodeX);
+						float32 v = my - motif->periodeY * std::floor(my / motif->periodeY);
+						const float32 fx = u * (float32)motif->tuile->Width() / motif->periodeX;
+						const float32 fy = v * (float32)motif->tuile->Height() / motif->periodeY;
+						float32 c4[4];
+						EchantillonBilineaire(*motif->tuile, fx, fy, c4);
+						srcR = (int32)c4[0];
+						srcG = (int32)c4[1];
+						srcB = (int32)c4[2];
+						baseA = (c4[3] / 255.f) * styleA;
+					} else if (paint) {
 						const NkSVGColor gc = EvalGrad(*paint, (float32)x + 0.5f, (float32)py + 0.5f);
 						srcR = gc.r;
 						srcG = gc.g;
@@ -4225,10 +4364,21 @@ namespace nkentseu {
 				NkVector<Gradient> gradients;
 				NkVector<Filtre> filtres;
 				NkVector<ClipPath> clips;
+				NkVector<Motif> motifs;
 				float32 vbX = 0, vbY = 0, vbW = 0, vbH = 0;
 				float32 svgW = 0, svgH = 0;
 				SkipList skips; ///< ce que le decodage a saute (dit une fois par nom)
 		};
+
+		/// Trouve un motif par id.
+		const Motif *TrouverMotif(const SVGImageImpl *impl, const char *id) noexcept {
+			if (!impl || !id || !id[0])
+				return nullptr;
+			for (uint32 i = 0; i < impl->motifs.Size(); ++i)
+				if (std::strcmp(impl->motifs[i].id, id) == 0)
+					return &impl->motifs[i];
+			return nullptr;
+		}
 
 		/// Trouve un clipPath par id.
 		const ClipPath *TrouverClip(const SVGImageImpl *impl, const char *id) noexcept {
@@ -4586,8 +4736,9 @@ namespace nkentseu {
 			return nullptr;
 		new (impl) SVGImageImpl();
 		UseCtx useCtx; // l'index des id vit le temps du decodage, pas au-dela
-		ParseSVGDocument(xml, size, impl->shapes, impl->gradients, impl->filtres, impl->clips, impl->vbX, impl->vbY,
-						 impl->vbW, impl->vbH, impl->svgW, impl->svgH, impl->skips, baseDir, glyphes, useCtx);
+		ParseSVGDocument(xml, size, impl->shapes, impl->gradients, impl->filtres, impl->clips, impl->motifs,
+						 impl->vbX, impl->vbY, impl->vbW, impl->vbH, impl->svgW, impl->svgH, impl->skips, baseDir,
+						 glyphes, useCtx);
 
 		// Si parsing a echoue (aucun shape ET aucune viewBox), on libere.
 		if (impl->shapes.IsEmpty() && impl->vbW <= 0.f && impl->svgW <= 0.f) {
@@ -4813,6 +4964,133 @@ namespace nkentseu {
 			return un ? &clipCompose[0] : nullptr;
 		};
 
+		// ── LES TUILES DE MOTIF, rasterisees a la demande et GARDEES ───────────
+		struct TuileCache {
+				char id[64] = {0};
+				NkImage img;
+				float32 perX = 1.f, perY = 1.f;
+				NkSVGTransform base; ///< motif -> pixels (sans le modulo)
+		};
+		NkVector<TuileCache> tuiles;
+
+		/// @return false si le motif est inconnu ou vide (l'appelant ne peint alors
+		///         RIEN plutot qu'un aplat noir : une reference morte n'est pas une
+		///         couleur).
+		auto motifPour = [&](const char *ref, const Shape &pour, MotifPaint &mp) -> bool {
+			const Motif *m = TrouverMotif(impl, ref);
+			if (!m)
+				return false;
+			// un pattern peut heriter le CONTENU d'un autre (href) : c'est ainsi que
+			// les exporteurs declinent un motif en plusieurs couleurs.
+			const Motif *contenu = m;
+			if (m->formes.IsEmpty() && m->href[0]) {
+				const Motif *h = TrouverMotif(impl, m->href);
+				if (h)
+					contenu = h;
+			}
+			if (contenu->formes.IsEmpty())
+				return false;
+
+			// la bbox de la forme a remplir (objectBoundingBox est le defaut ici)
+			float32 minx = 1e30f, miny = 1e30f, maxx = -1e30f, maxy = -1e30f;
+			for (uint32 k = 0; k < pour.xs.Size(); ++k) {
+				const float32 x = pour.xs[k], y = pour.ys[k];
+				if (x < minx) minx = x;
+				if (x > maxx) maxx = x;
+				if (y < miny) miny = y;
+				if (y > maxy) maxy = y;
+			}
+			float32 bw = maxx - minx, bh = maxy - miny;
+			if (bw <= 0.f) bw = 1.f;
+			if (bh <= 0.f) bh = 1.f;
+
+			// la periode et l'origine, en PIXELS de destination
+			const float32 echX = std::sqrt(mView.a * mView.a + mView.b * mView.b);
+			const float32 echY = std::sqrt(mView.c * mView.c + mView.d * mView.d);
+			float32 perX, perY, ox, oy;
+			if (m->userSpace) {
+				perX = m->w * echX;
+				perY = m->h * echY;
+				float32 px = m->x, py = m->y;
+				mView.Apply(px, py);
+				ox = px;
+				oy = py;
+			} else { // objectBoundingBox : fractions de la boite
+				perX = m->w * bw;
+				perY = m->h * bh;
+				ox = minx + m->x * bw;
+				oy = miny + m->y * bh;
+			}
+			if (perX <= 0.5f || perY <= 0.5f)
+				return false;
+
+			char cle[80];
+			std::snprintf(cle, sizeof(cle), "%s|%d|%d", ref, (int32)(perX * 4.f), (int32)(perY * 4.f));
+			TuileCache *tc = nullptr;
+			for (uint32 i = 0; i < tuiles.Size(); ++i)
+				if (std::strcmp(tuiles[i].id, cle) == 0)
+					tc = &tuiles[i];
+			if (!tc) {
+				int32 tw = (int32)std::ceil(perX), th = (int32)std::ceil(perY);
+				if (tw < 1) tw = 1;
+				if (th < 1) th = 1;
+				if (tw > 2048) tw = 2048;
+				if (th > 2048) th = 2048;
+				TuileCache nouvelle;
+				std::strncpy(nouvelle.id, cle, sizeof(nouvelle.id) - 1);
+				nouvelle.img = NkImage::Alloc(tw, th, NkImagePixelFormat::NK_RGBA32);
+				if (!nouvelle.img.IsValid())
+					return false;
+				nouvelle.perX = perX;
+				nouvelle.perY = perY;
+				// le contenu -> la tuile : viewBox si elle existe, sinon l'echelle
+				// des unites utilisateur.
+				NkSVGTransform versTuile;
+				if (m->aViewBox)
+					versTuile = NkSVGTransform::Scale((float32)tw / m->vbW, (float32)th / m->vbH) *
+								NkSVGTransform::Translate(-m->vbX, -m->vbY);
+				else if (m->contenuUserSpace)
+					versTuile = NkSVGTransform::Scale(perX / (m->userSpace ? m->w : (m->w * bw / echX)),
+													  perY / (m->userSpace ? m->h : (m->h * bh / echY)));
+				else
+					versTuile = NkSVGTransform::Scale((float32)tw, (float32)th);
+				for (uint32 f = 0; f < contenu->formes.Size(); ++f) {
+					const Shape &sf = contenu->formes[f];
+					Shape loc;
+					loc.style = sf.style;
+					loc.style.visible = true;
+					for (uint32 k = 0; k < sf.xs.Size(); ++k) {
+						float32 x = sf.xs[k], y = sf.ys[k];
+						versTuile.Apply(x, y);
+						loc.xs.PushBack(x);
+						loc.ys.PushBack(y);
+					}
+					for (uint32 k = 0; k < sf.contourStart.Size(); ++k) {
+						loc.contourStart.PushBack(sf.contourStart[k]);
+						loc.contourLen.PushBack(sf.contourLen[k]);
+					}
+					GradPaint gp;
+					bool aGrad = false;
+					if (sf.fillRef[0])
+						aGrad = BuildGradPaint(impl, sf.fillRef, loc, sf.ctm, versTuile, gp);
+					if (sf.fillRef[0] && !aGrad)
+						continue;
+					RasterizeShape(nouvelle.img, loc, aGrad ? &gp : nullptr, nullptr, nullptr);
+				}
+				tuiles.PushBack(std::move(nouvelle));
+				tc = &tuiles[tuiles.Size() - 1];
+			}
+			// pixel -> espace du motif : on translate a l'origine, puis on defait
+			// `patternTransform`.
+			NkSVGTransform versPixels = NkSVGTransform::Translate(ox, oy) * m->xform;
+			if (!Inverser(versPixels, mp.inv))
+				return false;
+			mp.tuile = &tc->img;
+			mp.periodeX = tc->perX;
+			mp.periodeY = tc->perY;
+			return true;
+		};
+
 		auto peindre = [&](NkImage &cible, const Shape &src) {
 			// ── UNE IMAGE SE POSE (pas de remplissage, pas de trait) ───────────
 			if (src.EstImage()) {
@@ -4851,13 +5129,18 @@ namespace nkentseu {
 			}
 			// ── Rasterise le fill (couleur unie OU gradient) ───────────────────
 			GradPaint fillGP;
-			bool hasFillGP = false;
-			if (src.fillRef[0])
+			MotifPaint fillMP;
+			bool hasFillGP = false, hasFillMP = false;
+			if (src.fillRef[0]) {
 				hasFillGP = BuildGradPaint(impl, src.fillRef, local, src.ctm, mView, fillGP);
-			const bool fillRefUnresolved = (src.fillRef[0] && !hasFillGP);
+				if (!hasFillGP)
+					hasFillMP = motifPour(src.fillRef, local, fillMP);
+			}
+			const bool fillRefUnresolved = (src.fillRef[0] && !hasFillGP && !hasFillMP);
 			const uint8 *masque = clipDe(src);
 			if (!fillRefUnresolved)
-				RasterizeShape(cible, local, hasFillGP ? &fillGP : nullptr, masque);
+				RasterizeShape(cible, local, hasFillGP ? &fillGP : nullptr, masque,
+							   hasFillMP ? &fillMP : nullptr);
 
 			// ── Rasterise le stroke si present ─────────────────────────────────
 			// On construit une nouvelle Shape "ruban" autour des contours et on
