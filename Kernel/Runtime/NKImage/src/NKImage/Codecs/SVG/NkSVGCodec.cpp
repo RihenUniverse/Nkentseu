@@ -1156,6 +1156,33 @@ namespace nkentseu {
 					s.strokeLineJoin = NkSVGLineJoin::Bevel;
 				else
 					s.strokeLineJoin = NkSVGLineJoin::Miter;
+			} else if (std::strcmp(name, "stroke-dasharray") == 0) {
+				s.nDashes = 0;
+				if (StrCaseCmp(value, "none") != 0) {
+					const char *p = value;
+					float32 somme = 0.f;
+					while (*p && s.nDashes < NkSVGStyle::kMaxDashes) {
+						p = SkipWSComma(p);
+						if (!*p)
+							break;
+						const char *e = nullptr;
+						float32 v = ParseFloat(p, &e);
+						if (e == p)
+							break;
+						p = e;
+						if (v < 0.f)
+							v = 0.f; // une longueur negative invalide le motif (norme)
+						s.dashes[s.nDashes++] = v;
+						somme += v;
+					}
+					// UN MOTIF DE SOMME NULLE EST UN TRAIT CONTINU, pas un trait
+					// invisible : la norme le dit, et l'oubli ferait disparaitre le
+					// trait au lieu de le laisser plein.
+					if (somme <= 0.f)
+						s.nDashes = 0;
+				}
+			} else if (std::strcmp(name, "stroke-dashoffset") == 0) {
+				s.dashOffset = ParseFloat(value);
 			} else if (std::strcmp(name, "mix-blend-mode") == 0) {
 				// PEINTS parce qu'ils ne coutent rien : le rasteriseur lit deja la
 				// destination pour composer. Les autres modes demanderaient un calque
@@ -3174,9 +3201,6 @@ namespace nkentseu {
 				}
 
 				// Element shape : compose le state local = cur + attrs propres.
-				if (FindAttr(attrs, numAttrs, "stroke-dasharray") && skips.Noter("stroke-dasharray"))
-					logger.Warn("[SVG] stroke-dasharray non honore : le trait est rendu CONTINU.");
-
 				ParseState local = cur;
 				local.style = MergeStyle(cur.style, attrs, numAttrs, &useCtx.regles, tagBuf);
 				UpdateRefs(local.fillRef, local.strokeRef, attrs, numAttrs);
@@ -3810,6 +3834,116 @@ namespace nkentseu {
 		// (union nonzero correcte). Le resultat est rempli par RasterizeShape avec la
 		// couleur stroke en "fill".
 		// ─────────────────────────────────────────────────────────────────────────────
+		// ─────────────────────────────────────────────────────────────────────────────
+		// stroke-dasharray — DECOUPER LE CHEMIN AVANT DE L'EPAISSIR
+		// -----------------------------------------------------------------------------
+		// Un trait en pointilles n'est pas un trait avec des trous : c'est un chemin
+		// COUPE en morceaux, dont chacun est ensuite epaissi normalement. Le faire
+		// dans cet ordre donne gratuitement le bon comportement aux extremites --
+		// chaque tiret recoit ses propres terminaisons (`stroke-linecap`), ce qu'un
+		// effacement a posteriori n'aurait pas su produire.
+		//
+		// Un motif de longueur IMPAIRE est repete deux fois (norme SVG 1.1) : « 5 »
+		// veut dire « 5 pleins, 5 vides », pas « 5 pleins » puis rien.
+		// ─────────────────────────────────────────────────────────────────────────────
+		void DecouperEnTirets(const Shape &src, const NkSVGStyle &st, float32 echelle, Shape &dst) noexcept {
+			// le motif, en pixels de destination, double s'il est impair
+			float32 motif[NkSVGStyle::kMaxDashes * 2];
+			int32 nm = 0;
+			for (int32 r = 0; r < ((st.nDashes % 2 == 1) ? 2 : 1); ++r)
+				for (int32 i = 0; i < st.nDashes && nm < (int32)(sizeof(motif) / sizeof(motif[0])); ++i)
+					motif[nm++] = st.dashes[i] * echelle;
+			float32 periode = 0.f;
+			for (int32 i = 0; i < nm; ++i)
+				periode += motif[i];
+			if (nm <= 0 || periode <= 1e-6f)
+				return;
+
+			for (uint32 ci = 0; ci < src.contourStart.Size(); ++ci) {
+				const int32 start = src.contourStart[ci];
+				const int32 len = src.contourLen[ci];
+				if (len < 2)
+					continue;
+				// ou en est-on dans le motif ? `stroke-dashoffset` decale le depart.
+				float32 reste = st.dashOffset * echelle;
+				reste = reste - periode * std::floor(reste / periode);
+				int32 idx = 0;
+				bool plein = true;
+				while (reste >= motif[idx]) {
+					reste -= motif[idx];
+					idx = (idx + 1) % nm;
+					plein = !plein;
+				}
+				float32 restant = motif[idx] - reste;
+
+				bool ouvert = false;
+				int32 cStart = 0;
+				auto ouvrir = [&](float32 x, float32 y) {
+					cStart = (int32)dst.xs.Size();
+					dst.xs.PushBack(x);
+					dst.ys.PushBack(y);
+					ouvert = true;
+				};
+				auto pousser = [&](float32 x, float32 y) {
+					dst.xs.PushBack(x);
+					dst.ys.PushBack(y);
+				};
+				auto fermer = [&]() {
+					if (!ouvert)
+						return;
+					const int32 n = (int32)dst.xs.Size() - cStart;
+					if (n >= 2) {
+						dst.contourStart.PushBack(cStart);
+						dst.contourLen.PushBack(n);
+					} else {
+						while ((int32)dst.xs.Size() > cStart) {
+							dst.xs.PopBack();
+							dst.ys.PopBack();
+						}
+					}
+					ouvert = false;
+				};
+
+				if (plein)
+					ouvrir(src.xs[(uint32)start], src.ys[(uint32)start]);
+				for (int32 k = 0; k < len - 1; ++k) {
+					float32 ax = src.xs[(uint32)(start + k)], ay = src.ys[(uint32)(start + k)];
+					const float32 bx = src.xs[(uint32)(start + k + 1)], by = src.ys[(uint32)(start + k + 1)];
+					float32 dx = bx - ax, dy = by - ay;
+					float32 L = std::sqrt(dx * dx + dy * dy);
+					if (L < 1e-9f)
+						continue;
+					dx /= L;
+					dy /= L;
+					while (L > restant) {
+						ax += dx * restant;
+						ay += dy * restant;
+						L -= restant;
+						if (plein) {
+							pousser(ax, ay);
+							fermer();
+						} else {
+							ouvrir(ax, ay);
+						}
+						plein = !plein;
+						idx = (idx + 1) % nm;
+						restant = motif[idx];
+						if (restant <= 1e-6f) { // une longueur nulle : on ne boucle pas dessus
+							plein = !plein;
+							idx = (idx + 1) % nm;
+							restant = motif[idx];
+							if (restant <= 1e-6f)
+								return;
+						}
+					}
+					restant -= L;
+					if (plein)
+						pousser(bx, by);
+				}
+				fermer();
+			}
+		}
+
 		void BuildStrokeShape(const Shape &src, float32 hwPx, NkSVGLineCap cap, NkSVGLineJoin join, float32 miterLimit,
 							  Shape &dst) noexcept {
 			if (hwPx <= 0.f)
@@ -4742,7 +4876,17 @@ namespace nkentseu {
 					strokeShape.style.fill = src.style.stroke;
 					strokeShape.style.fillOpacity = src.style.strokeOpacity;
 					strokeShape.style.fillEvenOdd = false;
-					BuildStrokeShape(local, swPx * 0.5f, src.style.strokeLineCap, src.style.strokeLineJoin,
+					// LES TIRETS D'ABORD : on coupe le chemin, puis on epaissit chaque
+					// morceau -- l'inverse (effacer des bouts du ruban) ne saurait pas
+					// donner ses terminaisons a chaque tiret.
+					Shape tirets;
+					const Shape *aEpaissir = &local;
+					if (src.style.nDashes > 0) {
+						const float32 echDash = (sx + sy) * 0.5f;
+						DecouperEnTirets(local, src.style, echDash, tirets);
+						aEpaissir = &tirets;
+					}
+					BuildStrokeShape(*aEpaissir, swPx * 0.5f, src.style.strokeLineCap, src.style.strokeLineJoin,
 									 src.style.strokeMiterLimit, strokeShape);
 					GradPaint strokeGP;
 					bool hasStrokeGP = false;

@@ -1406,6 +1406,99 @@ static void TestCSS() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER stroke-dasharray — un trait coupe, pas un trait troue
+// ─────────────────────────────────────────────────────────────────────────────
+static void TestDash() {
+	std::printf("\n== PALIER stroke-dasharray ==\n");
+	char det[640];
+
+	// (a) une ligne horizontale en « 10 pleins / 10 vides » : on doit trouver de
+	//     l'encre ET des trous, en ALTERNANCE, aux bons endroits.
+	static const char *kDash =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"20\" viewBox=\"0 0 100 20\">"
+		"<line x1=\"0\" y1=\"10\" x2=\"100\" y2=\"10\" stroke=\"#000000\" stroke-width=\"6\" "
+		"stroke-dasharray=\"10 10\"/></svg>";
+	NkImage a = Decoder(kDash);
+	const int32 t0 = AlphaDe(a, 5, 10), v0 = AlphaDe(a, 15, 10);
+	const int32 t1 = AlphaDe(a, 25, 10), v1 = AlphaDe(a, 35, 10);
+	const int32 t2 = AlphaDe(a, 45, 10), v2 = AlphaDe(a, 55, 10);
+	const bool alterne = a.IsValid() && t0 > 200 && v0 < 30 && t1 > 200 && v1 < 30 && t2 > 200 && v2 < 30;
+	std::snprintf(det, sizeof(det), "alpha aux x=5,15,25,35,45,55 : %d %d %d %d %d %d (plein/vide alternes)", t0, v0,
+				  t1, v1, t2, v2);
+	Verifier("D1. stroke-dasharray=\"10 10\" : le trait ALTERNE pleins et vides aux bons endroits (sans lui, la "
+			 "ligne serait continue d'un bout a l'autre)",
+			 alterne, det);
+
+	// (b) stroke-dashoffset DECALE le motif : ce qui etait plein devient vide.
+	static const char *kOffset =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"20\" viewBox=\"0 0 100 20\">"
+		"<line x1=\"0\" y1=\"10\" x2=\"100\" y2=\"10\" stroke=\"#000000\" stroke-width=\"6\" "
+		"stroke-dasharray=\"10 10\" stroke-dashoffset=\"10\"/></svg>";
+	NkImage b = Decoder(kOffset);
+	const int32 o0 = AlphaDe(b, 5, 10), o1 = AlphaDe(b, 15, 10);
+	const bool decale = b.IsValid() && o0 < 30 && o1 > 200;
+	std::snprintf(det, sizeof(det), "avec offset=10 : x=5 -> alpha %d (etait %d), x=15 -> alpha %d (etait %d) : le "
+								   "motif a bien glisse d'une demi-periode",
+				  o0, t0, o1, v0);
+	Verifier("D2. stroke-dashoffset decale le motif (ce qui etait plein devient vide)", decale, det);
+
+	// (c) un motif IMPAIR est repete deux fois (norme) : « 10 » veut dire
+	//     « 10 pleins, 10 vides », pas « 10 pleins puis plus rien ».
+	static const char *kImpair =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"20\" viewBox=\"0 0 100 20\">"
+		"<line x1=\"0\" y1=\"10\" x2=\"100\" y2=\"10\" stroke=\"#000000\" stroke-width=\"6\" "
+		"stroke-dasharray=\"10\"/></svg>";
+	NkImage c = Decoder(kImpair);
+	const bool impair = c.IsValid() && AlphaDe(c, 5, 10) > 200 && AlphaDe(c, 15, 10) < 30 &&
+						AlphaDe(c, 25, 10) > 200;
+	std::snprintf(det, sizeof(det), "« 10 » seul : x=5 %d, x=15 %d, x=25 %d -- le motif impair est repete",
+				  AlphaDe(c, 5, 10), AlphaDe(c, 15, 10), AlphaDe(c, 25, 10));
+	Verifier("D3. un motif de longueur IMPAIRE est repete deux fois (« 10 » = 10 pleins / 10 vides)", impair, det);
+
+	// (d) un motif de somme NULLE est un trait CONTINU, pas un trait invisible.
+	static const char *kZero =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"20\" viewBox=\"0 0 100 20\">"
+		"<line x1=\"0\" y1=\"10\" x2=\"100\" y2=\"10\" stroke=\"#000000\" stroke-width=\"6\" "
+		"stroke-dasharray=\"0 0\"/></svg>";
+	NkImage d = Decoder(kZero);
+	const bool continu = d.IsValid() && AlphaDe(d, 5, 10) > 200 && AlphaDe(d, 50, 10) > 200 &&
+						 AlphaDe(d, 95, 10) > 200;
+	std::snprintf(det, sizeof(det), "somme nulle -> trait plein : %d %d %d (un trait DISPARU serait le defaut)",
+				  AlphaDe(d, 5, 10), AlphaDe(d, 50, 10), AlphaDe(d, 95, 10));
+	Verifier("D4. un motif de somme NULLE rend un trait CONTINU -- pas un trait qui disparait", continu, det);
+
+	// (e) le motif suit le CONTOUR, pas seulement une droite : sur un rectangle, il
+	//     tourne les coins et laisse des trous sur les quatre cotes.
+	static const char *kRect =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\" viewBox=\"0 0 100 100\">"
+		"<rect x=\"10\" y=\"10\" width=\"80\" height=\"80\" fill=\"none\" stroke=\"#000000\" stroke-width=\"6\" "
+		"stroke-dasharray=\"8 8\"/></svg>";
+	NkImage e = Decoder(kRect);
+	int32 pleins = 0, vides = 0;
+	for (int32 x = 12; x < 88; ++x) { // le long du bord HAUT
+		const int32 al = AlphaDe(e, x, 10);
+		if (al > 200)
+			++pleins;
+		else if (al < 30)
+			++vides;
+	}
+	int32 pleinsG = 0, videsG = 0;
+	for (int32 y = 12; y < 88; ++y) { // et le long du bord GAUCHE
+		const int32 al = AlphaDe(e, 10, y);
+		if (al > 200)
+			++pleinsG;
+		else if (al < 30)
+			++videsG;
+	}
+	const bool contour = e.IsValid() && pleins > 20 && vides > 20 && pleinsG > 20 && videsG > 20;
+	std::snprintf(det, sizeof(det), "bord haut : %d pleins / %d vides ; bord gauche : %d / %d", pleins, vides,
+				  pleinsG, videsG);
+	Verifier("D5. le motif suit LE CONTOUR (les quatre cotes d'un rectangle sont pointilles, pas seulement le "
+			 "premier)",
+			 contour, det);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -1427,8 +1520,8 @@ static void TestNonGere() {
 	// qui reste a faire y demeure. Verifier les deux sens, c'est empecher deux
 	// mensonges opposes -- annoncer comme saute ce qu'on peint, et taire ce qu'on
 	// saute vraiment.
-	bool markerDit = false, patternDit = false, dashDit = false;
-	bool useEncoreDit = false, clipEncoreDit = false, maskEncoreDit = false;
+	bool markerDit = false, patternDit = false;
+	bool useEncoreDit = false, clipEncoreDit = false, maskEncoreDit = false, dashEncoreDit = false;
 	int32 nbMarker = 0, nb = 0;
 	if (img) {
 		nb = img->SkippedCount();
@@ -1451,22 +1544,22 @@ static void TestNonGere() {
 			if (std::strcmp(n, "pattern") == 0)
 				patternDit = true;
 			if (std::strcmp(n, "stroke-dasharray") == 0)
-				dashDit = true;
+				dashEncoreDit = true; // GERE depuis son palier
 		}
 		std::snprintf(det, sizeof(det), "%d nom(s) saute(s) : ", nb);
 		for (int32 i = 0; i < nb; ++i) {
 			std::strncat(det, img->SkippedAt(i) ? img->SkippedAt(i) : "?", sizeof(det) - std::strlen(det) - 1);
 			std::strncat(det, " ", sizeof(det) - std::strlen(det) - 1);
 		}
-		std::strncat(det, "| <use>, <clipPath> et <mask> n'y sont plus (ils sont peints) ",
+		std::strncat(det, "| <use>, <clipPath>, <mask>, stroke-dasharray n'y sont plus ",
 					 sizeof(det) - std::strlen(det) - 1);
 		img->Free();
 	}
 	Verifier("Le REGISTRE DES SAUTS suit les paliers, dans LES DEUX SENS : ce qui reste a faire est nomme "
-			 "(marker, pattern, stroke-dasharray) une seule fois par nom -- DEUX <marker> ne donnent qu'une "
-			 "mention --, et <use>, <clipPath>, <mask> N'Y SONT PLUS depuis qu'ils sont peints",
-			 img != nullptr && markerDit && patternDit && dashDit && !useEncoreDit && !clipEncoreDit &&
-				 !maskEncoreDit && nbMarker == 1,
+			 "(marker, pattern) une seule fois par nom -- DEUX <marker> ne donnent qu'une mention --, et <use>, "
+			 "<clipPath>, <mask>, stroke-dasharray N'Y SONT PLUS depuis qu'ils sont peints",
+			 img != nullptr && markerDit && patternDit && !useEncoreDit && !clipEncoreDit && !maskEncoreDit &&
+				 !dashEncoreDit && nbMarker == 1,
 			 det);
 }
 
@@ -1490,6 +1583,7 @@ int TestSVG_Run() {
 	TestClip();
 	TestMask();
 	TestCSS();
+	TestDash();
 	TestNonGere();
 	TestTemoinCroise();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);

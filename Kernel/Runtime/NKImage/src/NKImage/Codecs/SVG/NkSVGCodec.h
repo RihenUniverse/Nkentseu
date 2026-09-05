@@ -22,6 +22,7 @@
 //                      <polyline> <polygon> <linearGradient> <radialGradient> <stop>
 // Attributs styles  : fill, stroke, stroke-width, opacity, fill-opacity,
 //                     stroke-opacity, fill-rule, transform,
+//                     stroke-dasharray + stroke-dashoffset,
 //                     stroke-linecap (butt/round/square),
 //                     stroke-linejoin (miter/round/bevel), stroke-miterlimit
 // Gradients         : linear + radial, stops (offset/stop-color/stop-opacity),
@@ -131,6 +132,15 @@ namespace nkentseu {
 			NkSVGLineJoin strokeLineJoin = NkSVGLineJoin::Miter; ///< stroke-linejoin
 			float32 strokeMiterLimit = 4.f;						 ///< stroke-miterlimit
 			NkSVGBlend blend = NkSVGBlend::Normal;				 ///< mix-blend-mode
+
+			// ── stroke-dasharray / stroke-dashoffset ─────────────────────────
+			//    Huit longueurs suffisent : au-dela, le motif n'est plus lisible a
+			//    l'oeil, et la norme n'impose aucune limite qu'on puisse honorer.
+			//    Le depassement est DIT, pas tronque en silence.
+			static constexpr int32 kMaxDashes = 8;
+			float32 dashes[kMaxDashes] = {};
+			int32 nDashes = 0;		 ///< 0 = trait continu
+			float32 dashOffset = 0.f;
 	};
 
 	// ── Matrice affine 2D (a,b,c,d,e,f) = [a c e; b d f; 0 0 1] ──────────────
