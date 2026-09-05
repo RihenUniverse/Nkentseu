@@ -125,6 +125,20 @@ namespace nkentseu {
 		return (float32)aw * ech;
 	}
 
+	bool NkFontGlyphSource::Metrics(float32 fontSize, float32 &ascent, float32 &descent) const noexcept {
+		ascent = 0.f;
+		descent = 0.f;
+		if (mActive < 0 || !mFaces[mActive].ok)
+			return false;
+		const nkfont::NkFontFaceInfo *info = &mFaces[mActive].info;
+		const float32 ech = nkfont::NkScaleForEmToPixels(const_cast<nkfont::NkFontFaceInfo *>(info), fontSize);
+		nkft_int32 asc = 0, desc = 0, gap = 0;
+		nkfont::NkGetFontVMetrics(info, &asc, &desc, &gap);
+		ascent = (float32)asc * ech;
+		descent = -(float32)desc * ech; // `desc` est negatif dans la table : on rend une hauteur
+		return true;
+	}
+
 	bool NkFontGlyphSource::Outline(uint32 codepoint, float32 fontSize, float32 penX, float32 baselineY,
 									NkIGlyphSink &sink) const noexcept {
 		if (mActive < 0 || !mFaces[mActive].ok)

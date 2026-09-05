@@ -2200,13 +2200,25 @@ namespace nkentseu {
 		/// PARCE QUE `text-anchor` a besoin de la largeur TOTALE, qu'on ne connait
 		/// qu'a la fermeture. Poser les glyphes au fil de l'eau aurait interdit
 		/// « middle » et « end », ou impose une seconde passe.
+		/// Ou poser la ligne de base par rapport a `y` (dominant-baseline).
+		enum class Ligne : uint8 {
+			Alphabetique = 0, ///< le defaut : y EST la ligne de base
+			Milieu,			  ///< middle / central : le milieu de la hauteur d'x
+			Suspendue,		  ///< hanging / text-before-edge : y est le HAUT
+			Basse			  ///< text-after-edge : y est le BAS
+		};
+
 		struct TextState {
 				bool actif = false;
 				float32 x = 0.f, y = 0.f;
 				int32 anchor = 0; ///< 0 start, 1 middle, 2 end
 				bool preserve = false;
-				NkSVGTransform xform = NkSVGTransform::Identity();
+				Ligne ligne = Ligne::Alphabetique;
+				float32 longueurVoulue = 0.f; ///< textLength ; 0 = libre
+				bool ajusterGlyphes = false;  ///< lengthAdjust="spacingAndGlyphs"
+				char cheminRef[64] = {0};	  ///< <textPath href="#id">
 				NkVector<TextFragment> frags;
+				NkSVGTransform xform = NkSVGTransform::Identity();
 		};
 
 		/// Decode les entites XML et applique la regle des blancs de SVG :
@@ -2289,6 +2301,31 @@ namespace nkentseu {
 			}
 		}
 
+		/// Le chemin d'un <textPath>, aplati en polyligne, avec ses longueurs cumulees.
+		struct CheminTexte {
+				NkVector<float32> xs, ys, cumul;
+				float32 total = 0.f;
+
+				/// Le point et la TANGENTE a la distance @p d le long du chemin.
+				bool Au(float32 d, float32 &x, float32 &y, float32 &tx, float32 &ty) const noexcept {
+					if (xs.Size() < 2u)
+						return false;
+					if (d < 0.f || d > total)
+						return false; // hors du chemin : le glyphe n'est pas pose (norme)
+					uint32 i = 1;
+					while (i + 1u < xs.Size() && cumul[i] < d)
+						++i;
+					const float32 d0 = cumul[i - 1u], d1 = cumul[i];
+					const float32 seg = (d1 - d0) > 1e-6f ? (d1 - d0) : 1e-6f;
+					const float32 t = (d - d0) / seg;
+					x = xs[i - 1u] + (xs[i] - xs[i - 1u]) * t;
+					y = ys[i - 1u] + (ys[i] - ys[i - 1u]) * t;
+					tx = (xs[i] - xs[i - 1u]) / seg;
+					ty = (ys[i] - ys[i - 1u]) / seg;
+					return true;
+				}
+		};
+
 		/// La largeur d'un fragment, en unites utilisateur (somme des avances).
 		/// Le CRENAGE n'est PAS applique : le peintre de NKGui ne l'applique pas non
 		/// plus (`x += g->advanceX`), et le temoin croise compare les deux.
@@ -2307,7 +2344,7 @@ namespace nkentseu {
 
 		/// Pose les contours d'un fragment dans @p sh, a partir de (penX, penY).
 		void ContoursDuFragment(Shape &sh, NkIGlyphSource &src, const TextFragment &fr, float32 &penX,
-								float32 penY) noexcept {
+								float32 penY, float32 espaceSup = 0.f) noexcept {
 			PathBuilder pb(sh);
 			GlyphSink sink(pb);
 			const char *p = fr.txt;
@@ -2317,12 +2354,49 @@ namespace nkentseu {
 				if (cp == 0u)
 					break;
 				src.Outline(cp, fr.fontSize, penX, penY, sink); // false = espace : normal
-				penX += src.Advance(cp, fr.fontSize);
+				penX += src.Advance(cp, fr.fontSize) + espaceSup;
+			}
+		}
+
+		// ─────────────────────────────────────────────────────────────────────────────
+		// <textPath> — CHAQUE GLYPHE SUR SA TANGENTE
+		// -----------------------------------------------------------------------------
+		// Un glyphe est pose au MILIEU de son avance sur le chemin, tourne selon la
+		// tangente a cet endroit. Le poser a son bord gauche ferait pivoter les
+		// lettres autour d'un point excentre et les ferait « glisser » dans les
+		// virages -- le milieu est ce qui donne un texte lisible en courbe.
+		// ─────────────────────────────────────────────────────────────────────────────
+		void ContoursSurChemin(Shape &sh, NkIGlyphSource &src, const TextFragment &fr, const CheminTexte &chemin,
+							   float32 &distance, float32 espaceSup = 0.f) noexcept {
+			const char *p = fr.txt;
+			const char *end = p + std::strlen(p);
+			while (p < end) {
+				const uint32 cp = DecoderUTF8(p, end);
+				if (cp == 0u)
+					break;
+				const float32 av = src.Advance(cp, fr.fontSize);
+				float32 x = 0.f, y = 0.f, tx = 1.f, ty = 0.f;
+				if (chemin.Au(distance + av * 0.5f, x, y, tx, ty)) {
+					// on emet le glyphe a l'origine, puis on le TOURNE sur sa tangente :
+					// la source ne sait poser qu'un glyphe droit, et c'est tres bien --
+					// une affine par glyphe suffit, et elle vit ici.
+					const uint32 avant = sh.xs.Size();
+					PathBuilder pb(sh);
+					GlyphSink sink(pb);
+					src.Outline(cp, fr.fontSize, -av * 0.5f, 0.f, sink);
+					for (uint32 k = avant; k < sh.xs.Size(); ++k) {
+						const float32 gx = sh.xs[k], gy = sh.ys[k];
+						sh.xs[k] = x + tx * gx - ty * gy;
+						sh.ys[k] = y + ty * gx + tx * gy;
+					}
+				}
+				distance += av + espaceSup;
 			}
 		}
 
 		/// Ferme un <text> : c'est ICI qu'on connait la largeur totale, donc l'ancrage.
-		void FinirTexte(NkVector<Shape> &shapes, TextState &ts, NkIGlyphSource *source, SkipList &skips) noexcept {
+		void FinirTexte(NkVector<Shape> &shapes, TextState &ts, NkIGlyphSource *source, SkipList &skips,
+						const CheminTexte *chemin = nullptr) noexcept {
 			if (!ts.actif)
 				return;
 			ts.actif = false;
@@ -2344,12 +2418,45 @@ namespace nkentseu {
 				ChoisirFonte(*source, ts.frags[i], skips);
 				largeur += LargeurFragment(*source, ts.frags[i]);
 			}
+			// ── textLength : le texte est ETIRE ou COMPRIME pour tenir la mesure ──
+			//    « spacing » (le defaut) repartit l'ecart entre les glyphes ;
+			//    « spacingAndGlyphs » met tout a l'echelle, glyphes compris.
+			float32 espaceSup = 0.f, echelleGlyphes = 1.f;
+			int32 nbGlyphes = 0;
+			for (uint32 i = 0; i < ts.frags.Size(); ++i)
+				for (const char *p = ts.frags[i].txt; *p; ++p)
+					if (((uint8)*p & 0xC0u) != 0x80u)
+						++nbGlyphes;
+			if (ts.longueurVoulue > 0.f && largeur > 1e-4f) {
+				if (ts.ajusterGlyphes) {
+					echelleGlyphes = ts.longueurVoulue / largeur;
+				} else if (nbGlyphes > 1) {
+					espaceSup = (ts.longueurVoulue - largeur) / (float32)(nbGlyphes - 1);
+				}
+				largeur = ts.longueurVoulue;
+			}
+
 			float32 penX = ts.x;
 			if (ts.anchor == 1)
 				penX -= largeur * 0.5f;
 			else if (ts.anchor == 2)
 				penX -= largeur;
+			// ── dominant-baseline : `y` ne designe pas toujours la ligne de base ──
 			float32 penY = ts.y;
+			if (ts.ligne != Ligne::Alphabetique && source) {
+				float32 asc = 0.f, desc = 0.f;
+				if (source->Metrics(ts.frags[0].fontSize, asc, desc)) {
+					if (ts.ligne == Ligne::Milieu)
+						penY += (asc - desc) * 0.5f;
+					else if (ts.ligne == Ligne::Suspendue)
+						penY += asc;
+					else if (ts.ligne == Ligne::Basse)
+						penY -= desc;
+				} else if (skips.Noter("dominant-baseline-metriques")) {
+					logger.Warn("[SVG] dominant-baseline demande, mais la source de glyphes ne fournit pas de "
+								"metriques -- `y` est traite comme la ligne de base.");
+				}
+			}
 
 			Shape sh;
 			sh.style = ts.frags[0].style;
@@ -2367,7 +2474,13 @@ namespace nkentseu {
 					penX = fr.x;
 				if (fr.posY)
 					penY = fr.y;
-				ContoursDuFragment(sh, *source, fr, penX, penY);
+				TextFragment ajuste = fr;
+				if (echelleGlyphes != 1.f)
+					ajuste.fontSize = fr.fontSize * echelleGlyphes;
+				if (chemin)
+					ContoursSurChemin(sh, *source, ajuste, *chemin, penX, espaceSup);
+				else
+					ContoursDuFragment(sh, *source, ajuste, penX, penY, espaceSup);
 				if (fr.weight >= 600)
 					grasSimule = true;
 			}
@@ -2794,10 +2907,66 @@ namespace nkentseu {
 				if (kind == 3) {
 					// Closing tag : depile la stack / la profondeur defs / finalise un gradient.
 					if (std::strcmp(tagBuf, "text") == 0) {
-						FinirTexte(shapes, texte, glyphes, skips);
+						// LE CHEMIN D'UN <textPath> est relu ICI, depuis l'element
+						// reference : on a l'index des id, et le `d` d'un <path> se
+						// reparse avec le meme PathBuilder que partout ailleurs.
+						CheminTexte chemin;
+						bool aChemin = false;
+						if (texte.cheminRef[0]) {
+							const IdRange *cible = TrouverId(useCtx, texte.cheminRef);
+							if (cible) {
+								char dbuf[4096];
+								dbuf[0] = 0;
+								// ⚠️ « d= » SE TROUVE AUSSI DANS « id= ». Chercher la
+								// sous-chaine rendait « arc » (la valeur de l'id) comme
+								// trace, et <textPath> ne peignait rien -- sans erreur,
+								// sans message. Un attribut se cherche sur sa FRONTIERE :
+								// precede d'un blanc ou du nom du tag.
+								const char *q = cible->debComplet;
+								while (q + 1 < cible->debInterieur &&
+									   !(q[0] == 'd' && q[1] == '=' && q > cible->debComplet && IsSpace(q[-1])))
+									++q;
+								if (q + 2 < cible->debInterieur) {
+									q += 2;
+									if (*q == '"' || *q == '\'') {
+										const char quote = *q++;
+										usize k = 0;
+										while (q < cible->debInterieur && *q != quote && k + 1 < sizeof(dbuf))
+											dbuf[k++] = *q++;
+										dbuf[k] = 0;
+									}
+								}
+								if (dbuf[0]) {
+									Shape tmpSh;
+									PathBuilder pbc(tmpSh);
+									ParsePathD(dbuf, pbc);
+									for (uint32 c0 = 0; c0 < tmpSh.contourStart.Size(); ++c0) {
+										const int32 st0 = tmpSh.contourStart[c0];
+										const int32 ln0 = tmpSh.contourLen[c0];
+										for (int32 k = 0; k < ln0; ++k) {
+											chemin.xs.PushBack(tmpSh.xs[(uint32)(st0 + k)]);
+											chemin.ys.PushBack(tmpSh.ys[(uint32)(st0 + k)]);
+										}
+									}
+									chemin.cumul.PushBack(0.f);
+									for (uint32 k = 1; k < chemin.xs.Size(); ++k) {
+										const float32 ddx = chemin.xs[k] - chemin.xs[k - 1u];
+										const float32 ddy = chemin.ys[k] - chemin.ys[k - 1u];
+										chemin.total += std::sqrt(ddx * ddx + ddy * ddy);
+										chemin.cumul.PushBack(chemin.total);
+									}
+									aChemin = (chemin.xs.Size() >= 2u && chemin.total > 1e-4f);
+								}
+							}
+							if (!aChemin && skips.Noter("textPath-cible"))
+								logger.Warn("[SVG] <textPath href=\"{0}\"> : chemin introuvable ou vide -- le "
+											"texte est pose en ligne droite.",
+											texte.cheminRef);
+						}
+						FinirTexte(shapes, texte, glyphes, skips, aChemin ? &chemin : nullptr);
 						continue;
 					}
-					if (std::strcmp(tagBuf, "tspan") == 0)
+					if (std::strcmp(tagBuf, "tspan") == 0 || std::strcmp(tagBuf, "textPath") == 0)
 						continue;
 					if (std::strcmp(tagBuf, "filter") == 0) {
 						if (dansFiltre) {
@@ -3394,8 +3563,18 @@ namespace nkentseu {
 				// ── <text> / <tspan> : le contenu VIT ENTRE LES BALISES ──────────
 				//    Le lecteur de tags saute le texte ; ici on le prend a la source,
 				//    depuis la position juste apres le « > » de la balise ouvrante.
-				if (std::strcmp(tagBuf, "text") == 0 || std::strcmp(tagBuf, "tspan") == 0) {
-					const bool estText = (tagBuf[0] == 't' && tagBuf[1] == 'e');
+				if (std::strcmp(tagBuf, "text") == 0 || std::strcmp(tagBuf, "tspan") == 0 ||
+					std::strcmp(tagBuf, "textPath") == 0) {
+					const bool estText = (std::strcmp(tagBuf, "text") == 0);
+					if (std::strcmp(tagBuf, "textPath") == 0 && texte.actif) {
+						const char *hp = FindAttr(attrs, numAttrs, "href");
+						if (!hp)
+							hp = FindAttr(attrs, numAttrs, "xlink:href");
+						if (hp) {
+							std::strncpy(texte.cheminRef, (*hp == '#') ? hp + 1 : hp, 63);
+							texte.cheminRef[63] = 0;
+						}
+					}
 					ParseState loc = cur;
 					loc.style = MergeStyle(cur.style, attrs, numAttrs, &useCtx.regles, tagBuf);
 					UpdateRefs(loc.fillRef, loc.strokeRef, attrs, numAttrs);
@@ -3417,10 +3596,27 @@ namespace nkentseu {
 							texte.anchor = 2;
 						const char *esp = FindAttr(attrs, numAttrs, "xml:space");
 						texte.preserve = (esp && std::strcmp(esp, "preserve") == 0);
-						if (FindAttr(attrs, numAttrs, "dominant-baseline") && skips.Noter("dominant-baseline"))
-							logger.Warn("[SVG] dominant-baseline non honore : y est la LIGNE DE BASE.");
-						if (FindAttr(attrs, numAttrs, "textLength") && skips.Noter("textLength"))
-							logger.Warn("[SVG] textLength non honore : le texte n'est ni etire ni comprime.");
+						const char *db = FindAttr(attrs, numAttrs, "dominant-baseline");
+						if (db) {
+							if (std::strcmp(db, "middle") == 0 || std::strcmp(db, "central") == 0)
+								texte.ligne = Ligne::Milieu;
+							else if (std::strcmp(db, "hanging") == 0 ||
+									 std::strcmp(db, "text-before-edge") == 0)
+								texte.ligne = Ligne::Suspendue;
+							else if (std::strcmp(db, "text-after-edge") == 0 ||
+									 std::strcmp(db, "ideographic") == 0)
+								texte.ligne = Ligne::Basse;
+							else if (std::strcmp(db, "auto") != 0 && std::strcmp(db, "alphabetic") != 0 &&
+									 skips.Noter("dominant-baseline-valeur"))
+								logger.Warn("[SVG] dominant-baseline=\"{0}\" inconnu -- `y` reste la ligne de "
+											"base.",
+											db);
+						}
+						const char *tl = FindAttr(attrs, numAttrs, "textLength");
+						if (tl)
+							texte.longueurVoulue = ParseFloat(tl);
+						const char *la = FindAttr(attrs, numAttrs, "lengthAdjust");
+						texte.ajusterGlyphes = (la && std::strcmp(la, "spacingAndGlyphs") == 0);
 					}
 					if (!texte.actif) {
 						// un <tspan> hors de tout <text> : rien a poser

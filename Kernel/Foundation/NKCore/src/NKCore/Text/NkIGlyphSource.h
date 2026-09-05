@@ -86,6 +86,21 @@ namespace nkentseu {
 			/// corps donne. @p fontSize est le CADRATIN (em), comme en CSS et en SVG.
 			virtual float32 Advance(uint32 codepoint, float32 fontSize) const noexcept = 0;
 
+			/// Les metriques verticales de la fonte active, pour un corps donne :
+			/// @p ascent au-dessus de la ligne de base (positif), @p descent en
+			/// dessous (positif lui aussi). Sert a `dominant-baseline`.
+			///
+			/// NON PURE, et volontairement : ajouter une methode pure ici casserait
+			/// toute implementation ecrite ailleurs. Le defaut rend `false`, et
+			/// l'appelant sait alors qu'il n'a pas les metriques -- plutot que de
+			/// recevoir des zeros qu'il prendrait pour des mesures.
+			virtual bool Metrics(float32 fontSize, float32 &ascent, float32 &descent) const noexcept {
+				(void)fontSize;
+				ascent = 0.f;
+				descent = 0.f;
+				return false;
+			}
+
 			/// Emet les contours du point de code dans @p sink. L'origine est
 			/// (@p penX, @p baselineY), Y VERS LE BAS.
 			/// @return false si le glyphe n'existe pas ou n'a aucun contour (une

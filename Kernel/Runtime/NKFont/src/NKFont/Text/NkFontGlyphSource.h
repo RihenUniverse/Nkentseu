@@ -53,6 +53,7 @@ namespace nkentseu {
 			bool SelectFace(const char *family, int32 weight) noexcept override;
 			const char *ActiveFamily() const noexcept override;
 			float32 Advance(uint32 codepoint, float32 fontSize) const noexcept override;
+			bool Metrics(float32 fontSize, float32 &ascent, float32 &descent) const noexcept override;
 			bool Outline(uint32 codepoint, float32 fontSize, float32 penX, float32 baselineY,
 						 NkIGlyphSink &sink) const noexcept override;
 

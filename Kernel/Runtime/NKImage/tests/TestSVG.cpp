@@ -1684,6 +1684,125 @@ static void TestGrapheFiltres() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PALIER TEXTE AVANCE — dominant-baseline, textLength, <textPath>
+// ─────────────────────────────────────────────────────────────────────────────
+static void TestTexteAvance() {
+	std::printf("\n== PALIER texte avance ==\n");
+	char det[640];
+	static char svg[3072];
+
+	// (a) dominant-baseline : « hanging » met `y` AU-DESSUS du texte, « middle » au
+	//     milieu. Sans lui, tout le monde est sur la ligne de base -- et un titre
+	//     centre verticalement se retrouve trop bas.
+	PageTexte(svg, sizeof(svg),
+			  "<text x=\"20\" y=\"40\" font-family=\"Inter\" font-size=\"30\" fill=\"#000000\">H</text>");
+	Encre base = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	PageTexte(svg, sizeof(svg), "<text x=\"20\" y=\"40\" font-family=\"Inter\" font-size=\"30\" fill=\"#000000\" "
+								"dominant-baseline=\"hanging\">H</text>");
+	Encre susp = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	PageTexte(svg, sizeof(svg), "<text x=\"20\" y=\"40\" font-family=\"Inter\" font-size=\"30\" fill=\"#000000\" "
+								"dominant-baseline=\"middle\">H</text>");
+	Encre mil = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	// alphabetic : l'encre est AU-DESSUS de y=40. hanging : elle passe EN DESSOUS.
+	// middle : entre les deux.
+	const bool baseline = base.sombres > 20 && susp.sombres > 20 && mil.sombres > 20 && base.ymax <= 41 &&
+						  susp.ymin >= 39 && mil.ymin > base.ymin && mil.ymax < susp.ymax;
+	std::snprintf(det, sizeof(det), "alphabetic y[%d..%d] (au-dessus de 40) ; hanging y[%d..%d] (en dessous) ; "
+								   "middle y[%d..%d] (entre les deux)",
+				  base.ymin, base.ymax, susp.ymin, susp.ymax, mil.ymin, mil.ymax);
+	Verifier("X1. dominant-baseline : « hanging » descend le texte sous `y`, « middle » le centre dessus -- `y` "
+			 "n'est plus toujours la ligne de base",
+			 baseline, det);
+
+	// (b) textLength : le texte est ETIRE pour tenir la mesure demandee. Par
+	//     defaut (« spacing »), c'est l'ESPACEMENT qui change, pas les glyphes.
+	PageTexte(svg, sizeof(svg),
+			  "<text x=\"10\" y=\"50\" font-family=\"Inter\" font-size=\"20\" fill=\"#000000\">HHH</text>");
+	Encre libre = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	PageTexte(svg, sizeof(svg), "<text x=\"10\" y=\"50\" font-family=\"Inter\" font-size=\"20\" fill=\"#000000\" "
+								"textLength=\"150\">HHH</text>");
+	Encre tendu = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	const int32 lLibre = libre.xmax - libre.xmin + 1, lTendu = tendu.xmax - tendu.xmin + 1;
+	// l'encre TOTALE ne change pas (memes glyphes), mais la boite s'elargit
+	const bool etire = libre.sombres > 20 && lTendu > lLibre + 40 && tendu.xmax >= 150 &&
+					   std::abs(tendu.sombres - libre.sombres) < libre.sombres / 3;
+	std::snprintf(det, sizeof(det), "libre : %d px de large, %d d'encre ; textLength=150 : %d px de large, %d "
+								   "d'encre (memes glyphes, plus d'espace)",
+				  lLibre, libre.sombres, lTendu, tendu.sombres);
+	Verifier("X2. textLength (mode « spacing ») : le texte occupe la largeur demandee en ecartant les glyphes -- "
+			 "l'encre totale ne change pas",
+			 etire, det);
+
+	// (c) lengthAdjust=\"spacingAndGlyphs\" : les GLYPHES sont mis a l'echelle, donc
+	//     l'encre AUGMENTE. C'est la difference avec le mode precedent.
+	PageTexte(svg, sizeof(svg), "<text x=\"10\" y=\"50\" font-family=\"Inter\" font-size=\"20\" fill=\"#000000\" "
+								"textLength=\"150\" lengthAdjust=\"spacingAndGlyphs\">HHH</text>");
+	Encre gros = EncreDe(Decoder(svg), 0, 0, 200, 80);
+	const bool glyphes = gros.sombres > libre.sombres + libre.sombres / 2;
+	std::snprintf(det, sizeof(det), "spacing : %d d'encre ; spacingAndGlyphs : %d d'encre (les glyphes sont "
+								   "AGRANDIS, pas seulement ecartes)",
+				  tendu.sombres, gros.sombres);
+	Verifier("X3. lengthAdjust=\"spacingAndGlyphs\" met les GLYPHES a l'echelle (l'encre augmente), la ou "
+			 "« spacing » ne fait que les ecarter",
+			 glyphes, det);
+
+	// (d) <textPath> : le texte suit un chemin. Sur un arc, l'encre ne peut pas
+	//     tenir sur une seule ligne -- c'est ce qui le distingue d'un texte droit.
+	static const char *kPath =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"120\" viewBox=\"0 0 200 120\">"
+		"<rect x=\"0\" y=\"0\" width=\"200\" height=\"120\" fill=\"#ffffff\"/>"
+		"<defs><path id=\"arc\" d=\"M20 100 A 80 80 0 0 1 180 100\"/></defs>"
+		"<text font-family=\"Inter\" font-size=\"20\" fill=\"#000000\">"
+		"<textPath href=\"#arc\">HHHHHH</textPath></text></svg>";
+	NkImage d = Decoder(kPath);
+	Encre courbe = d.IsValid() ? EncreDe(d, 0, 0, 200, 120) : Encre();
+	// LE MEME TEXTE EN LIGNE DROITE, pour comparer : c'est la seule reference qui
+	// ne depend pas de la forme du chemin choisi.
+	static const char *kDroit =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"120\" viewBox=\"0 0 200 120\">"
+		"<rect x=\"0\" y=\"0\" width=\"200\" height=\"120\" fill=\"#ffffff\"/>"
+		"<text x=\"20\" y=\"100\" font-family=\"Inter\" font-size=\"20\" fill=\"#000000\">HHHHHH</text></svg>";
+	Encre droit = EncreDe(Decoder(kDroit), 0, 0, 200, 120);
+	const int32 hCourbe = courbe.ymax - courbe.ymin + 1, hDroit = droit.ymax - droit.ymin + 1;
+	// sur un demi-cercle, le DEBUT de l'arc est presque vertical : les lettres
+	// MONTENT. La hauteur d'encre explose (le vrai marqueur d'un texte tourne),
+	// alors qu'un texte droit tient dans la hauteur d'une capitale.
+	const bool surChemin = courbe.sombres > 60 && hCourbe > 3 * hDroit && courbe.ymin < droit.ymin - 30;
+	std::snprintf(det, sizeof(det), "courbe : %d px d'encre, y[%d..%d] soit %d de haut | droit : %d px d'encre, "
+								   "%d de haut -- les lettres MONTENT le long de l'arc",
+				  courbe.sombres, courbe.ymin, courbe.ymax, hCourbe, droit.sombres, hDroit);
+	Verifier("X4. <textPath> : les glyphes suivent le chemin et TOURNENT avec lui -- sur un demi-cercle l'encre "
+			 "occupe plus de trois fois la hauteur du meme texte pose droit",
+			 surChemin, det);
+
+	// (e) un <textPath> dont la cible est introuvable : le texte est pose en ligne
+	//     droite ET on le dit -- plutot que de ne rien peindre.
+	static const char *kAbsent =
+		"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"80\" viewBox=\"0 0 200 80\">"
+		"<rect x=\"0\" y=\"0\" width=\"200\" height=\"80\" fill=\"#ffffff\"/>"
+		"<text x=\"20\" y=\"50\" font-family=\"Inter\" font-size=\"20\" fill=\"#000000\">"
+		"<textPath href=\"#nexistepas\">HH</textPath></text></svg>";
+	NkSVGImage *img = NkSVGImage::LoadFromMemory((const uint8 *)kAbsent, std::strlen(kAbsent));
+	bool cibleDite = false;
+	int32 encreDroite = 0;
+	if (img) {
+		for (int32 i = 0; i < img->SkippedCount(); ++i) {
+			const char *n = img->SkippedAt(i);
+			if (n && std::strcmp(n, "textPath-cible") == 0)
+				cibleDite = true;
+		}
+		NkImage r = img->Rasterize(0, 0);
+		encreDroite = EncreDe(r, 0, 0, 200, 80).sombres;
+		img->Free();
+	}
+	std::snprintf(det, sizeof(det), "cible nommee=%d ; le texte est pose quand meme : %d px d'encre",
+				  cibleDite ? 1 : 0, encreDroite);
+	Verifier("X5. <textPath> vers un chemin INTROUVABLE : le texte est pose en ligne droite ET c'est dit (ne rien "
+			 "peindre serait pire)",
+			 cibleDite && encreDroite > 20, det);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CE QUE LE CODEC SAUTE : il doit le DIRE, une fois par nom
 // ─────────────────────────────────────────────────────────────────────────────
 static void TestNonGere() {
@@ -1772,6 +1891,7 @@ int TestSVG_Run() {
 	TestDash();
 	TestPattern();
 	TestGrapheFiltres();
+	TestTexteAvance();
 	TestNonGere();
 	TestTemoinCroise();
 	std::printf("\n===== SVG : %d / %d =====\n", gPass, gTotal);
