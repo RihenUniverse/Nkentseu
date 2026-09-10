@@ -46,6 +46,19 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Version de Jenga exigee par NKCode
+        id: jenga-version
+        run: |
+          # SOURCE UNIQUE : Applications/NKCode/JENGA_VERSION. Ce fichier ne
+          # porte plus de numero en dur ici, donc il ne peut plus diverger.
+          # Avant, `ref:` etait ecrit a la main et il est reste en 2.6.3 pendant
+          # que NKCode passait a 2.8.0 : la construction macOS s'arretait sur
+          # « name 'appurl' is not defined », message qui ne parle pas de Jenga.
+          V=$(grep -v '^#' Applications/NKCode/JENGA_VERSION | tr -d '[:space:]')
+          test -n "$V" || { echo "::error::JENGA_VERSION vide ou introuvable"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Jenga exige par NKCode : $V"
+
       - name: Depot Jenga
         uses: actions/checkout@v4
         with:
@@ -56,7 +69,7 @@ jobs:
           # vieux que le paquet Windows, sans que rien ne le dise. La branche
           # est un ANCETRE de v2.6.3 (verifie par merge-base), rien ne se perd.
           # Bumper ce tag a chaque release de Jenga.
-          ref: v2.8.0
+          ref: v${{ steps.jenga-version.outputs.version }}
           path: jenga-src
 
       - name: Dependances systeme (Linux)
