@@ -58,6 +58,10 @@ static nkcode::NkHomeState g_home;
 // notification, puis telechargement de l'installeur Inno qui met a jour EN
 // PLACE et relance NKCode.
 static nkcode::NkUpdateState g_update;
+// Mise a jour de JENGA seul : 1 Mo, aucune reinstallation de NKCode.
+// Separee de g_update parce que les deux produits n'ont ni le meme
+// rythme de publication ni le meme cout de mise a jour.
+static nkcode::NkJengaUpdateState g_jenga_update;
 
 
 int nkmain(const NkEntryState &state) {
@@ -197,6 +201,7 @@ int nkmain(const NkEntryState &state) {
 	g_menuBar.shell = shell.Get();
 	g_menuBar.home = &g_home; // « Nouveau Workspace » -> wizard complet du launcher (nav==2)
 	g_menuBar.upd = &g_update; // menu Aide > Rechercher les mises a jour (Phase 13)
+	g_menuBar.jup = &g_jenga_update; // menu Aide > Mettre a jour Jenga (1 Mo, sans reinstallation)
 	// (g_menuBar.exePath est pose plus bas, avec le chemin COMPLET de l'exe.)
 	shell->SetMenuBar(&nkcode::MainMenuBarThunk, &g_menuBar);
 	shell->SetOverlay(&nkcode::OverlayThunk, &g_dialogs);	// dialogues modaux (creation/enregistrement)

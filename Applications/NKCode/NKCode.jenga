@@ -153,6 +153,50 @@ def _jenga_depuis_wheel():
 _JENGA_STAGE, _JENGA_WHL, _JENGA_PERIMES = _jenga_depuis_wheel()
 _HAS_JENGA_SRC = bool(_JENGA_STAGE)
 
+# ── LA VERSION DE JENGA EXIGEE, ET LE REFUS QUI VA AVEC ──────────────────────
+# `Applications/NKCode/JENGA_VERSION` est la SOURCE UNIQUE. Le CI la lit pour
+# choisir le tag qu'il extrait ; on la lit ici pour verifier le wheel local.
+#
+# ON REFUSE, ON N'AVERTIT PAS. Un avertissement au milieu de deux cents lignes
+# de sortie de construction ne se lit pas : le 10 septembre 2026, la garde
+# « wheel contre systeme » a bien crie, personne ne l'a vue, et la construction
+# macOS a echoue trois fois avant qu'on regarde. Une construction qui s'arrete
+# avec la raison en clair coute une minute ; une qui continue avec le mauvais
+# Jenga coute une soiree.
+def _version_exigee():
+    """Le contenu de JENGA_VERSION, en tuple. () si le fichier manque."""
+    chemin = os.path.join(_REPO_ROOT, "Applications", "NKCode", "JENGA_VERSION")
+    try:
+        with open(chemin, "r", encoding="utf-8") as f:
+            for ligne in f:
+                ligne = ligne.strip()
+                if ligne and not ligne.startswith("#"):
+                    return tuple(int(x) for x in ligne.split("."))
+    except Exception:
+        pass
+    return ()
+
+
+_V_EXIGEE = _version_exigee()
+if _V_EXIGEE and _HAS_JENGA_SRC:
+    _fmt2 = lambda t: ".".join(str(x) for x in t)
+    if _version_du_wheel(_JENGA_WHL) != _V_EXIGEE:
+        raise SystemExit(
+            "[NKCode] ARRET : le wheel embarque est en "
+            + _fmt2(_version_du_wheel(_JENGA_WHL))
+            + " alors que Applications/NKCode/JENGA_VERSION exige "
+            + _fmt2(_V_EXIGEE) + ".\n"
+            "[NKCode]   NKCode se construirait avec un Jenga different de celui\n"
+            "[NKCode]   que le CI installe : les paquets divergeraient en silence.\n"
+            "[NKCode]   Remede : ./cri.sh dans le depot Jenga pour produire le wheel\n"
+            "[NKCode]   attendu, ou corriger JENGA_VERSION si c'est lui qui a tort."
+        )
+    print("[NKCode] Jenga exige : " + _fmt2(_V_EXIGEE) + " -- wheel conforme.")
+elif not _V_EXIGEE:
+    print("[NKCode] NOTE : Applications/NKCode/JENGA_VERSION absent ; "
+          "aucune verification de version possible.")
+
+
 # Chaine MinGW/ucrt64 ? (meme test que NKIlyana, Model, NkAnimPhysTest...)
 _IS_MINGW = "mingw" in TC_WINDOWS.lower()
 if _HAS_JENGA_SRC:

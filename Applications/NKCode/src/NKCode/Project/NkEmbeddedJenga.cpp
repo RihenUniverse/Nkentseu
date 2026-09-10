@@ -107,6 +107,10 @@ namespace nkentseu {
 		// depuis n'importe quel thread et n'occupe pas le worker unique — la
 		// detection de version tourne en tache de fond pendant qu'un build peut
 		// deja etre en cours.
+		NkString NkEmbeddedJenga::JengaSrcDir() {
+			return gJengaSrc;
+		}
+
 		NkString NkEmbeddedJenga::EmbeddedVersion() {
 			const NkString f = gJengaSrc + "/Jenga/_version.py";
 			if (gJengaSrc.Empty() || !NkFile::Exists(f.CStr()))
