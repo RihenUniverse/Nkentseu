@@ -117,13 +117,36 @@ cette liste est la cible.
 | famille | nœuds | exéc. |
 |---|---|:---:|
 | **événements** | Au démarrage · À chaque image · À la collision · Sur entrée clavier/souris · Sur message | ✅ **sortie seule** — un événement n'a pas d'entrée d'exécution |
-| **flot** | Si / Sinon · Aiguillage (switch) · Boucle Pour · Boucle Tant que · Séquence · Portail (aller à) | ✅ |
+| **flot** | Si / Sinon · Aiguillage (switch) · Boucle Pour · Boucle Tant que · Séquence · ~~Portail (aller à)~~ ❌ | ✅ |
 | **variables** | Lire · Écrire · Incrémenter | Écrire : ✅ · Lire : ❌ |
 | **fonctions** | Appeler · Retourner · Entrée de fonction · Sortie de fonction | ✅ |
 | **objets** | Trouver · Créer · Détruire · Lire propriété · Écrire propriété | selon |
 | **temps** | Attendre · Chronomètre · Retarder | ✅ |
 | **maths / logique** | les mêmes qu'en matériau — Math, Vector Math, comparaisons, et/ou/non | ❌ **valeur seule** |
 | **débogage** | Afficher · Point d'arrêt · Assertion | ✅ |
+
+❌ **`Portail (aller à)` est RETIRÉ — décidé le 23/08**, et la raison vaut d'être
+lue avant de le réintroduire :
+
+> **un cycle vit à l'intérieur d'un nœud, jamais dans le graphe.**
+
+Un portail qui saute **en arrière** est un cycle, et le cœur les refuse
+(`NkLinkError::WouldCycle`) — pour **toutes** les familles de lien, sans
+exception. Le laisser dans cette liste serait déclarer une capacité que le
+moteur ne saura pas honorer.
+
+⚠️ **Aucun de ses trois usages n'est perdu**, et c'est ce qui rend le retrait
+acceptable :
+
+| ce qu'on voulait en faire | ce qui le fait |
+|---|---|
+| **revenir en arrière** (répéter) | un **nœud de boucle** — `Boucle Pour`, `Boucle Tant que`, qui itère lui-même |
+| **sauter en avant sans tirer un long fil** | le **relais** (`reroute`), § 5 — il range un fil sans rien changer au graphe |
+| **sauter en avant en changeant le flot** | un fil d'exécution ordinaire : un saut avant **est** déjà exprimable |
+
+📌 Le portail n'apportait donc rien qu'un autre nœud ne fasse déjà — **sauf le
+retour en arrière**, et c'est exactement ce que la décision refuse. Détail et
+raisons au § 19.9 de `SPECIFICATION_VISUELLE.md`.
 
 ⚠️ **Deux règles qui sortent de ce tableau et qui comptent pour le dessin :**
 
@@ -141,12 +164,35 @@ cette liste est la cible.
 | | rôle |
 |---|---|
 | **commentaire** | une note posée sur le canevas |
-| **cadre** | un rectangle qui groupe et se déplace avec son contenu |
+| **cadre** | un rectangle qui **entoure** et se déplace avec ses membres — ⚠️ **il ne groupe RIEN** : voir la mise au point ci-dessous |
 | **relais** (reroute) | un point de passage pour ranger un fil, sans rien changer |
 
 ⚠️ **Ils doivent survivre à l'enregistrement et à la relecture** au même titre
 que les autres. Un fichier qui perd les commentaires perd le travail
 d'organisation, qui est souvent plus long que le câblage.
+
+📌 **Ce n'est plus une inquiétude, c'est une mesure.** Banc exécuté le 22/08
+contre `NkNodeGraph` : une directive que le modèle ne comprend pas est **relue
+sans erreur**, mais elle est **effacée dès le premier annuler ou le premier
+enregistrement** — l'historique réécrit depuis le modèle, pas depuis le texte.
+**Aucune de ces trois notions ne survivra tant qu'elle ne sera pas un champ du
+modèle.** Détail et protocole : `SPECIFICATION_VISUELLE.md` § 16.
+
+### ⚠️ Mise au point du 22/08 — **le cadre et le groupe ne sont pas voisins**
+
+Ce document les a longtemps listés ensemble, et c'était une erreur.
+
+| | **cadre** | **groupe** |
+|---|---|---|
+| effet sur le graphe | **aucun** — il décore | **il abstrait** : N nœuds deviennent 1 |
+| interface | aucune | **des entrées et des sorties**, calculées à partir des fils qui traversaient la frontière |
+| réutilisation | un seul endroit | **autant d'instances qu'on veut**, comme une fonction |
+| replié | il **cache** | il **EST un nœud** |
+| dans le modèle | ❌ **rien** — à construire | ✅ **déjà là en entier** : `NK_NODE_INSTANCE`, `NK_NODE_GROUP_IN/OUT`, `subgraph`, `BuildPlan` |
+
+✅ **Le groupe est donc le moins coûteux des deux à livrer**, ce qui est
+l'inverse de ce que ce document laissait croire : c'est le **cadre**, l'inerte,
+qui n'a aucun foyer dans le modèle.
 
 ---
 
@@ -294,7 +340,11 @@ leur étiquette **et** leur position, jamais par la seule couleur.
 
 *Ni entrée ni sortie, ou une prise qui ne transforme rien.* Le **cadre** est un
 rectangle coloré derrière les nœuds, avec un titre éditable ; il **passe
-derrière** tout le reste. Le **relais** est un simple point sur un fil — il doit
+derrière** tout le reste. ✅ **Validé le 22/08** — fond à 8 %, filet extérieur
+plein 1,5 px, **second filet intérieur pointillé**, bandeau plein de 20 px,
+compteur aligné à droite. ⚠️ **Sa teinte ne déteint JAMAIS sur un nœud** — ni
+corps, ni en-tête, ni filet, ni pastille (option A, tranchée par Rodolf) ; c'est
+**son bandeau qui porte le sens**, donc **son titre est obligatoire**. Le **relais** est un simple point sur un fil — il doit
 être assez petit pour ne pas déranger, assez grand pour se saisir.
 
 ---
@@ -347,8 +397,18 @@ rencontrera, et qui doit avoir une apparence décidée.
 - la **recherche de nœud** : ce qui s'ouvre quand on tire un fil dans le vide,
   ⚠️ **filtré par le type de la prise d'origine** ;
 - la **minicarte**, si tu en veux une ;
-- le **groupe** : plusieurs nœuds repliés en un seul, avec ses propres entrées
-  et sorties.
+- le **groupe** : plusieurs nœuds empaquetés en un seul **réutilisable comme une
+  fonction**, avec ses propres entrées et sorties — ✅ tranché le 22/08. Ses
+  prises **ne se déclarent pas, elles se calculent** : ce sont les fils qui
+  traversaient la frontière de la sélection, **dédupliqués par source**, dans un
+  **ordre écrit** (Y puis X puis index) pour que grouper deux fois la même
+  sélection donne deux fois le même nœud ;
+- ✅ **le critère qui valide tout ça, et qui s'exécute** : **grouper puis
+  dégrouper doit rendre le graphe identique**, octet pour octet après
+  sérialisation, aux identifiants près. S'il échoue, le regroupement perd
+  quelque chose — et l'utilisateur le perdra aussi ;
+- le **fil d'Ariane** — ⚠️ **plus optionnel** : entrer dans un groupe est le
+  seul moyen de l'éditer, et sans lui on ne sait plus comment sortir.
 
 ---
 

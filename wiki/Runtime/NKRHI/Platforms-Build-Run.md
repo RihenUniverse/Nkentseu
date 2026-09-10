@@ -192,4 +192,197 @@ Le build passe par la toolchain Xcode ; signature/déploiement device gérés c�
 - **macOS / iOS** : **Metal** (défaut) ; OpenGL inutilisable sur macOS (cap 4.1) ; Vulkan seulement
   si MoltenVK (SDK LunarG).
 
+## ⚠️ Cinq pièges d'instrument — à lire AVANT de mesurer un backend
+
+Ces cinq pièges ont été rencontrés le **27/08/2026** en tentant d'observer un défaut sous Vulkan.
+Chacun produit une mesure **fausse mais crédible** — c'est ce qui les rend coûteux. Ils ne
+concernent pas un module en particulier : ils concernent **quiconque lance un binaire du dépôt pour
+en tirer une conclusion**.
+
+> 📌 Les quatre ont réellement produit une conclusion fausse ce jour-là, dont une qui a failli faire
+> réécrire dix-huit shaders sains. Aucun n'est théorique.
+
+### 0. 🔴 « J'ai lancé `r2d01` » ne dit pas **quel exécutable** — et deux personnes peuvent en parler sans parler du même
+
+Le 27/08, deux mesures de `r2d01` sous Vulkan se sont contredites frontalement :
+
+| | Backend obtenu | Conclusion tirée |
+|---|---|---|
+| Chantier A | `Vulkan`, 12–27 lignes `NkRHI_VK`, 0 `NkRHI_GL` | « Vulkan démarre puis échoue au 2ᵉ lancement » |
+| Chantier B | `OpenGL`, **0** occurrence de `Vulkan` / `vkCreate` | « `r2d01` ne PEUT PAS tourner en Vulkan ; ton Vulkan n'a jamais été Vulkan » |
+
+**Les deux journaux disent vrai.** L'un des binaires portait un **correctif local d'une ligne** — le
+patron sûr, l'API demandée mise en tête de la liste de repli — l'autre non. Sans ce correctif,
+`r2d01` sur Windows part sur la liste en dur qui commence par OpenGL (§ 2) et **ne peut pas**
+atteindre Vulkan. Avec, il l'atteint.
+
+> **Le nom d'une cible identifie une source, pas un exécutable.** Un binaire porte l'état de
+> l'arbre à l'instant du `build` : correctifs locaux, branche, patch d'expérience réverté depuis.
+> Deux personnes qui disent « j'ai lancé `r2d01` » peuvent lancer deux programmes différents.
+
+**Règle** : quand deux mesures se contredisent, la première question n'est pas « qui a raison » mais
+**« as-tu un correctif local dans l'arbre au moment du build ? »**. Le second réflexe est de
+comparer les **journaux du device**, pas les conclusions. Ici, `NkRHI_VK` **contre** `NkRHI_GL` a
+tranché en une ligne — les deux camps avaient la preuve dans leur propre journal, sans la comparer.
+
+⚠️ **Et une leçon plus dure** : le chantier A avait **écrit lui-même** l'avertissement du § 2 — que
+`--backend=` est ignoré — et l'appliquait correctement. Ça ne l'a pas empêché d'être contredit sur
+la base d'un binaire différent du sien. **Connaître un piège ne protège pas de lui ; seul un
+instrument qui lit ce qu'il a obtenu le fait**, et il faut que *les deux* camps le lisent.
+
+### 1. 🔴 Le **cache de shaders** rend la 1re exécution différente de toutes les suivantes
+
+**Le piège le plus coûteux des quatre**, et celui qui m'a fait accuser dix-huit shaders innocents.
+
+Le cache vit **à côté de l'exécutable** : `<dossier de l'exe>/cache/shaders/*.nksc`. Il survit aux
+recompilations du binaire — **`jenga build` ne le purge pas**.
+
+Deux façons symétriques de se tromper, et il faut connaître les deux :
+
+| Protocole | Ce qu'on croit mesurer | Ce qu'on mesure |
+|---|---|---|
+| Purger le cache, lancer **une** fois | « le backend marche » | **le seul cas qui marche**, si le défaut est dans l'écriture du cache |
+| Lancer sans purger, après un autre backend | « ce backend est cassé » | **les restes de l'exécution précédente** |
+
+Mesuré le 27/08 sur `main`, banc `r2d01` sous Vulkan : **cache froid → 0 échec ; 2ᵉ lancement → 16
+échecs.** Deux chantiers avaient chacun une moitié du tableau et des conclusions opposées, chacune
+juste dans son protocole.
+
+**Règle** : pour juger un backend, **purger le cache ET lancer deux fois**. La 1re exécution teste
+la génération, la 2ᵉ teste le **cycle écriture → relecture** du cache — ce sont deux choses
+différentes, et un défaut peut vivre dans la seconde seule.
+
+**Test le moins cher du dépôt** — ce que le cache contient réellement :
+
+```bash
+head -c 20 <exe_dir>/cache/shaders/*.nksc | xxd
+#   23766572 = "#ver"  -> du TEXTE GLSL
+#   03022307           -> du SPIR-V
+```
+
+Sous un device Vulkan, une entrée qui commence par `#ver` est **une anomalie** : le backend attend
+du SPIR-V. (Sous OpenGL, du texte est normal.)
+
+### 2. 🔴 `--backend=` peut être **sans effet, en silence**
+
+`NkDeviceFactory::CreateWithFallback(init, order)` (`Core/NkDeviceFactory.cpp:136-146`) **ignore
+complètement `init.api`** : il parcourt `order` et écrase `effectiveInit.api = api` à chaque tour.
+
+Conséquence, mesurée sur `Applications/Sandbox/.../Base05/NkRenderer2DDemo.cpp` : la démo analyse
+consciencieusement `--backend=vulkan` (`ParseBackend`, `:34-48`), le pose dans `devInfo.api` (`:68`)
+— **et le jette** (`:75-80`). Sur Windows la liste commence par OpenGL : **j'ai cru mesurer Vulkan
+pendant deux exécutions alors que je mesurais OpenGL.**
+
+**Comment ne pas se faire avoir** : le seul juge est la **ligne de journal du backend obtenu**, pas
+l'option passée —
+
+```
+[2DDemo] Backend: OpenGL          <- l'option disait vulkan
+```
+
+**Toujours lire cette ligne avant d'interpréter un résultat.** `NkDeviceFactory` en émet une
+équivalente : `[NkDeviceFactory] Device RHI cree: <API>`.
+
+⚠️ **Quatre fonctions, quatre contrats différents — et deux portent le MÊME nom :**
+
+| Fonction | Honore `init.api` ? | Appelants réels |
+|---|---|---|
+| `NkDeviceFactory::CreateForApi(api, init)` | **oui** | `renderdemo` (`Demo/main.cpp:569`) : `-bvk` **fonctionne** |
+| `NkDeviceFactory::Create(init)` | **oui** — lit `NkDeviceInitApi(init)` (`NkDeviceFactory.cpp:41`), refuse si `NONE` | — |
+| `NkDeviceFactory::CreateWithFallback(init, order)` | 🔴 **non** — `order` gagne toujours | **9** |
+| `NkContextFactory::CreateWithFallback(...)` | *(autre fonction, NKCanvas)* | **5** |
+
+`NkEditorRHIRenderer.h:50-56` documente déjà ce risque et s'en protège en filtrant *avant* l'appel
+(`NkEditorGfxApiSupported`) — c'est le bon patron, il n'est simplement pas généralisé.
+
+#### 🔴 Ce piège a lui-même été « corrigé » à tort — deux fois. Voici la mesure qui tranche.
+
+Cet avertissement a été contesté le 27/08 : *« `NkDeviceFactory::CreateWithFallback` a **zéro
+appelant** ; les occurrences sont celles de `NkContextFactory::CreateWithFallback`, une autre
+fonction ; et `NkDeviceFactory::Create` **lit** bien `init.api` »*. **Les deux dernières affirmations
+sont vraies, la première est fausse**, et l'ensemble mène à une conclusion inverse de la réalité.
+
+Ce qui est mesuré sur `main` :
+
+```
+grep "NkDeviceFactory::CreateWithFallback"  (nom QUALIFIE, hors Build/ Externals/,
+                                             hors sa propre definition, hors commentaires)
+  -> 9 appelants, dont NkRenderer2DDemo.cpp:75 et :79, et NkEditorRHIRenderer.h:98
+
+grep "NkContextFactory::CreateWithFallback"  -> 5 appelants  (fonction DIFFERENTE)
+
+grep "::CreateWithFallback(const" dans Kernel/  -> DEUX fabriques distinctes :
+  NkContextFactory  et  NkDeviceFactory
+```
+
+Et le corps, inchangé :
+
+```cpp
+for (auto api : order) {
+    if (!IsApiSupported(api)) continue;
+    NkDeviceInitInfo effectiveInit = init;
+    effectiveInit.api = api;        // <- init.api ecrase, a chaque tour
+```
+
+**Preuve expérimentale, plus forte que la lecture** : à argument identique (`--backend=vulkan`),
+**en ne changeant que l'ordre de la liste**, le backend obtenu passe de `OpenGL` à `Vulkan`. Si
+`init.api` était honoré, réordonner la liste n'aurait rien pu changer.
+
+> 📌 **La cause de l'erreur est le piège que cette page enseigne ailleurs** : `Create` et
+> `CreateWithFallback` sont deux fonctions du **même** `NkDeviceFactory` aux contrats **opposés**,
+> et `CreateWithFallback` est en plus **homonyme** d'une fonction de `NKCanvas`. Lire l'une et
+> conclure sur l'autre est l'erreur naturelle. **Le nom qualifié n'est pas un luxe :
+> `grep CreateWithFallback` non qualifié mélange deux fabriques.**
+
+#### ✅ Le corollaire qui vaut plus que le piège : **un banc doit LIRE sa configuration, pas l'annoncer**
+
+En allant vérifier cet avertissement, on a découvert que des bancs **annonçaient le backend sans le
+lire** : ils affichaient `NkGraphicsApiName(NK_GFX_API_VULKAN)` — c'est-à-dire ce qu'ils avaient
+**demandé**. Leur affichage était vrai **par accident**, et serait resté vrai en toutes
+circonstances, y compris en mesurant autre chose.
+
+> **Un banc qui annonce sa configuration au lieu de la lire est un banc qui témoigne de son
+> intention.** Il ne peut pas, par construction, révéler l'écart entre ce qu'on a demandé et ce
+> qu'on a obtenu — c'est-à-dire exactement le défaut que cette section décrit.
+
+**Règle** : afficher `dev->GetApi()` (ce que le device **est**), jamais l'API demandée, et **refuser
+de mesurer** si les deux divergent. C'est ce que ces bancs font désormais.
+
+### 3. Lancer hors de la racine du dépôt fait manquer **tous** les shaders
+
+Les shaders sont cherchés en **(1)** `Resources/NKRenderer/Shaders/…` *relatif au répertoire
+courant*, puis **(2)** `<dossier de l'exécutable>/Resources/NKRenderer/Shaders/…`. Lancer un binaire
+depuis `Build/Bin/…` sans déploiement fait échouer les deux :
+
+```
+[NkShaderLibrary] 'PP_FXAA' INTROUVABLE -- ce n'est PAS un shader invalide,
+c'est un FICHIER ABSENT, et aucune source embarquee ne le remplace.
+```
+
+Le message est excellent — **encore faut-il le lire** : sans lui, l'échec ressort en aval comme un
+shader cassé. **Lancez depuis la racine du dépôt** (`-WorkingDirectory`), ou déployez `Resources/`
+à côté du binaire.
+
+⚠️ **Et le cas mixte est silencieux.** Le journal choisit sa branche sur
+`if (overrideVS || overrideFS)` → `Trace` : il suffit qu'**un seul** des deux fichiers existe pour
+que l'avertissement « repli sur la source EMBARQUEE » **ne soit pas émis**, alors qu'un des deux
+étages vient bien d'une source embarquée écrite pour un autre backend.
+
+### 4. `PrintWindow` rend **noir** sur une fenêtre composée par le GPU
+
+Pour photographier une fenêtre GL/Vulkan/DX sous Windows, `PrintWindow` (et tout ce qui bâtit sur
+un DC de fenêtre) rend une image **noire ou vide** : le contenu vit dans une chaîne d'échange que
+le compositeur ne restitue pas par ce chemin.
+
+> 🔴 **C'est le pire des trois** : il fabrique un **faux positif** parfaitement crédible quand on
+> cherche justement un écran noir. J'aurais « observé » le défaut que je cherchais — sur un
+> instrument cassé.
+
+**Utiliser une capture des pixels réels de l'écran** — `Graphics.CopyFromScreen` sur le
+`GetWindowRect` de la fenêtre, après l'avoir mise au premier plan. Contrôle de bon sens : une
+capture qui rend **100 % de pixels non-noirs à luminance ~765/765** est une fenêtre blanche qui en
+recouvre une autre, pas un rendu — recommencez.
+
+---
+
 [← Récap NKRHI](../NKRHI.md) · [Device.md](Device.md) · [← Couche Runtime](../README.md)
