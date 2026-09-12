@@ -139,7 +139,9 @@ import types
 # NKAnimation (e2623fb7e, 02/09) et NKAnimPhysics (33edc1151, 04/09) sont fondus
 # en NKAnima : deux entrees devenues une. 56 - 2 + 1 = 55. Conséquence comprise,
 # pas une perte -- le banc a rougi, on a nomme, on corrige l'attendu en le disant.
-ATTENDU_REGISTRY = 55
+# 2026-09-12, fusion de feat/noge-eau : 55 -> 56, DECLARE AVANT DE LANCER la fusion.
+# noge-eau apporte NKVFX (cle declaree dans son modules.jenga). Une entree de plus.
+ATTENDU_REGISTRY = 56
 # Les alias, eux, restent 36 : les cinq que le '#' avalait ont ete rendus.
 ATTENDU_ALIASES = 36
 

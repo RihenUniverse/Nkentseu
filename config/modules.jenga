@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 """
 modules.jenga — Graphe de dependances + linkage du build Nkentseu
 ==================================================================
@@ -107,6 +108,17 @@ _REGISTRY: dict = {
     "NKSL"           : _m("NKENTSEU_NKSL",         ["NKPlatform", "NKCore", "NKMemory", "NKContainers", "NKLogger", "NKMath", "NKThreading", "NKFileSystem"]),
     "NKRHI"          : _m("NKENTSEU_RHI",          ["NKPlatform", "NKCore", "NKMemory", "NKContainers", "NKLogger", "NKMath", "NKEvent", "NKWindow", "NKFileSystem", "NKSL"]),
     "NKRenderer"     : _m("NKENTSEU_RENDERER",     ["NKPlatform", "NKCore", "NKMemory", "NKContainers", "NKLogger", "NKMath", "NKTime", "NKThreading", "NKEvent", "NKWindow", "NKRHI", "NKSL", "NKImage", "NKFont", "NKFileSystem", "NKSerialization", "NKReflection", "NKAnima"]),
+    # NKVFX : les EFFETS (eau, eclaboussures, particules, fluides). Il existe
+    # parce qu'un effet doit DESSINER et, tot ou tard, RENCONTRER une geometrie --
+    # or NKRenderer ne connait ni NKCollision ni NKPhysics, et celles-ci ne
+    # connaissent pas NKRenderer : un effet qui a besoin de collision n'avait
+    # AUCUNE maison. NKVFX -> {NKRenderer, NKCollision, NKPhysics} est acyclique.
+    # ⚠️ Il ne declare AUJOURD HUI que NKRenderer : le premier effet qui y vit (le
+    # producteur d eau) est de la geometrie pure. NKCollision et NKPhysics
+    # s ajouteront quand un effet les exigera VRAIMENT -- une dependance declaree
+    # que personne n honore ferait lier tous les consommateurs pour rien.
+    # NKTime : reclame par NkVfxLiveness.h (NkChrono, le controle de vie) depuis le 2026-09-12.
+    "NKVFX"          : _m("NKENTSEU_VFX",          ["NKPlatform", "NKCore", "NKMemory", "NKContainers", "NKLogger", "NKMath", "NKTime", "NKRenderer"]),
     "NKImage"        : _m("NKENTSEU_IMAGE",        ["NKPlatform", "NKCore", "NKMemory", "NKContainers", "NKLogger", "NKMath", "NKFileSystem"]),
     "NKMedia"        : _m("NKENTSEU_MEDIA",        ["NKPlatform", "NKCore", "NKMemory", "NKContainers", "NKMath", "NKLogger", "NKStream", "NKFileSystem", "NKImage", "NKThreading"]),
     "NKFont"         : _m("NKENTSEU_FONT",         ["NKPlatform", "NKCore", "NKMemory", "NKContainers", "NKLogger", "NKMath", "NKImage"]),
@@ -200,6 +212,16 @@ _ALIASES: dict = {
     # en FIN de ligne a avale CINQ alias (animation, navigation, ui, audio, xr) :
     # aucune valeur ne devenait fausse, seul le COMPTE changeait. Retrouve par
     # Tools/verif_registre_modules.py a la fusion de feat/noge-feu dans transit.
+    # ── Les deux lignees ont corrige ce piege separement (transit le 12/09, noge-eau
+    #    de son cote) : memes six alias, memes cibles. Les deux commentaires restent.
+    # ⚠️ CE COMMENTAIRE A DEJA AVALE CINQ ALIAS -- il reste sur SA PROPRE LIGNE.
+    # Ecrit en fin de ligne de donnees le 2026-09-04 (fusion NKAnimPhysics -> NKAnima),
+    # le « # » mangeait tout ce qui suivait : animation, navigation, ui, audio, xr
+    # disparaissaient du dictionnaire (31 entrees au lieu de 36). Un commentaire pose
+    # au milieu d une structure de donnees peut en supprimer la moitie SANS BRUIT.
+    # ex-NKAnimPhysics : rentre dans NKAnima le 2026-09-04.
+    # « animation » vise NKAnima sur cette branche, et NON « NKAnimation » comme dans
+    # l arbre principal : ce module-la n existe ici ni en dossier ni au registre.
     "animphysics": "NKAnima", "animation": "NKAnima",
     "navigation": "NKNavigation", "ui": "NKUI", "audio": "NKAudio", "xr": "NKXR",
     "noge": "Noge", "engine": "Noge", "nkentseu": "Noge", "glad": "NKGlad", "gui": "NKGui",

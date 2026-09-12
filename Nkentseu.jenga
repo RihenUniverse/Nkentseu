@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 # -*- coding: utf-8 -*-
+# AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 
 r"""
 
@@ -448,9 +449,9 @@ with workspace("Nkentseu", location="."):
 
 
 
-    dutc(enable=True, allow=["NKCore_Tests", "NKMath_Tests", "NKContainers_Tests", "NKMemory_Tests", "NKPhysics_Tests", "NKFileSystem_Tests", "NKStream_Tests", "NKReflection_Tests", "NKWindow_Tests", "NKCamera_Tests", "NKCollision_Tests", "NKImage_Tests", "NKPlatform_Tests", "NKLogger_Tests", "NKTime_Tests", "Noge_Tests", "NKThreading_Tests", "NKAnima_Tests", "NKSerialization_Smoke_Tests", "NKECS_EntitySerialization_Tests", "NKXR_Xr_Tests", "NKAudio_Audio_Tests", "NKSerialization_ReflectSerializer_Tests", "NKSerialization_ReflectPhase3_Tests", "NKSerialization_ReflectObjContainer_Tests", "NKSerialization_Bench_Tests", "NKECS_ReflectBridge_Tests", "NKXR_Ar_Tests", "NKSerialization_ReflectPhase5_Tests"])  # reouverture module par module (2026-09-04, Rodolf : « on suit ta recommandation »)
+    dutc(enable=True, allow=["NKCore_Tests", "NKMath_Tests", "NKContainers_Tests", "NKMemory_Tests", "NKPhysics_Tests", "NKFileSystem_Tests", "NKStream_Tests", "NKReflection_Tests", "NKWindow_Tests", "NKCamera_Tests", "NKCollision_Tests", "NKImage_Tests", "NKPlatform_Tests", "NKLogger_Tests", "NKTime_Tests", "Noge_Tests", "NKThreading_Tests", "NKAnima_Tests", "NKSerialization_Smoke_Tests", "NKECS_EntitySerialization_Tests", "NKXR_Xr_Tests", "NKAudio_Audio_Tests", "NKSerialization_ReflectSerializer_Tests", "NKSerialization_ReflectPhase3_Tests", "NKSerialization_ReflectObjContainer_Tests", "NKSerialization_Bench_Tests", "NKECS_ReflectBridge_Tests", "NKXR_Ar_Tests", "NKSerialization_ReflectPhase5_Tests", "NKRenderer_Tests"])  # reouverture module par module (2026-09-04, Rodolf : « on suit ta recommandation »)
 
-    dute(enable=True, allow=["NKCore_Tests", "NKMath_Tests", "NKContainers_Tests", "NKMemory_Tests", "NKPhysics_Tests", "NKFileSystem_Tests", "NKStream_Tests", "NKReflection_Tests", "NKWindow_Tests", "NKCamera_Tests", "NKCollision_Tests", "NKImage_Tests", "NKPlatform_Tests", "NKLogger_Tests", "NKTime_Tests", "Noge_Tests", "NKThreading_Tests", "NKAnima_Tests", "NKSerialization_Smoke_Tests", "NKECS_EntitySerialization_Tests", "NKXR_Xr_Tests", "NKAudio_Audio_Tests", "NKSerialization_ReflectSerializer_Tests", "NKSerialization_ReflectPhase3_Tests", "NKSerialization_ReflectObjContainer_Tests", "NKSerialization_Bench_Tests", "NKECS_ReflectBridge_Tests", "NKXR_Ar_Tests", "NKSerialization_ReflectPhase5_Tests"])
+    dute(enable=True, allow=["NKCore_Tests", "NKMath_Tests", "NKContainers_Tests", "NKMemory_Tests", "NKPhysics_Tests", "NKFileSystem_Tests", "NKStream_Tests", "NKReflection_Tests", "NKWindow_Tests", "NKCamera_Tests", "NKCollision_Tests", "NKImage_Tests", "NKPlatform_Tests", "NKLogger_Tests", "NKTime_Tests", "Noge_Tests", "NKThreading_Tests", "NKAnima_Tests", "NKSerialization_Smoke_Tests", "NKECS_EntitySerialization_Tests", "NKXR_Xr_Tests", "NKAudio_Audio_Tests", "NKSerialization_ReflectSerializer_Tests", "NKSerialization_ReflectPhase3_Tests", "NKSerialization_ReflectObjContainer_Tests", "NKSerialization_Bench_Tests", "NKECS_ReflectBridge_Tests", "NKXR_Ar_Tests", "NKSerialization_ReflectPhase5_Tests", "NKRenderer_Tests"])
 
 
 
@@ -895,6 +896,12 @@ with workspace("Nkentseu", location="."):
 
         pass
 
+    # NkEauEcsProbe : le pont ECS -> producteur d eau (NkWaterSystem), eprouve
+    # SANS DEVICE, avec son controle de vie (2026-09-12). Lie NKVFX puis NKRenderer.
+    with include("Applications/NkEauEcsProbe/NkEauEcsProbe.jenga"):
+
+        pass
+
 
 
     with include("Sandbox/System/NKFileSystem/NKFileSystemSandbox.jenga"):
@@ -934,6 +941,16 @@ with workspace("Nkentseu", location="."):
 
 
     with include("Kernel/Runtime/NKRenderer/NKRenderer.jenga"):
+
+        pass
+
+
+
+    # NKVFX (effets : eau, eclaboussures, particules ; APRES NKRenderer dont il
+    # depend). Sans cette inclusion le module serait declare dans le registre et
+    # JAMAIS construit -- « declare mais pas honore » au niveau du build.
+
+    with include("Kernel/Runtime/NKVFX/NKVFX.jenga"):
 
         pass
 
