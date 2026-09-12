@@ -102,6 +102,18 @@ l'instrument ne mesurerait pas une taille.
 | **NÉGATIF 2 (uniforme)** | rotation solide sur TOUT le domaine (omega uniforme) | `R(r)` ne passe jamais par zéro | l'instrument **rend false**, ne fabrique pas de point |
 | **NÉGATIF 3 (vide)** | grille au repos, omega = 0 partout | dénominateur nul | **rend false** |
 
+**⚠️ CORRECTION DE MONTAGE, datée du 12/09 après la PREMIÈRE course, les seuils
+n'ayant pas bougé d'un chiffre.** Le tableau ci-dessus disait « tube de rotation
+solide » sans dire ce qu'il y a DEHORS. Une rotation solide **tronquée** (vitesse
+nulle hors du disque) n'est pas le champ de la dérivation § 1.2 : la vitesse y
+saute de `Omega R` à 0 sur le bord, ce qui est une **nappe de vorticité de signe
+opposé**, dont la circulation annule celle du disque et dont l'enstrophie domine.
+Mesuré : D = 3,65 pour 12 attendu, 2,77 pour 6, rapport 1,32 — l'instrument
+mesurait la nappe, et il avait raison. Le champ « omega uniforme dans un disque,
+nul dehors » est le **tourbillon de Rankine** (irrotationnel `u_theta = Omega
+R² / r` au-dehors) : c'est lui que les POSITIFS 1 et 2 posent désormais. Un
+contrôle positif qui rougit sur un montage faux est exactement ce à quoi il sert.
+
 Le POSITIF 2 est le seul qui prouve que l'instrument mesure une **taille** : un
 instrument qui rend 12 à R = 6 pourrait rendre 12 à R = 3 (par exemple s'il
 mesurait la boîte). Les tolérances sont plus larges à R = 3 parce qu'un disque
@@ -199,6 +211,106 @@ la même chose, c'est le confondant des parois qui parle — on le dira.
   versionnée comme aide à l'œil — elle ne prouve rien de plus que ce que la
   mesure dit.
 - **Aucun GPU**, aucune fenêtre, aucun device : banc CPU, comme tout ce banc.
+
+## 5bis. ADDENDUM DATÉ — 2026-09-12, 20h30, APRÈS la première course de (n1) et AVANT toute mesure de ce qui suit
+
+**Ce que la première course a appris, et que (n1) ne pouvait pas dire.** Sur la
+scène B, (n1) rend **D = 2,20 cellules** à h = 2 cm et **2,33** à h = 1 cm
+(n2a) : le premier zéro de la corrélation tombe à r ≈ 2 dans les deux cas. Ce
+que l'instrument voit sur un panache, c'est la **nappe de cisaillement** qui
+l'entoure — et dans un solveur sans viscosité, une nappe de vorticité est
+**aussi mince que la grille le permet**, à toute résolution. Une nappe qui
+s'enroule (une volute) reste une nappe mince : ses spires successives sont de
+même signe et séparées par le pas de la spirale, mais (n1) s'arrête au premier
+zéro, avant de les voir. **(n1) mesure l'épaisseur de la nappe, pas le diamètre
+de l'enroulement.** Il reste écrit tel quel, avec ce constat à côté ; il ne se
+réécrit pas — il se DOUBLE.
+
+**(n1') LE SECOND INSTRUMENT — le critère Q.** Hunt, Wray & Moin, « Eddies,
+streams, and convergence zones in turbulent flows », CTR Summer Program 1988 :
+
+```
+Q = ½ ( |Omega|² − |S|² ),   Omega = partie antisymétrique du gradient de u,
+                              S     = partie symétrique
+```
+
+`Q > 0` là où la **rotation domine le cisaillement** : le cœur d'un tourbillon.
+Dans un cisaillement simple (une nappe droite, un jet), `|Omega| = |S|` et
+`Q = 0` ; dans un enroulement, l'intérieur des spires tourne en bloc et `Q > 0`
+sur tout le cœur. C'est **exactement** la différence entre « un jet » et « une
+volute », et c'est ce que (n1) ne sépare pas. Le gradient de `u` est pris au
+centre des cellules avec le MÊME pochoir que `ComputeVorticity` (faces
+moyennées, différences centrées), population STRICTE.
+
+**Définition du diamètre.** Les cellules avec `Q ≥ 0,01 · Q_max` (seuil relatif
+fixé ICI, pour que le bruit des zones quasi immobiles ne relie pas tout) sont
+regroupées en **composantes connexes** (6-voisinage). Pour chaque composante :
+volume `V` (cellules) et étendue verticale `nj` (rangées) → section horizontale
+moyenne `A = V / nj` → `d = 2 · sqrt(A / pi)`. **Exact sur un cylindre.** Le
+diamètre publié est la moyenne des `d` **pondérée par l'enstrophie** de chaque
+composante (un gros cœur pèse plus qu'une miette), avec à côté : le `d` de la
+composante la plus lourde, le nombre de composantes, la fraction de
+l'enstrophie stricte portée par les cellules `Q > 0`. Si la composante la plus
+lourde **touche une paroi LATÉRALE** (x ou z) de la population stricte,
+l'instrument **rend false** : `d` dérive de la section HORIZONTALE, et seule une
+paroi latérale la tronque. Le sol et le plafond ne tronquent pas la section —
+le tube des contrôles positifs traverse d'ailleurs toute la hauteur, et le
+panache naît au sol ; toucher le sol ou le plafond est **publié comme un
+drapeau**, pas comme un refus. (Précision écrite avant la première mesure de
+(n1'), pas après.)
+
+**Contrôles, seuils fixés maintenant :**
+
+| contrôle | montage | attendu |
+|---|---|---|
+| POSITIF 1 | Rankine R = 6 (cœur en rotation solide, `Q = Omega² > 0` dedans, irrotationnel `Q < 0` dehors) | `d = 12 ± 10 %`, **une** composante |
+| POSITIF 2 | Rankine R = 3 | `d = 6 ± 20 %` ; rapport d(6)/d(3) dans [1,8 ; 2,2] |
+| NÉGATIF 1 | bruit blanc | **aucune structure cohérente** : soit `d < 2` (miettes), soit **false** parce que l'amas de `Q > 0` PERCOLE jusqu'aux parois — en 3D, un site sur trois suffit à percoler, et le bruit en retient plus. Rouge si l'instrument rend un `d ≥ 2` valide : il aurait fabriqué un tourbillon dans du bruit. |
+| NÉGATIF 2 | rotation uniforme sur tout le domaine | la composante touche les parois latérales → **false** |
+| NÉGATIF 3 | grille vide | **false** |
+| NÉGATIF 4 (le décisif) | **cisaillement simple** `u = a·z`, tout le domaine | `Q = 0` partout → aucune cellule retenue → **false**. Un instrument qui verrait un tourbillon dans un cisaillement pur ne pourrait pas séparer un jet d'une volute. |
+
+**Même règle de décision** que § 3, appliquée à `r' = d(1 cm) / d(2 cm)` sur la
+scène B : `r' ≥ 1,6` → boîte ; `r' ≤ 1,3` → schéma ; entre → indéterminé. Les
+deux instruments sont publiés côte à côte ; s'ils ne disent pas la même chose,
+c'est dit, et c'est (n1') qui parle des volutes, parce que lui seul distingue
+rotation et cisaillement — (n1) parle de la nappe.
+
+**(n3b), rouge à la première course (écart 5,8 % au lieu de 1e-4) : il reste
+rouge tel qu'écrit.** La cause est à MESURER, pas à supposer : si la source
+discrétisée diffère entre les deux repères (arrondi float32 de `bmin + (i−0,5)h`
+sur le bord de la sphère), les deux courses ne sont pas le même problème discret
+et l'écart mesure la sensibilité de l'écoulement, pas l'instrument. Contrôle
+ajouté : nombre de cellules dont la densité diffère après le PREMIER pas, dans
+les deux repères, et la masse injectée. Si ce nombre est nul, la cause est
+ailleurs et il faudra la chercher.
+
+## 5ter. NOTE DATÉE — 2026-09-12, 21h15 : (n2b) de la première course RÉFUTE la prémisse du § 5bis
+
+Le § 5bis a été écrit pendant la première course, après (n1) et (n2a), **avant**
+que (n2b) ne rende son chiffre. Sa prémisse — « une nappe de vorticité est aussi
+mince que la grille le permet, à toute résolution, donc (n1) rendra ~2 cellules
+quel que soit h » — **est fausse, et c'est (n2b) qui le dit** : à h = 1 cm dans
+la même boîte, (n1) rend **4,77 cellules** (min 4,04, max 6,31 sur 60 pas), pas
+2. En mètres : **0,0440 → 0,0477 m, × 1,08**. La taille que (n1) mesure est
+fixée par la physique, pas par la grille ; à 2 cm elle tombait à 2,2 cellules
+parce que 0,044 m font 2,2 cellules de 2 cm, et c'est tout.
+
+**Conséquences, dans l'ordre :**
+
+1. **Le verdict de (n1) sous la règle du § 3 est celui de la première course
+   et il tient** : r = 4,769 / 2,201 = **2,167 ≥ 1,6 → C'EST LA BOÎTE.**
+   (n2a) disait 1,059 — le confondant des parois, annoncé au § 3, a parlé : en
+   divisant la boîte par deux avec une source de 0,12 m de diamètre, les parois
+   à 0,125 m de l'axe écrasent le panache (D en mètres y tombe à 0,023).
+2. **(n1') reste, avec ses contrôles et sa règle**, parce qu'il mesure autre
+   chose que (n1) — la rotation contre le cisaillement — et qu'un second
+   instrument indépendant vaut par ce qu'il sépare, pas par la raison qu'on
+   avait de l'écrire. Mais la raison écrite au § 5bis était fausse et reste là,
+   barrée par ce paragraphe, pour qu'on ne la recopie pas.
+3. Une hypothèse écrite entre deux mesures de la même course est une
+   hypothèse, pas un résultat : elle a été datée, elle a été réfutée par le
+   chiffre suivant, et c'est exactement ce qu'on attend d'elle.
 
 ## 6. LA COUPE
 

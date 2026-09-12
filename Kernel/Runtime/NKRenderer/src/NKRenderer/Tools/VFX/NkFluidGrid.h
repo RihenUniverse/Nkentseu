@@ -400,6 +400,16 @@ namespace nkentseu {
 				// Renseignes par le dernier Step, sur l'INTERIEUR STRICT.
 				float32 Enstrophy() const { return mStats.enstrophy; }
 				float32 VorticityMean() const { return mStats.vorticityMean; }
+				// omega = rot(u) TEL QUE LE SOLVEUR LE CALCULE (au centre des cellules, a
+				// partir des faces moyennees) et tel que le confinement le LIT — renseigne
+				// par le dernier Step. Lecture SEULE, indexee par Idx() : l'instrument
+				// d'echelle de longueur (PLAN_VOLUTES.md) mesure la meme grandeur que
+				// celle qui agit, pas une recopie qui pourrait deriver. Aucune physique
+				// ne passe par ici.
+				const float32 *OmegaX() const { return mOmegaX.Data(); }
+				const float32 *OmegaY() const { return mOmegaY.Data(); }
+				const float32 *OmegaZ() const { return mOmegaZ.Data(); }
+				const float32 *OmegaMag() const { return mOmegaMag.Data(); }
 
 				// RAYON DE GIRATION HORIZONTAL de la densite dans la tranche horizontale la
 				// plus proche de `worldY` (m). C'est LA quantite qui separe un jet d'un

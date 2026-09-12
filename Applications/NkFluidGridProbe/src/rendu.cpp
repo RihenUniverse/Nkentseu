@@ -76,7 +76,8 @@ static float32 OpaciteMoyenne(const NkVector<uint8> &rgba, uint32 W, uint32 x0, 
 	return (population > 0) ? (float32)(s / (float64)population) : 0.f;
 }
 
-static bool EcrirePng(const NkVector<uint8> &rgba, uint32 W, uint32 H, const char *chemin) {
+// Partagee avec volutes.cpp (l'image du panache a h = 1 cm, meme camera) : plus `static`.
+bool EcrirePng(const NkVector<uint8> &rgba, uint32 W, uint32 H, const char *chemin) {
 	NkImage img = NkImage::Create(W, H, 4, 0x00000000u);
 	if (!img.IsValid())
 		return false;
@@ -112,7 +113,10 @@ static BoiteImage BoitePanache(const NkVector<uint8> &rgba, uint32 W, uint32 H, 
 }
 
 // ── la scène commune aux paliers ② et ③ : un panache établi ─────────────────
-static void ConstruirePanache(NkFluidGrid &g, bool avecFeu, uint32 pas, float32 epsilon = 0.f) {
+// Plus `static` depuis le 12/09 : volutes.cpp l'appelle TELLE QUELLE comme temoin
+// de fidelite (n3c) de sa propre copie de la scene -- une copie qui derive est le
+// piege classique, et seul l'original peut le voir.
+void ConstruirePanache(NkFluidGrid &g, bool avecFeu, uint32 pas, float32 epsilon = 0.f) {
 	NkFluidGridParams p;
 	p.boundsMin = {-0.25f, 0.f, -0.25f};
 	// Boite HAUTE : le panache doit se DILUER en montant, pas s'ecraser sous un
