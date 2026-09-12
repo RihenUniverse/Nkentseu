@@ -86,15 +86,6 @@ namespace nkentseu {
 		// `filter` (optionnel, non nul) : active une BARRE DE RECHERCHE ancree en
 		// haut, hors de la zone defilante. L'index retourne reste celui de la liste
 		// D'ORIGINE : le filtrage est invisible pour l'appelant.
-<<<<<<< ours
-		// `shortcuts` (optionnel) : le RACCOURCI de chaque item, en colonne alignee a
-		// DROITE et grisee. C'est ainsi qu'un utilisateur APPREND un raccourci — en
-		// cliquant le bouton et en voyant la touche a cote, comme dans Blender. Une
-		// entree sans raccourci passe nullptr ou "" a son index. Le raccourci entre
-		// dans le calcul de LARGEUR (sinon il chevaucherait le libelle) mais PAS dans
-		// le filtre de recherche : on cherche une commande par son NOM.
-||||||| base
-=======
 		// `shortcuts` (optionnel) : le RACCOURCI de chaque item, aligne a DROITE en
 		// texte attenue — la colonne des menus deroulants, transposee au menu
 		// contextuel. Lunacy l'affiche, et VS Code, et Blender : un geste n'existe
@@ -112,15 +103,9 @@ namespace nkentseu {
 		// ⚠️ TOUS ADDITIFS ET EN DERNIER : les consommateurs existants (NKCode,
 		//    l'explorateur, NkUIDesign) ne passent rien et ne changent pas d'un
 		//    caractere.
->>>>>>> theirs
 		inline int32 NkCtxMenuDraw(NkGuiContext &ctx, NkCtxMenu &mn, const char *const *items, const bool *enabled,
 								   int32 count, int32 *hoveredOut = nullptr, const bool *hasSub = nullptr,
 								   const uint32 *icons = nullptr, char *filter = nullptr, int32 filterCap = 0,
-<<<<<<< ours
-								   bool *filterFocus = nullptr, const char *const *shortcuts = nullptr) {
-||||||| base
-								   bool *filterFocus = nullptr) {
-=======
 								   bool *filterFocus = nullptr, const char *const *shortcuts = nullptr,
 								   const bool *sepAfter = nullptr, NkCtxMenuRangee *rangee = nullptr,
 							   const bool *checked = nullptr) {
@@ -133,7 +118,6 @@ namespace nkentseu {
 			//    parametre `checked` donne a `nkgui::MenuItem` le 28/08, et la
 			//    meme raison : l'ecrire chez l'appelant aurait fabrique un second
 			//    peintre de menu a cote de celui du kit.
->>>>>>> theirs
 			if (!mn.open)
 				return -1;
 			// LA MOLETTE APPARTIENT AU MENU OUVERT (2026-09-05, Rodolf : « le scroll de la
@@ -147,15 +131,8 @@ namespace nkentseu {
 			// fonction travaille ensuite normalement, sans savoir qu'un filtre existe.
 			enum { kMaxItems = 256 };
 			const char *fItems[kMaxItems];
-<<<<<<< ours
-			const char *fShort[kMaxItems];
-			bool fEnabled[kMaxItems], fSub[kMaxItems];
-||||||| base
-			bool fEnabled[kMaxItems], fSub[kMaxItems];
-=======
 			const char *fShorts[kMaxItems];
 			bool fEnabled[kMaxItems], fSub[kMaxItems], fSep[kMaxItems], fChk[kMaxItems];
->>>>>>> theirs
 			uint32 fIcons[kMaxItems];
 			int32 fMap[kMaxItems];
 			if (rangee)
@@ -170,12 +147,7 @@ namespace nkentseu {
 						continue;
 					fMap[n] = i;
 					fItems[n] = items[i];
-<<<<<<< ours
-					fShort[n] = shortcuts ? shortcuts[i] : nullptr;
-||||||| base
-=======
 					fShorts[n] = shortcuts ? shortcuts[i] : nullptr;
->>>>>>> theirs
 					fEnabled[n] = enabled ? enabled[i] : true;
 					fSub[n] = hasSub ? hasSub[i] : false;
 					fIcons[n] = icons ? icons[i] : 0u;
@@ -195,12 +167,7 @@ namespace nkentseu {
 				}
 				items = fItems;
 				if (shortcuts)
-<<<<<<< ours
-					shortcuts = fShort; // sinon la colonne suivrait l'ordre NON filtre
-||||||| base
-=======
 					shortcuts = fShorts;
->>>>>>> theirs
 				enabled = fEnabled;
 				hasSub = fSub;
 				icons = fIcons;
@@ -238,14 +205,6 @@ namespace nkentseu {
 						break;
 					}
 			const float32 searchH = avecFiltre ? (lh + 12.f) : 0.f;
-<<<<<<< ours
-			// Ecart MINIMAL entre la fin du libelle et le debut du raccourci. Sans lui,
-			// « Separer les aretes » et « Ctrl+Alt+S » se touchent et la ligne devient
-			// illisible — le raccourci doit se lire comme une COLONNE, pas comme la
-			// suite du libelle.
-			const float32 raccEcart = 28.f;
-||||||| base
-=======
 			// La rangee d'icones : une bande ancree, cellule carree de `cellR`.
 			const bool avecRangee = (rangee != nullptr && rangee->count > 0 && rangee->paint != nullptr);
 			const float32 cellR = lh + 8.f;
@@ -259,20 +218,19 @@ namespace nkentseu {
 				for (int32 i = 0; i < count; ++i)
 					if (sepAfter[i])
 						++nSep;
->>>>>>> theirs
+			// Union du 2026-09-12 (fusion noge-feu dans transit) : l'ECART de main (raccEcart,
+			// « Separer les aretes » et « Ctrl+Alt+S » ne doivent pas se toucher) sur la
+			// STRUCTURE de noge (sepAfter, rangee, checked). Deux axes, pas deux intentions.
+			const float32 raccEcart = 28.f;
 			float32 wIdeal = 168.f;
 			if (ctx.font && ctx.font->Valid())
 				for (int32 i = 0; i < count; ++i) {
-<<<<<<< ours
-					const bool aRacc = (shortcuts && shortcuts[i] && shortcuts[i][0]);
-||||||| base
-=======
 					// ⚠️ LE RACCOURCI ENTRE DANS LA LARGEUR IDEALE. Sans ca il se
 					//    dessinerait par-dessus la fin du libelle sur l'item le plus
 					//    long — le defaut se voit sur UN item et sur un seul, donc il
 					//    passe les essais courts.
 					const float32 sw = (shortcuts && shortcuts[i] && shortcuts[i][0])
-										   ? ctx.font->MeasureWidth(shortcuts[i]) + 24.f
+										   ? ctx.font->MeasureWidth(shortcuts[i]) + raccEcart
 										   : 0.f;
 					// ⚠️ ET LA COLONNE DE COCHES Y ENTRE AUSSI, pour exactement la
 					//    meme raison que le raccourci une ligne plus haut : oubliee,
@@ -280,17 +238,9 @@ namespace nkentseu {
 					//    sur UN item et un seul -- donc le defaut passerait tous les
 					//    essais courts. La lecon est deja ecrite ici ; on l'applique
 					//    au parametre neuf au lieu de la laisser au voisin.
->>>>>>> theirs
 					const float32 tw = ctx.font->MeasureWidth(items[i]) + pad * 2.f + 10.f + iconW +
-<<<<<<< ours
-									   ((hasSub && hasSub[i]) ? 16.f : 0.f) + // place de la flèche ▸
-									   (aRacc ? raccEcart + ctx.font->MeasureWidth(shortcuts[i]) : 0.f);
-||||||| base
-									   ((hasSub && hasSub[i]) ? 16.f : 0.f); // place de la flèche ▸
-=======
 									   checkW + sw +
 									   ((hasSub && hasSub[i]) ? 16.f : 0.f); // place de la flèche ▸
->>>>>>> theirs
 					if (tw > wIdeal)
 						wIdeal = tw;
 				}
@@ -460,26 +410,17 @@ namespace nkentseu {
 										- mn.sx,
 									y + (rowH - lh) * 0.5f + ctx.font->Ascent()},
 								   items[i], enabled[i] ? ctx.theme.text : ctx.theme.textDisabled);
-<<<<<<< ours
-					// ── RACCOURCI, colonne alignee a DROITE ────────────────────────
-					// Toujours en teinte SECONDAIRE, meme sur un item actif : c'est une
-					// information, pas une action. On l'aligne sur le bord du CONTENU
-					// (et non du rect visible) pour qu'il defile comme le libelle quand
-					// une barre horizontale existe.
-					if (shortcuts && shortcuts[i] && shortcuts[i][0] && ctx.font && ctx.font->Valid()) {
-						const float32 contenuDroite = r.x + (hasH ? (wIdeal - 6.f) : r.w) - mn.sx;
-						const float32 sw = ctx.font->MeasureWidth(shortcuts[i]);
-						dl.AddText(ctx.font->Face(), ctx.font->TexId(),
-								   {contenuDroite - pad - ((hasSub && hasSub[i]) ? 16.f : 0.f) - sw,
-||||||| base
-=======
 					// LE RACCOURCI, aligne a DROITE et attenue — jamais colorable
 					// comme le libelle : c'est un rappel, pas une commande.
 					if (shortcuts && shortcuts[i] && shortcuts[i][0] && ctx.font && ctx.font->Valid()) {
+						// Apport de main : ancre sur le bord du CONTENU, pas du rect visible --
+						// le raccourci defile avec le libelle quand une barre horizontale existe.
+						// ⚠️ Sans barre ni defilement, contenuDroite == r.x + r.w : le parametre
+						//    ne change RIEN dans ce cas, et c'est voulu.
+						const float32 contenuDroite = r.x + (hasH ? (wIdeal - 6.f) : r.w) - mn.sx;
 						const float32 sw = ctx.font->MeasureWidth(shortcuts[i]);
 						dl.AddText(ctx.font->Face(), ctx.font->TexId(),
-								   {r.x + r.w - pad - sw - ((hasSub && hasSub[i]) ? 14.f : 0.f),
->>>>>>> theirs
+								   {contenuDroite - pad - sw - ((hasSub && hasSub[i]) ? 14.f : 0.f),
 									y + (rowH - lh) * 0.5f + ctx.font->Ascent()},
 								   shortcuts[i], ctx.theme.textDisabled);
 					}
