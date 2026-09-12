@@ -140,17 +140,26 @@ with project("NKImage"):
     with filter("(system:Linux || system:macOS || (system:Windows && !options:windows-runtime=uwp && !system:XboxSeries && !system:XboxOne)) && !system:Android && !system:iOS && !system:Web"):
         with test():
             testfiles(["tests/**.cpp"])
-<<<<<<< ours
+            # ── FUSION DU 2026-09-12 : TRANCHE PAR L HISTOIRE, ET LA QUESTION EST ECRITE ICI ──
+            # Deux reparations ALTERNATIVES du meme defaut (TestEXR.cpp a son propre main) :
+            #   main    (860e9d7f1, PR #85, ecrit le 05/09) : excludefiles(TestEXR)  <- GARDE
+            #   branche (9d3452b37, 04/09)                 : testownmain()          <- ci-dessous
+            # Aucun message ne dit avoir remplace l autre ; la plus recente sur main l emporte.
+            # ⚠️ MESURE, LES DEUX COTES, EN EXECUTION (jenga test --force, puis l exe lance a la main) :
+            #   excludefiles : No source files found -> Tests : 0 reussis, 0 au total  (vide vert)
+            #   testownmain  : 1 source, un exe, il tourne -> Tests : 0 reussis, 0 au total (vide vert)
+            # TestEXR.cpp porte un main() Unitest qui n enregistre AUCUN cas. Aucun cote ne fait
+            # tourner quoi que ce soit : NKImage_Tests est une suite VIDE qui se dit reussie.
+            # QUESTION POUR RODOLF : que doit etre NKImage_Tests ? (a) vide jusqu a de vrais
+            # essais unitaires -- c est l etat present ; (b) TestEXR promu en suite, ce qui
+            # suppose d y ENREGISTRER des cas, sinon (b) = (a). Le mot de la branche, pour
+            # rejouer (b) : testownmain()
             # TestEXR.cpp est un OUTIL autonome, pas un test unitaire : il definit
             # son propre main(), qui entrait en conflit avec celui que Jenga genere
             # pour Unitest. La suite NKImage_Tests ne se construisait donc plus du
             # tout, en silence. Exclu le 2026-09-05 ; le fichier reste dans le depot
             # comme code de validation du codec EXR.
             excludefiles(["tests/TestEXR.cpp"])
-||||||| base
-=======
-            testownmain()  # la suite fournit son main() -- le mot propre de Jenga 2.6 (2026-09-04)
->>>>>>> theirs
             links([
                 "NKImage",
                 "NKMemory",
