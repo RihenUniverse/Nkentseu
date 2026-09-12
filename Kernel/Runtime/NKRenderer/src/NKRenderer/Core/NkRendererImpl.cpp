@@ -1,3 +1,4 @@
+// AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // =============================================================================
 // NkRendererImpl.cpp  — NKRenderer v5.0
 // =============================================================================
@@ -435,7 +436,7 @@ namespace nkentseu {
 			if (mVFX)
 				return true;
 			mVFX.Reset(AllocOwned<NkVFXSystem>());
-			if (!mVFX->Init(mDevice, mTextures.Get(), mMeshSystem.Get())) {
+			if (!mVFX->Init(mDevice, mTextures.Get(), mMeshSystem.Get(), mShaders.Get())) {
 				mVFX.Reset();
 				NkRSetLastError(NkRResult::NK_ERR_UNKNOWN, "NkVFXSystem::Init failed");
 				return false;
@@ -887,8 +888,20 @@ namespace nkentseu {
 					.Reads(mainDepth)
 					.SetColor(0, mainColor, NkLoadOp::NK_LOAD)
 					.Execute([this](NkICommandBuffer *cmd) {
-						// VFX flush integre par le sous-systeme VFX
-						(void)cmd;
+						// 2026-09-04 : ce corps etait `(void)cmd;` sous un commentaire
+						// qui affirmait « VFX flush integre par le sous-systeme VFX ».
+						// Il ne l'etait pas : NkVFXSystem::Render n'avait AUCUN
+						// appelant dans le depot. La passe etait declaree, activee,
+						// executee -- et ne dessinait rien. Declare, pas livre.
+						// La camera n'est pas utilisee par le rendu des particules :
+						// le vertex shader lit uCam (CameraUBO, set=0) et en tire
+						// right/up. On passe donc une donnee neutre plutot que de
+						// stocker une camera que personne ne lirait.
+						if (mVFX) {
+							cmd->WriteTimestamp(2); // chrono 1 (passe VFX) : marqueurs ENREGISTRES, rejoues avec les dessins
+							mVFX->Render(cmd, NkCamera3DData{});
+							cmd->WriteTimestamp(3);
+						}
 					});
 			}
 
@@ -1448,6 +1461,7 @@ namespace nkentseu {
 
 			if (!mDevice->BeginFrame(mFrameCtx))
 				return false;
+			mDevice->BeginTimestampQuery(0); // chrono GPU : horodatage de debut de frame (2026-09-04)
 
 			// Sélection « outline silhouette » : (dés)activer l'option ajoute/retire les
 			// passes SelectionMask + SelectionOutline du graph -> rebuild à l'aplomb de
@@ -1504,7 +1518,22 @@ namespace nkentseu {
 							  "Corriger l'appelant : Present() PUIS EndFrame(). "
 							  "Cf. wiki/Runtime/NKRenderer/Frame-Contract.md\n");
 			}
-			mDevice->EndFrame(mFrameCtx);
+			mDevice->EndFrame(mFrameCtx); // relit le tampon de commandes : c'est LA que le GPU dessine
+			mDevice->EndTimestampQuery(0); // horodatage de fin APRES la relecture -- avant, il tombait avant les dessins et mesurait l'attente de la frame precedente
+			// Chrono GPU (2026-09-04) : le device rend les deux horodatages d'une frame
+			// DEJA terminee (une frame de latence, pas d'attente). Tant qu'aucun backend ne
+			// repond, gpuTimeValid reste faux et le HUD dit « -- ».
+			{
+				uint64 ns[4] = {0, 0, 0, 0};
+				if (mDevice->GetTimestampResults(ns, 4) && ns[1] >= ns[0]) {
+					mStats.gpuTimeMs = (float32)((float64)(ns[1] - ns[0]) * (float64)mDevice->GetTimestampPeriodNs() / 1.0e6);
+					mStats.gpuTimeValid = true;
+					if (ns[3] >= ns[2] && ns[2] != 0) {
+						mStats.gpuVfxMs = (float32)((float64)(ns[3] - ns[2]) * (float64)mDevice->GetTimestampPeriodNs() / 1.0e6);
+						mStats.gpuVfxValid = true;
+					}
+				}
+			}
 			// ── LA FRAME EST COMPLETE : on fige ses statistiques ────────────
 			// Ces compteurs etaient AFFICHES depuis toujours (overlay
 			// « Draw/Tris/Batches ») mais jamais alimentes -- le cadran

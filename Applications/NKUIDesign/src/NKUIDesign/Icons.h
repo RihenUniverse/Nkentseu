@@ -59,10 +59,12 @@
 
 #include "NKEditorKit/Components/NkGuiComponentPaint.h"
 #include "NKEditorKit/Components/NkTreeViewModel.h"
+#include "Costume.h" // les tracés exacts des icônes Banani (remandat 31/08)
 
 namespace nkuidesign {
 
 	using nkentseu::float32;
+	using nkentseu::int32;
 	using nkentseu::uint16;
 	using nkentseu::uint32;
 	using nkentseu::uint8;
@@ -83,6 +85,12 @@ namespace nkuidesign {
 		NK_ICON_OEIL_FERME,
 		NK_ICON_CADENAS_OUVERT,
 		NK_ICON_CADENAS_FERME,
+		// ── Icônes de NATURE des rangées (costume Banani, 31/08) — chacune
+		//    recopie les primitives du JSX (Costume.h), 11×11 dans sa case. ──
+		NK_ICON_NATURE_PAGE,	///< un artboard/page (rect + 2 lignes)
+		NK_ICON_NATURE_PANNEAU, ///< un conteneur (rect + ligne médiane)
+		NK_ICON_NATURE_BOUTON,	///< un élément à rôle bouton (pilule + trait)
+		NK_ICON_NATURE_TEXTE,	///< un texte (le « T »)
 	};
 
 	/// Le jeu que l'hote donne a l'arbre. Un seul endroit, pour que la question
@@ -118,11 +126,95 @@ namespace nkuidesign {
 					Chevron(r, role, true);
 					return;
 				}
+				// Les icônes de NATURE (costume Banani) : 11×11 centrées dans la
+				// case, tracés du JSX recopiés dans Costume.h.
+				if (iconHandle >= NK_ICON_NATURE_PAGE && iconHandle <= NK_ICON_NATURE_TEXTE) {
+					const float32 ix = r.x + (r.w - 11.f) * 0.5f;
+					const float32 iy = r.y + (r.h - 11.f) * 0.5f;
+					const nkentseu::nkgui::NkColor col = Couleur(role);
+					auto &dl = mCtx.DL();
+					if (iconHandle == NK_ICON_NATURE_PAGE)
+						costume::IcPage(dl, ix, iy, col);
+					else if (iconHandle == NK_ICON_NATURE_PANNEAU)
+						costume::IcPanneau(dl, ix, iy, col);
+					else if (iconHandle == NK_ICON_NATURE_BOUTON)
+						costume::IcBouton(dl, ix, iy, col);
+					else
+						costume::IcTexte(dl, ix, iy, col);
+					return;
+				}
 				// ⚠️ TOUT LE RESTE RETOMBE SUR LE KIT, deliberement : un carre plein
 				//    du bon role. La place est prise, la couleur est juste, le
 				//    glyphe manque — et il manque VISIBLEMENT, ce qui vaut mieux
 				//    qu'un vide qui ferait croire la mise en page correcte.
 				NkGuiComponentPaint::Icon(r, iconHandle, role);
+			}
+
+			/// Le texte a COULEUR ET CORPS POSES (vocabulaire d'apparence §8ter).
+			/// ⚠️ LE CORPS DEMANDE EST RENDU **EXACTEMENT** (correction du 31/08,
+			///    « le texte doit suivre le zoom ») : palier = l'atlas du costume
+			///    dont la taille RENDUE est la plus proche, puis ECHELLE
+			///    RESIDUELLE (`AddTextScaled`, geometrie NkFontScaleRenderer de
+			///    NKFont) — jamais un atlas par cran de zoom. Avant, le corps
+			///    demande choisissait un atlas et s'arretait la : un texte pose a
+			///    15 px zoome x2 se dessinait a ~16 px au lieu de 30.
+			///    La graisse >= 500 s'approche par double trait (les graisses
+			///    d'Inter ne sont pas embarquees, dit dans Costume.h), l'ecart du
+			///    double trait suit l'echelle. Sans atlas valide : le repli du
+			///    kit (texte au role, corps du peintre).
+			void TextHex(const NkPaintRect &r, const char *s, uint32 rgba, uint16 roleRepli,
+						 nkentseu::editorkit::NkTextAlign align, float32 px,
+						 float32 graisse) override {
+				// Le corps demande est LOGIQUE (meme regle que Charger) : la cible
+				// physique porte le DPI, qui se simplifie avec celui des atlas.
+				// Le CHOIX d'atlas + echelle residuelle est PARTAGE avec le champ
+				// d'edition en place : costume::AtlasProche, un seul endroit.
+				const float32 dpi = mCtx.S(1.f) > 0.5f ? mCtx.S(1.f) : 1.f;
+				const float32 vise = px * dpi;
+				float32 echelle = 1.f;
+				const nkentseu::nkgui::NkGuiFont *f =
+					px > 0.f ? costume::AtlasProche(vise, echelle) : nullptr;
+				if (!f || !f->Valid()) {
+					NkGuiComponentPaint::TextHex(r, s, rgba, roleRepli, align, px, graisse);
+					return;
+				}
+				const nkentseu::nkgui::NkColor col = {(uint8)((rgba >> 24) & 0xFFu),
+													  (uint8)((rgba >> 16) & 0xFFu),
+													  (uint8)((rgba >> 8) & 0xFFu),
+													  (uint8)(rgba & 0xFFu)};
+				const float32 largeur = f->MeasureWidth(s) * echelle;
+				float32 tx = r.x;
+				if (align == nkentseu::editorkit::NkTextAlign::Center)
+					tx = r.x + (r.w - largeur) * 0.5f;
+				else if (align == nkentseu::editorkit::NkTextAlign::Right)
+					tx = r.x + r.w - largeur;
+				const float32 hLigne = f->LineHeight() * echelle;
+				const float32 yBase = r.y + (r.h - hLigne) * 0.5f + f->Ascent() * echelle;
+				const float32 eGras = graisse >= 500.f
+										  ? (graisse >= 700.f ? 0.8f : graisse >= 600.f ? 0.5f : 0.3f)
+												* (echelle > 1.f ? echelle : 1.f)
+										  : 0.f;
+				if (const nkentseu::editorkit::NkPaintTransform *m = TransformeActive()) {
+					// Sous la matrice du noeud : la mise a l'echelle des glyphes S
+					// (facteur `echelle` autour de l'origine de ligne o) se compose
+					// SOUS M -- M o S : p -> M(o) + echelle * L(p - o). Le texte tourne
+					// avec sa boite, a la meme matrice que les formes.
+					const float32 ta = m->a * echelle, tb = m->b * echelle;
+					const float32 tc = m->c * echelle, td = m->d * echelle;
+					for (int32 passe = 0; passe < (eGras > 0.f ? 2 : 1); ++passe) {
+						const float32 ox = tx + (passe ? eGras : 0.f);
+						const float32 mox = m->a * ox + m->c * yBase + m->e;
+						const float32 moy = m->b * ox + m->d * yBase + m->f;
+						mCtx.DL().AddTextTransforme(f->Face(), f->TexId(), {ox, yBase}, s, col, ta, tb,
+													tc, td, mox - (ta * ox + tc * yBase),
+													moy - (tb * ox + td * yBase));
+					}
+					return;
+				}
+				mCtx.DL().AddTextScaled(f->Face(), f->TexId(), {tx, yBase}, s, col, echelle);
+				if (eGras > 0.f)
+					mCtx.DL().AddTextScaled(f->Face(), f->TexId(), {tx + eGras, yBase}, s, col,
+											echelle);
 			}
 
 		private:
@@ -134,21 +226,16 @@ namespace nkuidesign {
 			//    quand il pointe en bas. Un triangle equilateral se lit comme un
 			//    bouton « lecture », pas comme un pli.
 			void Chevron(const NkPaintRect &r, uint16 role, bool ouvert) {
-				const float32 side = (r.w < r.h ? r.w : r.h) * 0.42f;
-				const float32 cx = r.x + r.w * 0.5f;
-				const float32 cy = r.y + r.h * 0.5f;
+				// COSTUME BANANI (31/08) : le chevron de la maquette est un TRAIT
+				// (polyligne 2 segments, bouts ronds, 9×9), plus le triangle plein
+				// d'avant — même vocabulaire que toutes les icônes de l'export.
+				const float32 ix = r.x + (r.w - 9.f) * 0.5f;
+				const float32 iy = r.y + (r.h - 9.f) * 0.5f;
 				const nkentseu::nkgui::NkColor col = Couleur(role);
-				if (ouvert) {
-					// Pointe EN BAS : le noeud est deplie, ses enfants sont dessous.
-					mCtx.DL().AddTriangleFilled({cx - side, cy - side * 0.55f},
-												{cx + side, cy - side * 0.55f},
-												{cx, cy + side * 0.65f}, col);
-				} else {
-					// Pointe A DROITE : replie, le contenu est « plus loin ».
-					mCtx.DL().AddTriangleFilled({cx - side * 0.55f, cy - side},
-												{cx - side * 0.55f, cy + side},
-												{cx + side * 0.65f, cy}, col);
-				}
+				if (ouvert)
+					costume::ChevronBas9(mCtx.DL(), ix, iy, col);
+				else
+					costume::ChevronDroit9(mCtx.DL(), ix, iy, col);
 			}
 
 			nkentseu::nkgui::NkColor Couleur(uint16 role) const {

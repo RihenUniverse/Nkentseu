@@ -185,6 +185,47 @@ deux cotes ne s'additionnent pas, ils se remplacent. C'est un arbitrage.
 
 ---
 
+## ④ RETRECIE PAR LA MESURE (2026-09-12, soir) : trois n'etaient pas des decisions
+
+La methode : **hypothese d'UNION** (les deux cotes), le **compilateur juge d'abord**,
+**les essais jugent ensuite**, et on lit **les comptes, pas les couleurs**.
+
+| fichier | verdict | la preuve |
+|---|---|---|
+| `NKUIDesign/src/main.cpp` | **(u)** | le corps utilise `NkEditorCanvasRenderer` (main, l.8818) **et** `NkThemeUnpack`, `NkModal`, `NkModalFrame` (branche, l.9102). Les trois includes sont **requis par le compilateur**. `NKUIDesign` construit ✓ ; sonde `--probe` : **126 temoins, 312/312**. |
+| `NkRendererImpl.cpp` | **(u)** au compilateur | garde G1 (main) -> **un seul** `EndFrame` -> chrono GPU (branche). Tous les symboles existent (`gpuTimeMs`…`gpuVfxValid` : `NkRendererTypes.h:683-686`). `NKRenderer` construit ✓ 23/23. ⚠️ **Les essais ne peuvent PAS juger** : `NKRenderer_Tests` rend `0 reussis, 0 au total, All tests passed` -- un vide vert. |
+| `NkEditorShell.cpp` | **(u)** raisonnee | l'union LITTERALE est refusee : `NkEditorCanvasRenderer.h:16: fatal error 'NKCanvas/Core/NkContextDesc.h' not found` -- cet en-tete tire NKCanvas, absent des includes du kit. Mais **aucune ligne de code** de ce fichier n'utilise le symbole (deux commentaires, une chaine) : ligne morte. Retiree, motif ecrit dans le fichier ; `NkThemeToGui.h` (branche) garde. `NKEditorKit` construit ✓. |
+| `NkEditorContextMenu.h` | **(c)** | 9 zones = **deux implementations de la meme colonne de raccourcis** (`fShort`/`fShorts`, deux formules de largeur, deux `AddText`). Une union peindrait le raccourci **deux fois**. |
+| `NKImage.jenga` | **(c)** | l'union construit ✓ **avec `No source files found for project NKImage_Tests`** : aucune source, aucun binaire, `Status: SUCCESS`. |
+
+### Les deux (c), en trois lignes par cote, pour Rodolf
+
+**`NkEditorContextMenu.h`**
+- *main* : colonne de raccourcis alignee sur le bord du **CONTENU** (`contenuDroite`, defile avec le libelle quand une barre horizontale existe), ecart minimal `raccEcart = 28`, fleche 16 px. Une seule fonctionnalite, soignee.
+- *branche* : la meme colonne alignee sur le bord **VISIBLE** (`r.x + r.w`), `+24`, fleche 14 px -- **plus** `sepAfter` (traits de groupe), `rangee` (icones d'action) et `checked` (coches), tous « ADDITIFS ET EN DERNIER ».
+- *la question* : la branche est un superset FONCTIONNEL, main un raffinement de MISE EN PAGE. L'union d'intentions = superset de la branche + les deux raffinements de main (alignement contenu, ecart 28) : **trois editions, mais ce sont des choix de rendu.**
+
+**`NKImage.jenga`**
+- *main* (`excludefiles(["tests/TestEXR.cpp"])`, 05/09) : `TestEXR` est « un OUTIL, pas un test unitaire ». Consequence mesuree : `tests/` ne contient QUE ce fichier, donc la suite a **0 source**, ne construit **rien**, et rend **SUCCESS**.
+- *branche* (`testownmain()`, 04/09) : `TestEXR` EST la suite, avec son propre `main()`. La branche a mesure « All tests passed for NKImage_Tests, build+run 35 s » : **quelque chose tourne.**
+- *la question* : une validation de codec compte-t-elle comme LA suite du module, ou laisse-t-on une suite vide jusqu'a de vrais essais unitaires ? **Le seul choix qui ne rend pas un vide vert est celui de la branche.** Ce n'est pas a moi de le prendre.
+
+### ⚠️ TROIS VIDES VERTS EN UNE SOIREE -- « lis les comptes, pas les couleurs »
+
+    NKImage_Tests   (union)  No source files found ... Status: ✓ SUCCESS
+    NKImage_Tests   (main)   meme chose : 0 source, vert
+    NKRenderer_Tests         Tests : 0 reussis, 0 au total -- All tests passed
+
+**Un `passed` sans denominateur ne vaut rien.** La sonde NkUIDesign, elle, dit
+`312 / 312` -- c'est un compte, et il a servi : 126 temoins executes contre
+« sonde 120 » au sommet de la branche, donc **rien de perdu**.
+
+### Piege d'outillage : `git checkout -m` change les etiquettes
+
+Il regenere le conflit avec **`ours` / `base` / `theirs`**, pas `HEAD` / `<sha>` /
+`<branche>`. Un script qui cherche `<<<<<<< HEAD` trouve **0 zone et ne se plaint
+pas**. Verifier le compte de marqueurs APRES chaque geste, jamais le croire.
+
 ## ⚠️ `git rerere` : essaye, MESURE, et RETIRE. Voici pourquoi.
 
 **N'active pas `rerere` pour rejouer ces resolutions.** Ca a ete tente le 12/09, et

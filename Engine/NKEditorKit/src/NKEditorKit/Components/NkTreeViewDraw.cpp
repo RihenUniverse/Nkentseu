@@ -2,7 +2,7 @@
 // @File    NkTreeViewDraw.cpp
 // @Brief   Le dessin de l'arbre — et la preuve que la forme tient sur un second
 //          composant, d'une autre famille que celui pour lequel elle a ete ecrite.
-// @Author  Rihen
+// @Author  TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // @License Proprietary - All Rights Reserved (see LICENSE)
 //
 // =============================================================================
@@ -59,6 +59,7 @@
 // -----------------------------------------------------------------------------
 
 #include "NKEditorKit/Components/NkTreeViewModel.h"
+#include "NKEditorKit/Components/NkSilhouettes.h" // ② les icones partagees grille/rail
 
 namespace nkentseu {
 	namespace editorkit {
@@ -303,7 +304,7 @@ namespace nkentseu {
 				// Le champ lui-meme est un composant a part (`NkEditorTextField.h`) :
 				// on peint sa place et son contenu, on ne le reecrit pas ici.
 				p.Text({bar.x + pad, bar.y, bar.w - pad * 2.f, bar.h},
-					   m.filter[0] ? m.filter : "Rechercher...", m.filter[0] ? s.text : s.textMuted);
+					   m.filter[0] ? m.filter : "Rechercher…", m.filter[0] ? s.text : s.textMuted);
 				p.HLine(rect.x, top + h, rect.w, s.border);
 				top += h;
 			}
@@ -354,6 +355,8 @@ namespace nkentseu {
 
 			// Ce que la boucle RELEVE ; ce qu'elle DECIDE vient apres elle.
 			int32 hitIndex = -1;	  ///< ligne sous la souris
+			const char *bulleTexte = nullptr; ///< ⑥ l'infobulle du noeud survole
+			float32 bulleY = 0.f, bulleH = 0.f; ///< ① la rangee qui la porte (ecran)
 			bool hitChevron = false;  ///< ... sur le chevron
 			int32 hitFlag = -1;		  ///< 0 = oeil, 1 = cadenas
 			bool hitLabel = false;	  ///< ... sur le libelle (declenche le renommage)
@@ -362,6 +365,13 @@ namespace nkentseu {
 			int32 ordinal = 0;
 			NkTreeDropPos hitDropPos = NkTreeDropPos::Into;
 			const bool dragging = (in.dragType != nullptr);
+			// La rangee EN COURS DE RENOMMAGE, relevee par la boucle : c'est le
+			// rectangle contre lequel le contrat universel d'edition juge un clic
+			// (hors d'elle = valider, puis le clic agit). Relevee AVANT le saut
+			// hors champ : une rangee defilee hors de vue garde un rectangle —
+			// hors ecran — donc tout clic visible est hors d'elle, et valide.
+			NkPaintRect renamedRow{0.f, 0.f, 0.f, 0.f};
+			bool renamedRowSeen = false;
 
 			ForEachVisibleNode(
 				m, flat, defaultOpen, hooks,
@@ -372,6 +382,10 @@ namespace nkentseu {
 					++ordinal;
 					if (n.id == m.anchor)
 						anchorOrdinal = myOrdinal;
+					if (m.renaming != 0 && n.id == m.renaming) {
+						renamedRow = {area.x, y, area.w, rowH};
+						renamedRowSeen = true;
+					}
 
 					// Hors champ : on saute le DESSIN, pas le comptage — compter apres
 					// rendrait le defilement dependant de ce qui est visible.
@@ -390,7 +404,28 @@ namespace nkentseu {
 						p.OutlineSharp({row.x + stroke, row.y + stroke, row.w - stroke * 2.f,
 										row.h - stroke * 2.f},
 									   s.chosenMark);
-					else if (over)
+					// ③ (05/09, nuit) UN EN-TETE DE SECTION SE PEINT SUR UNE BANDE PLUS SOMBRE,
+					//    sur toute la largeur -- c'est ce qui separe visuellement les blocs du
+					//    rail (« Recents », « Acces rapide », « Ce PC », « Dossier courant »).
+					// ⚠️ AUCUNE TEINTE INVENTEE : c'est le fond du panneau, ASSOMBRI d'un quart
+					//    par `NkTeinter`. Un role de plus aurait demande a chaque theme de le
+					//    definir ; une nuance du role existant suit le theme toute seule, clair
+					//    comme sombre.
+					if (n.bandeau)
+						p.FillColor(row, NkTeinter(p.ColorOf(s.panelBg), -0.28f));
+					else if (over && !isActive)
+						// ⚠️ `&& !isActive` — ET C'EST UN DEFAUT MESURE, PAS UN GOUT (06/09).
+						//    Rodolf : « lorsque je selectionne un dossier a gauche et que je le
+						//    survole, son texte s'efface, mais des que je le quitte il
+						//    reapparait. » Le fond du survol etait peint PAR-DESSUS le fond de
+						//    la ligne active, alors que la couleur du LIBELLE, elle, restait
+						//    celle de l'etat actif (`activeText`, pensee pour le fond actif).
+						//    Le couple (fond, texte) etait donc decide par DEUX conditions
+						//    differentes : survole -> fond clair, actif -> texte clair. Texte
+						//    clair sur fond clair = un nom invisible, qui revient des qu'on
+						//    quitte la ligne (le fond redevient celui de l'actif).
+						//    Regle : QUI CHOISIT LE TEXTE CHOISIT LE FOND. La ligne active
+						//    garde son fond ; le survol se lit deja sur toutes les autres.
 						p.Fill(row, s.rowHover);
 
 					// LA BARRE D'ACCENT A GAUCHE : la planche du 18/08 la montre sur
@@ -418,8 +453,38 @@ namespace nkentseu {
 					// n'y a rien a plier, et une zone morte qui reagit au survol se
 					// lit comme une panne. On reserve la place, on ne dessine rien.
 					const NkPaintRect chev{x, row.y, chevW, rowH};
-					if (hasKids && !flat) {
-						p.Icon(chev, isOpen ? s.icons.chevronOpen : s.icons.chevronClosed, s.iconTint);
+					// ④ (05/09, nuit) LE CHEVRON EST DESSINE, PAS DEMANDE A UN ATLAS.
+					//    `s.icons.chevronOpen` vaut ZERO chez un hote sans atlas (le selecteur de
+					//    fichiers, par exemple) : `p.Icon` ne peignait alors RIEN. Le chevron
+					//    etait demande et invisible -- meme cause que les icones du rail.
+					//    On garde l'atlas quand l'hote en a un, et on TRACE sinon.
+					//    ⚠️ `enfantsPossibles` compte autant que `hasKids` : un dossier dont les
+					//       sous-dossiers ne sont pas encore charges DOIT montrer son chevron,
+					//       sinon on ne l'ouvrirait jamais.
+					if ((hasKids || n.enfantsPossibles) && !flat) {
+						const uint16 poignee = isOpen ? s.icons.chevronOpen : s.icons.chevronClosed;
+						if (poignee != 0u)
+							p.Icon(chev, poignee, s.iconTint);
+						else {
+							// un triangle : trois traits, jamais le caractere « > »
+							const float32 cxc = chev.x + chev.w * 0.5f, cyc = chev.y + chev.h * 0.5f;
+							const float32 rr = chev.w * 0.22f;
+							if (isOpen) {
+								const float32 tri[6] = {cxc - rr, cyc - rr * 0.6f, cxc + rr, cyc - rr * 0.6f,
+															cxc,	  cyc + rr * 0.9f};
+								if (!p.PolygonHex(tri, 3, p.ColorOf(s.iconTint))) {
+									p.Line(tri[0], tri[1], tri[4], tri[5], s.iconTint, 1.3f);
+									p.Line(tri[2], tri[3], tri[4], tri[5], s.iconTint, 1.3f);
+								}
+							} else {
+								const float32 tri[6] = {cxc - rr * 0.6f, cyc - rr, cxc - rr * 0.6f, cyc + rr,
+															cxc + rr * 0.9f, cyc};
+								if (!p.PolygonHex(tri, 3, p.ColorOf(s.iconTint))) {
+									p.Line(tri[0], tri[1], tri[4], tri[5], s.iconTint, 1.3f);
+									p.Line(tri[2], tri[3], tri[4], tri[5], s.iconTint, 1.3f);
+								}
+							}
+						}
 						if (over && chev.Contains(in.mouseX, in.mouseY))
 							hitChevron = true;
 					}
@@ -448,7 +513,19 @@ namespace nkentseu {
 					}
 
 					// ── ICONE DE NATURE ─────────────────────────────────────────
-					p.Icon({x, row.y, iconW, rowH}, n.icon, n.kindRole ? n.kindRole : s.iconTint);
+					// ② (05/09, nuit) UNE SILHOUETTE DESSINEE si le noeud en porte une, l'icone
+					//    d'atlas sinon. Rodolf : « le panneau de gauche ne montre pas les icones »
+					//    -- le rail etait du texte nu pendant que la grille avait ses onze formes.
+					//    C'est LA MEME fonction que la grille appelle : une seule, deux volets.
+					{
+						const NkPaintRect ri{x, row.y, iconW, rowH};
+						const NkAssetIcone sil = (NkAssetIcone)n.silhouette;
+						if (sil != NkAssetIcone::Auto && sil < NkAssetIcone::Count)
+							NkDessinerSilhouette(p, ri, sil, n.kindRole ? n.kindRole : s.iconTint,
+												 n.contenu);
+						else
+							p.Icon(ri, n.icon, n.kindRole ? n.kindRole : s.iconTint);
+					}
 					x += iconW;
 
 					// ── COLONNES DE DROITE, RESERVEES AVANT LE LIBELLE ──────────
@@ -469,6 +546,14 @@ namespace nkentseu {
 						const float32 tw = p.TextWidth(n.kindLabel);
 						rightEdge -= tw + pad;
 						p.Text({rightEdge, row.y, tw, rowH}, n.kindLabel, mutedRole);
+					}
+					// La reserve de l'overlay (badge, pastille) : soustraite ICI,
+					// pour que le libelle s'ellipse AVANT elle — le nom cede,
+					// jamais le badge (cf. le hook, NkTreeViewModel.h).
+					if (hooks.rowRightReserve) {
+						const float32 res = hooks.rowRightReserve(hooks.user, p, index);
+						if (res > 0.f)
+							rightEdge -= res;
 					}
 
 					// ── LIBELLE, OU BOITE DE SAISIE ─────────────────────────────
@@ -530,10 +615,34 @@ namespace nkentseu {
 					if (over) {
 						hitIndex = index;
 						hitOrdinal = myOrdinal;
+						// ① On RELEVE la rangee survolee ; c'est l'hote qui posera le
+						//    cartouche en face d'elle. Voir `NkTreeViewResult::infobulle`.
+						bulleY = row.y;
+						bulleH = row.h;
 					}
 				});
 
 			res.visibleCount = ordinal;
+
+			// ── CONTRAT UNIVERSEL D'EDITION (Rodolf, 31/08) : LE CLIC AILLEURS ──
+			// Un clic HORS de la rangee editee VALIDE la saisie, puis le clic fait
+			// son effet normal (selection, pli, autre panneau — il n'est pas
+			// mange). C'est le composant qui juge, car lui seul connait le
+			// rectangle de la rangee : l'hote qui comparait le clic a la ZONE
+			// ENTIERE de l'arbre laissait un clic sur une AUTRE rangee sans effet
+			// — mesure du 01/09 : « plus possible de desactiver l'edition ».
+			// Le commit leve ici est traite au debut de l'image SUIVANTE (le bloc
+			// « la part de l'hote » ci-dessus) : la selection de ce clic part a
+			// cette image, l'ecriture du label a la prochaine — les deux partent.
+			// ⚠️ `renameEatClick` mange UN clic : celui qui vient d'ouvrir la
+			//    saisie par programme (le [+] de Pages) — hors de la rangee par
+			//    construction, il validerait la saisie a l'image de sa naissance.
+			if (m.renaming != 0 && in.mousePressed) {
+				if (m.renameEatClick)
+					m.renameEatClick = false;
+				else if (!renamedRowSeen || !renamedRow.Contains(in.mouseX, in.mouseY))
+					m.renameCommit = true;
+			}
 
 			// ── LES DECISIONS, TOUTES ICI ───────────────────────────────────────
 			// Un seul bloc, apres le parcours. C'est aussi ce qui fait tenir la
@@ -543,14 +652,29 @@ namespace nkentseu {
 
 			if (hitIndex >= 0 && inArea) {
 				NkTreeNode &n = m.nodes[(uint32)hitIndex];
+				// ⑥ L'infobulle du noeud survole -- dessinee tout en bas, hors du clip.
+				if (!n.infobulle.Empty())
+					bulleTexte = n.infobulle.CStr();
 				const char *path = Path(n);
 
 				// 1. LE CHEVRON — la seule commande de pliage quand
 				//    `chevron_only_fold` est vrai. Lecon de NK3DModeler : le clic de
 				//    ligne pliait aussi, « trop sensible et genant pour renommer »
 				//    (Rihen). Le clic qui plie ne selectionne pas.
+				// ④ (05/09, v5) UN EN-TETE DE SECTION PLIE SUR TOUTE SA BANDE.
+				// Rodolf : « les sections ne se replient pas -- leur chevron est dessine mais
+				// inerte ». MESURE (sonde 125) : le chevron n'etait PAS inerte -- le clic sur
+				// lui pliait deja, et le pliage survivait meme a la reconstruction du rail.
+				// Ce qui etait inerte, c'est TOUT LE RESTE DE LA BANDE : `chevron_only_fold`
+				// vaut 1 par defaut, et un titre est `locked`, donc un clic sur son libelle ne
+				// pliait pas ET ne selectionnait pas. Il fallait viser seize pixels.
+				// Un titre n'a AUCUNE autre action : il ne se selectionne pas, ne se renomme
+				// pas, ne porte pas de drapeau. Toute sa bande devient donc la cible du
+				// pliage -- ce qui est aussi ce que fait l'explorateur du systeme.
 				const bool foldClick =
-					in.mousePressed && (hitChevron || (!chevronOnly && !hitLabel && hitFlag < 0));
+					in.mousePressed
+					&& (hitChevron || (n.bandeau && !flat)
+						|| (!chevronOnly && !hitLabel && hitFlag < 0));
 				if (foldClick) {
 					const bool nowOpen = !m.IsOpen(n.id, defaultOpen);
 					m.SetOpen(n.id, nowOpen, defaultOpen);
@@ -724,6 +848,20 @@ namespace nkentseu {
 			}
 
 			p.PopClip(); // area
+			// ── ① L'INFOBULLE : RELEVEE, PLUS PEINTE ICI (2026-09-05, v5) ─────
+			// Elle etait dessinee A CET ENDROIT, dans la liste de l'arbre, a
+			// « souris + 12/+16 ». Deux defauts sur les captures de Rodolf, une seule
+			// cause : le cartouche opaque tombait sur la rangee suivante et lui volait
+			// son libelle (une entree du rail SANS NOM), et rien ne pouvait le tenir
+			// hors du flux du rail puisque l'arbre ne connait ni le bord de la fenetre
+			// ni la place libre a sa droite.
+			// L'arbre RELEVE donc, et l'hote PEINT en dernier, sur la couche du dessus.
+			if (bulleTexte && bulleTexte[0]) {
+				res.infobulle = NkString(bulleTexte);
+				res.infobulleY = bulleY;
+				res.infobulleH = bulleH;
+			}
+
 
 			// ── PIED ────────────────────────────────────────────────────────────
 			// « 7 acteurs · 1 selectionne » sur la planche du 18/08. Le compte est
@@ -736,9 +874,9 @@ namespace nkentseu {
 				p.HLine(foot.x, foot.y, foot.w, s.border);
 				char line[96];
 				uint32 n = AppendU32(line, (uint32)sizeof(line), 0, (uint32)res.visibleCount);
-				n = AppendStr(line, (uint32)sizeof(line), n, " noeud(s), ");
+				n = AppendStr(line, (uint32)sizeof(line), n, " nœud(s), ");
 				n = AppendU32(line, (uint32)sizeof(line), n, (uint32)m.chosen.Size());
-				AppendStr(line, (uint32)sizeof(line), n, " selectionne(s)");
+				AppendStr(line, (uint32)sizeof(line), n, " sélectionné(s)");
 				p.Text({foot.x + pad, foot.y, foot.w - pad * 2.f, foot.h}, line, s.textMuted);
 			}
 

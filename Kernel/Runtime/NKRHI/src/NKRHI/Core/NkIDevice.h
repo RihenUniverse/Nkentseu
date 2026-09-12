@@ -55,6 +55,17 @@ namespace nkentseu {
 			uint32 maxComputeSharedMemory = 32768;
 			uint32 maxDescriptorSets = 4;
 			uint32 maxSamplerAnisotropy = 16;
+			// Combien d'echantillonneurs l'etage FRAGMENT peut adresser.
+			// AJOUTE LE 2026-09-02, et c'est le champ qui manquait : cette
+			// structure portait 16 limites, aucune n'etait celle-ci -- donc le
+			// moteur ne POUVAIT PAS s'adapter a la seule limite qui ait casse une
+			// cible (PBR : 17 demandes, WebGL2 en accorde 16, ecran vide).
+			// Une capacite qu'on n'interroge pas ne peut porter aucune doublure.
+			// Defaut = 16 : ce n'est pas un zero par defaut, c'est une valeur
+			// DECIDEE -- le minimum garanti par WebGL2/GLES 3.0. Un backend qui
+			// echoue a repondre laisse donc la valeur la plus CONTRAIGNANTE, pas
+			// la plus optimiste.
+			uint32 maxFragmentTextureUnits = 16;
 			uint32 minUniformBufferAlign = 256;
 			uint32 minStorageBufferAlign = 16;
 			uint64 vramBytes = 0;
@@ -505,6 +516,18 @@ namespace nkentseu {
 			virtual void BindBindlessHeap(NkICommandBuffer *cmd, NkBindlessHeapHandle heap) {
 				(void)cmd;
 				(void)heap;
+			}
+
+			// ── AJOUTS EN FIN DE CLASSE (2026-09-05) : une virtuelle inseree au milieu decale toutes les
+			// entrees de vtable suivantes, et un objet compile contre l'ancien en-tete (build concurrent
+			// d'un autre agent dans le meme Build/) appelle alors un pointeur nul -- mesure : SIGSEGV en #0 0x0.
+			// Un chrono PAR INDEX (profil du SPH par passe) : rend le plus ancien resultat disponible de ce
+			// chrono et le consomme ; faux s'il n'y en a pas (ne bloque jamais).
+			virtual bool GetTimestampResult(uint32 index, uint64 &t0, uint64 &t1) {
+				(void)index;
+				(void)t0;
+				(void)t1;
+				return false;
 			}
 	};
 

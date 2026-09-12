@@ -3,15 +3,19 @@
 // @File    NkContentBrowserModel.h
 // @Brief   LA DEMONSTRATION du devis : le navigateur de contenu, ecrit sous la
 //          forme proposee — modele neutre + jetons + variantes + greffes.
-// @Author  Rihen
+// @Author  TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // @License Proprietary - All Rights Reserved (see LICENSE)
 //
-// ⚠️ ETAT : DEMONSTRATION DU DEVIS D'ARCHITECTURE (2026-08-18). Inclus par AUCUNE
-//    application, dans AUCUNE cible de build. Il montre a quoi ressemble un
-//    composant conforme ; il ne remplace rien aujourd'hui. Les trois navigateurs
-//    existants (`NK3DModeler/Shell/NkModelerBrowser.h` 1 213 l.,
-//    `Nogee/Panels/ContentBrowserPanel.cpp` 309 l., `Nogee/Panels/AssetBrowser.cpp`
-//    178 l. en NKUI) restent intacts.
+// ⚠️ ETAT (2026-08-30) : DEUX CONSOMMATEURS REELS — NkUIDesign (document de
+//    demonstration + sonde) et NK3DModeler (via `NkModelerComponentPaint.h`,
+//    derriere `NK_KIT_BROWSER=1`). La note d'origine « inclus par aucune
+//    application » est PERIMEE depuis le 29/08. Directive de Rodolf du 30/08 :
+//    la variante par defaut est LE MIXTE Unreal + Aetherion ; la bascule par
+//    defaut chez les applications reste SUSPENDUE tant que la parite avec le
+//    navigateur historique de NK3DModeler n'est pas atteinte ET validee sur
+//    capture. Les navigateurs existants (`NK3DModeler/Shell/NkModelerBrowser.h`,
+//    `Nogee/Panels/ContentBrowserPanel.cpp`, `Nogee/Panels/AssetBrowser.cpp`)
+//    restent intacts.
 //
 // POURQUOI CELUI-LA D'ABORD
 //   C'est le composant deja ecrit TROIS fois, et celui dont la maquette est la
@@ -38,6 +42,17 @@
 //    rejouer aurait laisse l'affirmation « ce fichier compile sans NKGui »
 //    debout sans que rien ne la soutienne plus.
 #include "NKEditorKit/Components/NkComponentPaint.h"
+#include "NKEditorKit/Components/NkSilhouettes.h" // ② les icones partagees grille/rail
+// ⚠️ LA COLONNE DE DOSSIERS EST LE COMPOSANT `tree_view`, PAS UNE COPIE. La
+//    declaration le disait deja (`folder_tree` porte `component = "tree_view"`) ;
+//    depuis le mixte du 2026-08-30 (directive de Rodolf : « un mixte entre
+//    Unreal et Aetherion »), le dessin le fait vraiment : le modele embarque un
+//    `NkTreeViewModel` et le dessin appelle `NkDrawTreeView`. Ecrire ici un
+//    second arbre de dossiers aurait ete la quatrieme copie -- exactement ce que
+//    la porte « la couche du dessous d'abord » interdit. Cet include reste
+//    neutre : `NkTreeViewModel.h` ne fait pas entrer NKGui (meme classe de
+//    neutralite que ce fichier, banc de `ROADMAP.md` §5).
+#include "NKEditorKit/Components/NkTreeViewModel.h"
 
 namespace nkentseu {
 	namespace editorkit {
@@ -74,7 +89,51 @@ namespace nkentseu {
 				uint16 kindRole = 0;
 				const char *kindLabel = ""; ///< libelle affiche dans le pied de carte
 				uint32 userTag = 0;			///< libre a l'application (index, drapeaux)
+
+				// ②③ (2026-09-05, nuit) LA NATURE VISUELLE DE L'ENTREE -- ce qu'on DESSINE
+				// quand il n'y a pas de vignette. C'est une notion du DESSIN, pas du domaine :
+				// elle ne remplace pas `kindRole`/`kindLabel`, qui restent la nature METIER de
+				// l'application (« procedural », « dataset », « font »...).
+				// ⚠️ AJOUTE A LA FIN, et `Auto` vaut 0 : les consommateurs existants gardent
+				//    exactement le rendu d'avant (dossier ou fichier, selon `isFolder`).
+				uint8 icone = 0; ///< voir NkAssetIcone
+
+				// ⑤ (2026-09-05, nuit) DE QUOI TRIER PAR DATE ET PAR TAILLE. Le systeme de
+				// fichiers les donne deja (`NkDirectoryEntry::Size` / `ModificationTime`) :
+				// c'est l'entree qui ne les portait pas. Zero = inconnu, et un inconnu se
+				// range apres -- pas devant, ou il ferait croire au plus petit ou au plus vieux.
+				nk_int64 taille = 0;  ///< octets ; 0 pour un dossier
+				nk_int64 dateModif = 0; ///< epoch
+
+				/// ÉTAT DE REMPLISSAGE d'un dossier (`NkContenuDossier`), 0 = pas encore
+				/// demandé au disque. Additif, neutre par défaut : un hôte qui ne le
+				/// renseigne pas garde exactement le dessin d'avant.
+				uint8 contenu = 0;
 		};
+
+		// ⚠️ `NkAssetIcone` ET `NkDessinerSilhouette` ONT DEMENAGE (05/09, nuit) dans
+		//    `NkSilhouettes.h` : le RAIL d'un selecteur (un `tree_view`) doit les
+		//    appeler, et l'y laisser aurait fait dependre le dessin d'un composant du
+		//    MODELE d'un autre composant de meme rang. L'include ci-dessus les
+		//    ramene ici : rien ne change pour les consommateurs de ce fichier.
+
+
+		// ── UNE NATURE D'ASSET, DECLAREE PAR L'APPLICATION ──────────────────────
+		// Les puces de filtre du mixte (Aetherion : « Mesh / Material / Texture /
+		// Blueprint / Sound », combinables). ⚠️ LA LISTE NE VIT PAS DANS LE KIT,
+		// et c'est la meme decision que `kindRole` : NkUIDesign n'a pas les memes
+		// natures que NK3DModeler (« procedural », « dataset »), et PV3DE aura les
+		// siennes. L'application DECLARE ses natures dans le modele ; le composant
+		// les peint et les combine sans savoir ce qu'elles sont.
+		struct NkBrowserKind {
+				NkString label; ///< texte de la puce et du badge de carte
+				uint16 role = 0; ///< role de theme resolu — la couleur de la nature
+				/// Puce enfoncee = le filtre est RESTREINT a cette nature (elles se
+				/// combinent en OU). Aucune puce enfoncee = tout passe. Les
+				/// dossiers passent toujours : les puces filtrent des fichiers.
+				bool active = false;
+		};
+
 
 		// ── LE MODELE ───────────────────────────────────────────────────────────
 		// L'application le remplit ; le composant le lit et y ecrit la selection et
@@ -101,6 +160,59 @@ namespace nkentseu {
 				float32 scroll = 0.f;
 				float32 thumbSize = 0.f; ///< 0 = prendre le defaut de la declaration
 
+				// ═══ CHAMPS DU MIXTE (2026-08-30) — AJOUTES A LA FIN, regle des ═══
+				// ═══ initialisations positionnelles (NkComponentDecl.h).        ═══
+
+				/// Les natures d'asset de l'application — les puces de filtre et la
+				/// couleur des badges. Vide = pas de rangee de puces.
+				NkVector<NkBrowserKind> kinds;
+
+				/// L'arborescence de dossiers de la colonne gauche. C'est un modele
+				/// de `tree_view` : le composant du kit la dessine (voir l'include en
+				/// tete). L'application la remplit comme n'importe quel arbre ;
+				/// « Favoris » et « Recents » (Unreal) sont des RACINES de cet arbre,
+				/// portees par la donnee — aucun code dedie dans le kit.
+				NkTreeViewModel folders;
+
+				/// La boite de recherche a le focus : le composant le POSE au clic ;
+				/// l'HOTE, qui a le clavier, ecrit alors dans `filter`. Meme
+				/// contournement assume que `renameBuf` du tree_view — l'entree
+				/// clavier manque a `NkComponentInput`, et c'est deja au canal.
+				bool searchFocused = false;
+
+				/// La colonne de dossiers est REPLIEE (Aetherion : arbre repliable).
+				/// Etat de l'utilisateur, pas de l'application — d'ou le modele.
+				bool treeCollapsed = false;
+
+				/// Bascule grille/liste posee PAR L'UTILISATEUR (boutons de la barre
+				/// de filtres). -1 = suivre la variante du style ; 0 = grille ;
+				/// 1 = liste. Meme ordre de priorite que `thumbSize` : le geste de
+				/// l'utilisateur prime, sinon il serait ecrase a chaque image.
+				int8 viewMode = -1;
+
+				/// Tri par nom : croissant (vrai) ou decroissant. Les dossiers
+				/// passent toujours d'abord — la regle du navigateur historique.
+				bool sortAsc = true;
+
+				/// ⑤ (2026-09-05) LA CLE DE TRI. Ajoutee A LA FIN, et `Nom` vaut 0 : les
+				/// consommateurs existants trient exactement comme avant.
+				/// Les DOSSIERS passent toujours d'abord, quelle que soit la cle -- c'est la
+				/// regle du navigateur historique, et elle ne se discute pas par cle.
+				uint8 sortCle = 0; ///< voir NkBrowserTri
+
+				/// Texte de droite de la barre d'etat (« Sauvegarde », etc.) —
+				/// fourni par l'application, vide = rien.
+				NkString statusRight;
+
+				/// ② (2026-09-05) LE TITRE DE LA BANDE DE TETE. Vide = « Contenu », le
+				/// libelle historique — aucun consommateur existant ne bouge. Ajoute
+				/// parce que le meme composant sert desormais de VOLET DROIT a un
+				/// selecteur de fichiers (`NkFilePickerNav.h`), ou « Contenu » serait
+				/// faux : ce qu'on y voit est un DOSSIER, pas la bibliotheque d'assets.
+				/// ⚠️ Un titre est une DONNEE de l'application, pas une variante : deux
+				///    rendus identiques a un mot pres ne justifient pas deux dessins.
+				NkString headerTitle;
+
 				bool IsChosen(int32 i) const {
 					for (uint32 k = 0; k < (uint32)chosen.Size(); ++k)
 						if (chosen[k] == i)
@@ -113,6 +225,10 @@ namespace nkentseu {
 				}
 		};
 
+		// ── ⑤ LES CLES DE TRI (2026-09-05, nuit) ───────────────────────────
+		// Regle append-only : ces valeurs finissent dans des fichiers.
+		enum class NkBrowserTri : uint8 { Nom = 0, Date, Taille, Type, Count };
+
 		// ── LES VARIANTES ───────────────────────────────────────────────────────
 		// Directive de Rodolf du 2026-08-18. UN modele, N rendus. L'index
 		// correspond a `NkContentBrowserDecl().variants`.
@@ -123,9 +239,15 @@ namespace nkentseu {
 		//    d'un champ a elle dans le modele, c'est le signe qu'elle n'est pas une
 		//    variante mais un second composant — et il faut le dire, pas l'ajouter.
 		enum class NkBrowserVariant : uint8 {
-			Grid = 0,	///< grille de cartes a vignette (la planche du 18/08)
+			Grid = 0,	///< LE DEFAUT : le MIXTE Unreal + Aetherion (Rodolf, 2026-08-30)
 			DenseList,	///< liste d'une ligne par entree, vignette 16 px
 			Columns,	///< colonnes triables (nom / type / taille / date)
+			/// L'ANCIEN rendu nu (en-tete + fil d'Ariane + grille, sans puces ni
+			/// barre d'etat ni vrai arbre). Il reste une VARIANTE, pas un mort :
+			/// « plusieurs composants, l'application choisit — comme
+			/// Bootstrap/React » (Rodolf, 2026-08-30). Ajoute EN FIN d'enumeration,
+			/// regle append-only : ces valeurs finissent dans des fichiers.
+			Minimal,
 			Count
 		};
 
@@ -150,6 +272,11 @@ namespace nkentseu {
 				uint16 activeMark = 0, chosenMark = 0;
 				uint16 folderTint = 0;
 
+				// Jetons du MIXTE (2026-08-30), ajoutes A LA FIN du bloc de roles :
+				uint16 chipBg = 0;	  ///< fond d'une puce de filtre au repos
+				uint16 badgeText = 0; ///< texte d'un badge de type (fond = role de la nature)
+				uint16 statusBg = 0;  ///< fond de la barre d'etat basse
+
 				// ── LA SOURCE DES NOMBRES ───────────────────────────────────────
 				// ⚠️ CE CHAMP A REMPLACE TROIS CHAMPS DU DEVIS, et le dire est plus
 				//    instructif que le champ lui-meme. Le devis portait ici
@@ -167,6 +294,13 @@ namespace nkentseu {
 				// chose que la mesure du 18/08 designe comme decisive pour
 				// l'adoption d'une brique partagee.
 				const NkComponentInstance *values = nullptr;
+
+				/// Les poignees d'icones du tree_view EMBARQUE (chevrons de la
+				/// colonne de dossiers du mixte). OPAQUES, choisies par l'hote —
+				/// meme exigence B que partout : le kit ne connait l'enumeration
+				/// d'icones d'aucune application. A zero, l'arbre dessine sans
+				/// chevron visible, comme tout tree_view sans icones.
+				NkTreeViewIcons treeIcons;
 		};
 
 		/// Lecture d'une metrique du navigateur, avec sa source unique. Le dessin
@@ -207,6 +341,12 @@ namespace nkentseu {
 				// Filtre PROPRE a l'application, en plus du filtre texte du modele.
 				bool (*acceptEntry)(void *user, const NkAssetEntry &e) = nullptr;
 
+				// Le COMPLEMENT de la barre d'etat pour l'entree active (« 24 Ko ·
+				// Modifie il y a 2j » — Aetherion). Le composant affiche deja nom et
+				// nature ; la taille et la date sont des connaissances de
+				// l'application, pas du modele. `nullptr` ou texte vide = rien.
+				const char *(*statusText)(void *user, int32 index) = nullptr;
+
 				// ── LES ECOUTEURS D'EVENEMENTS ──────────────────────────────────
 				// ⚠️ CES CINQ-LA NE SONT PAS DES POINTS DE GREFFE, et le devis les
 				//    rangeait a tort avec les precedents. Un point de greffe ajoute
@@ -231,6 +371,14 @@ namespace nkentseu {
 				void (*onContextMenu)(void *user, int32 index, float32 x, float32 y) = nullptr;
 				void (*onDrop)(void *user, int32 folderIndex, const char *payloadType) = nullptr;
 				void (*onNavigate)(void *user, const char *path) = nullptr;
+
+				// Les TROIS boutons de tete du mixte (Unreal : Add / Import /
+				// Save All ; l'historique avait Creer / Importer). Le composant
+				// SIGNALE, il n'agit pas — creer quoi, importer d'ou, enregistrer ou
+				// sont des decisions d'application. Charge vide : le fait suffit.
+				void (*onCreate)(void *user) = nullptr;
+				void (*onImport)(void *user) = nullptr;
+				void (*onSaveAll)(void *user) = nullptr;
 		};
 
 		// ── CE QUE LE DESSIN REND ───────────────────────────────────────────────
@@ -239,6 +387,30 @@ namespace nkentseu {
 				bool selectionChanged = false;
 				bool navigated = false;	 ///< le fil d'Ariane ou un dossier a ete suivi
 				int32 activatedIndex = -1;
+				/// ② (2026-09-05) L'INDEX de la miette du fil d'Ariane qui a ete cliquee,
+				/// -1 si la navigation vient de l'arbre (dont la charge est un chemin
+				/// complet, donc non ambigu). Ajoute A LA FIN : `onNavigate` ne portait
+				/// que le LIBELLE de la miette, et deux segments homonymes le rendaient
+				/// indechiffrable.
+				int32 navigatedCrumb = -1;
+
+				/// ① (2026-09-05, v5) L'INFOBULLE DU RAIL, RELAYEE TELLE QUELLE.
+				/// Le navigateur ne la peint pas davantage que l'arbre : il la fait
+				/// passer a l'hote, qui seul sait ou est le bord de la fenetre et
+				/// quelle couche est au-dessus. `infobulleX` est le bord DROIT du rail
+				/// — l'hote y adosse le cartouche pour qu'il ne recouvre AUCUNE entree.
+				NkString infobulle;
+				float32 infobulleX = 0.f;
+				float32 infobulleY = 0.f;
+				float32 infobulleH = 0.f;
+
+				/// LA PLAGE D'ENTREES REELLEMENT A L'ECRAN (bornes incluses), -1 si aucune.
+				/// Le composant est le seul a la connaitre -- il tient le defilement, la
+				/// taille des cellules et le nombre de colonnes. L'hote s'en sert pour ne
+				/// payer un acces disque (« ce dossier est-il vide ? ») QUE sur ce qui se
+				/// voit : sur un dossier de 124 entrees, c'est une quinzaine au lieu de 124.
+				int32 premierVisible = -1;
+				int32 dernierVisible = -1;
 		};
 
 		// ── LA SIGNATURE TYPE ───────────────────────────────────────────────────
@@ -279,9 +451,13 @@ namespace nkentseu {
 		//    dessin conforme ecrit `decl.Metric("card_gap")`, jamais `12.f`.
 		inline const NkComponentDecl &NkContentBrowserDecl() {
 			static const NkVariantDecl kVariants[] = {
-				{"grid", "Grille", "cartes a vignette — la planche du 18/08"},
+				{"grid", "Grille", "LE DÉFAUT : le mixte Unreal + Aetherion — fil d'Ariane, "
+								   "recherche, puces de filtre, arbre de dossiers, tri, compteur, "
+								   "barre d'état (Rodolf, 2026-08-30)"},
 				{"dense_list", "Liste dense", "une ligne par entree, vignette 16 px"},
 				{"columns", "Colonnes", "colonnes triables : nom, type, taille, date"},
+				{"minimal", "Minimale", "l'ancien rendu nu : en-tête, fil d'Ariane, grille de "
+										"cartes — gardée comme variante, l'application choisit"},
 			};
 			static const NkParamDecl kParams[] = {
 				{"thumb_size", "Taille des vignettes", NkParamKind::Float, 96.f, 48.f, 256.f, nullptr, 0},
@@ -290,6 +466,28 @@ namespace nkentseu {
 				 0},
 				{"tree_width", "Largeur de l'arbre (fraction)", NkParamKind::Float, 0.18f, 0.10f, 0.45f,
 				 nullptr, 0},
+				// Le mixte, debrayable par declaration — une application qui ne veut
+				// ni puces ni barre d'etat les eteint SANS changer de variante.
+				{"show_filters", "Rangée des puces de filtre", NkParamKind::Bool, 1.f, 0.f, 0.f, nullptr,
+				 0},
+				{"show_status", "Barre d'état basse", NkParamKind::Bool, 1.f, 0.f, 0.f, nullptr, 0},
+				// ② (2026-09-05) DEUX INTERRUPTEURS DE PLUS, ajoutes A LA FIN. Ils
+				// valent 1 par defaut : le rendu d'aujourd'hui ne bouge pas d'un pixel
+				// pour les consommateurs existants (NkUIDesign, NK3DModeler), et la
+				// sonde le verifie plutot que de l'affirmer.
+				{"show_header", "Bande de tête (titre du panneau)", NkParamKind::Bool, 1.f, 0.f, 0.f,
+				 nullptr, 0},
+				{"show_actions", "Boutons Créer / Importer / Tout enregistrer", NkParamKind::Bool, 1.f,
+				 0.f, 0.f, nullptr, 0},
+				// ④ (05/09, soir) « Tout selectionner » n'a aucun sens quand un SEUL objet
+				// peut etre choisi -- un dialogue « choisir un dossier », par exemple. Defaut 1 :
+				// le navigateur d'assets ne bouge pas.
+				{"show_select_all", "Bouton « Tout sélectionner »", NkParamKind::Bool, 1.f, 0.f, 0.f,
+				 nullptr, 0},
+				// ⑤ (05/09, nuit) L'hote qui offre SON combo de tri (le selecteur de
+				// fichiers) eteint celui-ci : deux commandes pour un reglage, c'est une
+				// de trop. Defaut 1 : le navigateur d'assets garde la sienne.
+				{"show_sort", "Bouton « Trier par »", NkParamKind::Bool, 1.f, 0.f, 0.f, nullptr, 0},
 			};
 			static const NkTokenDecl kTokens[] = {
 				{"panel_bg", "PanelBg", "fond du panneau"},
@@ -303,6 +501,11 @@ namespace nkentseu {
 				{"active_mark", "AccentUi", "la carte ACTIVE (ecart n.3 : la planche veut un contour)"},
 				{"chosen_mark", "AccentUi", "les cartes CHOISIES — doit rester DISTINCT de active_mark"},
 				{"folder_tint", "TypeFolder", "teinte de l'icone de dossier"},
+				{"chip_bg", "InputBg", "fond d'une puce de filtre au repos — enfoncée, la puce "
+									   "prend le rôle de sa nature en contour"},
+				{"badge_text", "PanelBg", "texte du badge de type sur la carte (le fond du badge "
+										  "est le role de la nature, sombre sur clair)"},
+				{"status_bg", "PanelHeader", "fond de la barre d'état basse"},
 			};
 			static const NkMetricDecl kMetrics[] = {
 				{"card_gap", 12.f, "gouttiere entre deux cartes"},
@@ -310,8 +513,15 @@ namespace nkentseu {
 				{"footer_h", 34.f, "hauteur du pied de carte (2 lignes)"},
 				{"row_h", 24.f, "hauteur d'une ligne en variante dense_list / columns"},
 				{"stroke_w", 1.f, "epaisseur d'un contour de selection"},
-				{"toolbar_h", 36.f, "bande d'outils Creer / Importer"},
+				{"toolbar_h", 36.f, "bande d'outils Créer / Importer / Tout enregistrer + fil "
+									"d'Ariane + recherche"},
 				{"header_h", 28.f, "bande d'onglets de panneau"},
+				{"filter_h", 30.f, "rangée des puces de filtre + curseur + bascule grille/liste"},
+				{"info_h", 24.f, "rangée compteur / Tout sélectionner / Trier par"},
+				{"status_h", 26.f, "barre d'état basse (sélection, état de sauvegarde)"},
+				{"search_w", 180.f, "largeur de la boîte de recherche"},
+				{"slider_w", 90.f, "largeur du curseur de taille de vignettes"},
+				{"badge_h", 16.f, "hauteur du badge de type posé sur la vignette"},
 			};
 			// ⚠️ TROIS ENTREES ONT QUITTE CETTE TABLE le 18/08 (seconde passe) :
 			//    `on_activate`, `on_context_menu`, `on_drop_into` sont des
@@ -322,6 +532,9 @@ namespace nkentseu {
 				 "dessin ajoute par l'application par-dessus une carte"},
 				{"extra_column", "(user, index, col) -> texte", "colonne supplementaire (cf. props §4.3)"},
 				{"accept_entry", "(user, entree) -> bool", "filtre propre a l'application"},
+				{"status_text", "(user, index) -> texte",
+				 "complément de barre d'état pour l'entrée active (taille, date) — des "
+				 "connaissances d'application, pas de modèle"},
 			};
 
 			// ── LES EVENEMENTS ──────────────────────────────────────────────────
@@ -365,6 +578,14 @@ namespace nkentseu {
 				 false},
 				{"onNavigate", "Navigation", "le fil d'Ariane ou l'arbre a change de dossier courant",
 				 kArgsNav, 1, false},
+				// Les trois boutons de tete (Unreal : Add / Import / Save All).
+				// Charge VIDE et c'est un choix : creer QUOI, importer D'OU sont des
+				// decisions d'application — une charge inventee ici serait fausse
+				// pour trois applications sur quatre.
+				{"onCreate", "Creer", "le bouton Créer est pressé", nullptr, 0, false},
+				{"onImport", "Importer", "le bouton Importer est pressé", nullptr, 0, false},
+				{"onSaveAll", "Tout enregistrer", "le bouton Tout enregistrer est pressé", nullptr, 0,
+				 false},
 			};
 			// ── L'ARBRE DE SOUS-ELEMENTS ────────────────────────────────────────
 			// AJOUT 2 DE RODOLF (2026-08-18, soir), pose ici sur le composant deja
@@ -396,15 +617,32 @@ namespace nkentseu {
 				 NkExpand(), NkFixedM("header_h"),
 				 {}, 0},
 
-				{"toolbar", "browser", "bande d'outils Creer / Importer / recherche", "container", "",
+				{"toolbar", "browser", "bande d'outils Créer / Importer / Tout enregistrer, fil "
+									   "d'Ariane, recherche", "container", "",
 				 NkExpand(), NkFixedM("toolbar_h"),
 				 {NkLayoutKind::Row, "card_pad", "", NkAlign::Start, NkAlign::Stretch, 0, ""}, 0},
 				{"btn_create", "toolbar", "creer un asset", "button", "",
 				 NkContent(72.f), NkExpand(), {}, 0},
 				{"btn_import", "toolbar", "importer un fichier", "button", "",
 				 NkContent(72.f), NkExpand(), {}, 0},
-				{"search", "toolbar", "filtre texte", "text_field", "",
+				{"btn_save_all", "toolbar", "tout enregistrer (Unreal : Save All)", "button", "",
+				 NkContent(72.f), NkExpand(), {}, 0},
+				{"crumbs", "toolbar", "fil d'Ariane cliquable — racine vers dossier courant", "", "",
 				 NkExpand(120.f), NkExpand(), {}, 0},
+				{"search", "toolbar", "filtre texte", "text_field", "",
+				 NkFixedM("search_w"), NkExpand(), {}, 0},
+
+				// Les DEUX rangees du mixte (2026-08-30), entre la barre d'outils et
+				// le corps — ajoutees ici parce qu'un parent precede ses enfants et
+				// que l'ordre de la table est l'ordre de l'arbre.
+				{"filters", "browser", "puces de filtre par nature + curseur de taille + bascule "
+									   "grille/liste", "container", "",
+				 NkExpand(), NkFixedM("filter_h"),
+				 {NkLayoutKind::Row, "card_pad", "", NkAlign::Start, NkAlign::Stretch, 0, ""}, 0},
+				{"info", "browser", "compteur d'éléments, Tout sélectionner, Trier par", "container",
+				 "",
+				 NkExpand(), NkFixedM("info_h"),
+				 {NkLayoutKind::Row, "card_pad", "", NkAlign::Start, NkAlign::Stretch, 0, ""}, 0},
 
 				{"body", "browser", "l'arbre de dossiers et la vue d'assets", "container", "",
 				 NkExpand(), NkExpand(),
@@ -426,6 +664,12 @@ namespace nkentseu {
 				 {NkLayoutKind::Grid, "card_gap", "", NkAlign::Start, NkAlign::Stretch, 0,
 				  "thumb_size"},
 				 0},
+
+				// La barre d'etat basse (Aetherion : « BP_HeroController | Blueprint
+				// Class · 24 Ko · Modifie il y a 2j ... Sauvegarde »).
+				{"status", "browser", "barre d'état : entrée active à gauche, état d'application à "
+									  "droite", "", "",
+				 NkExpand(), NkFixedM("status_h"), {}, 0},
 			};
 
 			static const NkComponentDecl kDecl = {
