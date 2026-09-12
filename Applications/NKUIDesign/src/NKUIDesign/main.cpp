@@ -7802,6 +7802,12 @@ static void DrawMenuBar(NkEditorFrameContext &ec, void *) {
 static nkentseu::editorkit::NkModal gLauncherModal;
 
 static void DrawProjectTabs(NkEditorFrameContext &ec, void *) {
+	// ── LA PIPETTE PREND SON CLIC ICI, ET C'EST MESURE ────────────────────
+	// Ce crochet de barre d'outils est dessine AVANT le dock (`DrawToolbar`
+	// precede `DrawPanels` dans la coquille) : c'est le seul endroit de
+	// l'application ou l'on voit le clic avant que la toile ne le recoive.
+	// Sans ca, prelever une couleur deselectionnerait au passage.
+	nkuidesign::NkPipettePrendLeClic(ec.Ui(), gDesign);
 	auto &ctx = ec.Ui();
 	using namespace nkentseu::nkgui;
 	// ⚠️ LES ONGLETS SONT LES DOCUMENTS OUVERTS (5e retour de Rodolf, 01/09) :
@@ -8518,6 +8524,10 @@ int nkmain(const NkEntryState &state) {
 			const NkString argT(a);
 			if (argT.StartsWith("--temoin-rendu="))
 				return nkuidesign::NkTemoinRendu(argT.SubStr(15).Data());
+			// --flux=<doc>[,<sortie>] : le flux de la toile d'UN document charge --
+			// l'avant / apres entre deux binaires, sans fenetre ni GPU (11/09).
+			if (argT.StartsWith("--flux="))
+				return nkuidesign::NkFluxDocument(argT.SubStr(7).Data());
 			// --capture=<fichier.png> : PAS un retour immédiat, contrairement à
 			// toutes les recettes — ce mode a BESOIN de la fenêtre et du GPU.
 			// On note le chemin ; la boucle normale démarre, CaptureTick arme le

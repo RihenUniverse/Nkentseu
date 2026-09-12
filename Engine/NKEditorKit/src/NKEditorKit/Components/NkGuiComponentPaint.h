@@ -58,6 +58,133 @@
 #include "NKMath/NkEarcut.h" // le triangulateur, descendu de NKFont le 2026-09-01
 
 namespace nkentseu {
+
+	namespace editorkit {
+
+		/// LE TEXTE PROJETE, GLYPHE PAR GLYPHE (palier B, 11/09).
+		///
+		/// 🔑 Rodolf voyait un cadre qui converge et un texte qui ne converge pas. La
+		///    cause etait nommee au palier A : `AddTextTransforme` (NKGui) ne prend que
+		///    SIX coefficients, donc le texte recevait la TANGENTE affine -- bonne
+		///    place, bonne pente, pas de fuite.
+		///
+		/// ⚠️ ON NE TOUCHE PAS AU NOYAU, et ce n'est pas une precaution : le quad et les
+		///    UV de chaque glyphe sont DEJA publics (`NkFont::FindGlyph`), et
+		///    `AddImagePolygon` accepte des sommets libres avec un UV par sommet. On
+		///    projette donc les QUATRE COINS de chaque glyphe et on les emet nous-memes.
+		///
+		/// ⚠️ LE MEME CHEMIN DE SOMMETS QUE LE TEXTE, verifie en lisant les deux
+		///    emetteurs de `NkGuiDrawList` : `AddTextTransforme` fait
+		///    `Vtx(pos, {u,v}, couleur)` puis deux triangles (i0,i1,i2) et (i0,i2,i3) ;
+		///    `AddImagePolygon` fait exactement les memes appels dans le meme ordre, avec
+		///    la meme teinte empaquetee. **L'echantillonnage de l'atlas et la couleur ne
+		///    changent donc pas** -- ce n'est pas une seconde route, c'est la meme.
+		///
+		/// ⚠️ CE QUI RESTE AFFINE, ET C'EST DIT : l'INTERIEUR de chaque glyphe. Un quad
+		///    texture s'interpole lineairement entre ses quatre sommets ; a l'echelle
+		///    d'un glyphe, la difference avec une vraie division par w est tres en
+		///    dessous du pixel -- c'est la meme limite que l'interieur d'une image
+		///    inclinee, ecrite depuis le 09/09.
+		///
+		/// `echelle` : le facteur du glyphe (1 pour l'atlas a sa taille, autre chose
+		/// quand l'application choisit un palier d'atlas et ajuste). `skew` : l'italique
+		/// factice, comme dans NKGui. Rend le nombre de glyphes emis.
+		inline uint32 NkTexteProjete(nkgui::NkGuiDrawList &dl, const NkFont *face, uint32 texId,
+									 const nkgui::NkVec2 &baseline, const char *texte,
+									 const nkgui::NkColor &col, const NkPaintTransform &m,
+									 float32 echelle = 1.f, float32 skew = 0.f) {
+			if (!face || !texte || !*texte || texId == 0u || echelle <= 0.f)
+				return 0u;
+			const char *p = texte;
+			const char *fin = texte;
+			while (*fin)
+				++fin;
+			float32 x = baseline.x;
+			const float32 y = baseline.y;
+			uint32 poses = 0u;
+			auto P = [&](float32 px, float32 py) -> nkgui::NkVec2 {
+				float32 w = m.g * px + m.h * py + 1.f;
+				if (w < NkPaintWMin())
+					w = NkPaintWMin();
+				return nkgui::NkVec2{(m.a * px + m.c * py + m.e) / w,
+									 (m.b * px + m.d * py + m.f) / w};
+			};
+			// LE CALAGE AU PIXEL SE FAIT DANS LE REPERE DU NŒUD, AVANT LA PROJECTION, et
+			// seulement a l'echelle 1 -- c'est exactement la regle de NKGui
+			// (`AddTextTransforme` cale, `AddTextScaled` ne cale pas : arrondir des
+			// positions mises a l'echelle ferait respirer l'interlettrage). Sans lui, ce
+			// chemin et celui d'avant placeraient les memes glyphes a un demi-pixel l'un
+			// de l'autre -- mesure au premier essai du temoin : 0,57 px d'ecart.
+			auto cale = [&](float32 v) -> float32 {
+				if (echelle < 0.999f || echelle > 1.001f)
+					return v;
+				return (float32)(int32)(v < 0.f ? v - 0.5f : v + 0.5f);
+			};
+			while (p < fin) {
+				const NkFontCodepoint cp = NkFontDecodeUTF8(&p, fin);
+				if (cp == 0u)
+					break;
+				const NkFontGlyph *gl = face->FindGlyph(cp);
+				if (!gl)
+					continue;
+				if (gl->visible) {
+					const float32 x0 = cale(x + gl->x0 * echelle), y0 = cale(y + gl->y0 * echelle);
+					const float32 x1 = x0 + (gl->x1 - gl->x0) * echelle;
+					const float32 y1 = y0 + (gl->y1 - gl->y0) * echelle;
+					const float32 sTop = skew != 0.f ? skew * (y - y0) : 0.f;
+					const float32 sBot = skew != 0.f ? skew * (y - y1) : 0.f;
+					const nkgui::NkVec2 pts[4] = {P(x0 + sTop, y0), P(x1 + sTop, y0), P(x1 + sBot, y1),
+												  P(x0 + sBot, y1)};
+					const nkgui::NkVec2 uvs[4] = {{gl->u0, gl->v0}, {gl->u1, gl->v0}, {gl->u1, gl->v1},
+												  {gl->u0, gl->v1}};
+					dl.AddImagePolygon(texId, pts, uvs, 4, col);
+					++poses;
+				}
+				x += gl->advanceX * echelle; // l'avance vaut aussi pour les espaces
+			}
+			return poses;
+		}
+
+		/// LA PORTE DU TEXTE SOUS TRANSFORMEE -- **une seule decision, pour les trois
+		/// peintres** (le kit, l'ecran, l'export).
+		///
+		/// 🔴 ELLE EXISTE PARCE QU'UNE MUTATION EST RESTEE VERTE : le temoin du palier B
+		///    (cas 155) exerce le peintre d'EXPORT ; avec la meme condition ecrite dans
+		///    TROIS peintres, deux d'entre elles n'etaient prouvees par rien -- casser le
+		///    branchement de l'ecran ne faisait rougir personne. *Trois copies d'une
+		///    decision, ce sont deux copies que le temoin ne traverse pas.*
+		///
+		/// Affine -> le chemin d'avant (`AddTextTransforme`). Perspective -> chaque glyphe
+		/// par ses quatre coins.
+		inline void NkTexteTransforme(nkgui::NkGuiDrawList &dl, const NkFont *face, uint32 texId,
+									  const nkgui::NkVec2 &baseline, const char *texte,
+									  const nkgui::NkColor &col, const NkPaintTransform &m,
+									  float32 echelle = 1.f, float32 skew = 0.f) {
+			if (!m.Affine()) {
+				NkTexteProjete(dl, face, texId, baseline, texte, col, m, echelle, skew);
+				return;
+			}
+			if (echelle > 0.999f && echelle < 1.001f) {
+				// ⚠️ LA MATRICE TELLE QUELLE : la recomposer ferait un aller-retour en
+				//    flottant et deplacerait le texte d'un ulp -- le chemin d'avant, intact.
+				dl.AddTextTransforme(face, texId, baseline, texte, col, m.a, m.b, m.c, m.d, m.e, m.f,
+									 -1.f, skew);
+				return;
+			}
+			// l'echelle des glyphes se compose SOUS la matrice, autour de la ligne de base :
+			// p -> M(o) + echelle * L(p - o), exactement ce que les deux peintres de
+			// l'application ecrivaient chacun de leur cote.
+			const float32 ta = m.a * echelle, tb = m.b * echelle;
+			const float32 tc = m.c * echelle, td = m.d * echelle;
+			const float32 mx = m.a * baseline.x + m.c * baseline.y + m.e;
+			const float32 my = m.b * baseline.x + m.d * baseline.y + m.f;
+			dl.AddTextTransforme(face, texId, baseline, texte, col, ta, tb, tc, td,
+								 mx - (ta * baseline.x + tc * baseline.y),
+								 my - (tb * baseline.x + td * baseline.y), -1.f, skew);
+		}
+
+	} // namespace editorkit
+
 	namespace editorkit {
 
 		class NkGuiComponentPaint : public NkComponentPaint {
@@ -205,10 +332,9 @@ namespace nkentseu {
 				bool PolygonHexBrut(const float32 *xy, int32 count, uint32 rgba) {
 					if (!xy || count < 3)
 						return false;
-					const nkgui::NkColor col = {(uint8)((rgba >> 24) & 0xFFu),
-												(uint8)((rgba >> 16) & 0xFFu),
-												(uint8)((rgba >> 8) & 0xFFu),
-												(uint8)(rgba & 0xFFu)};
+					// ⚠️ CE CALCUL ETAIT RECOPIE ICI (12/09) : un second point de couleur,
+					//    donc une teinte qui aurait saute les degrades et les traces edites.
+					const nkgui::NkColor col = Unpack(rgba);
 					enum { kMaxPts = 128 };
 					if (count <= (int32)kMaxPts) {
 						math::NkVec2f pts[kMaxPts];
@@ -310,7 +436,11 @@ namespace nkentseu {
 						t[i] = {uv[i * 2], uv[i * 2 + 1]};
 					}
 					const float32 k = opacite < 0.f ? 0.f : (opacite > 100.f ? 1.f : opacite * 0.01f);
-					mCtx.DL().AddImagePolygon(image, p, t, count, nkgui::NkColor{255, 255, 255, (uint8)(255.f * k + 0.5f)});
+					// ⚠️ LE BLANC EST LE MULTIPLICATEUR de l'image : c'est exactement la que la
+					//    teinte d'un etat doit agir. Sans ce site, une image resterait seule
+					//    non teintee -- l'exception qu'on refuse (Unity teinte le sprite).
+					mCtx.DL().AddImagePolygon(image, p, t, count,
+												  Unpack(0xFFFFFF00u | ((uint32)(255.f * k + 0.5f) & 0xFFu)));
 					return true;
 				}
 				void PushBlend(NkPaintBlend b) override {
@@ -328,18 +458,54 @@ namespace nkentseu {
 					return m.Identite() ? nullptr : &m;
 				}
 				static nkgui::NkVec2 T(const NkPaintTransform &m, float32 x, float32 y) noexcept {
-					return {m.a * x + m.c * y + m.e, m.b * x + m.d * y + m.f};
+					// ⚠️ LA DIVISION PAR `w` EST ICI, ET NULLE PART AILLEURS (11/09) : les
+					//    coins d'un rect, les 48 points d'une ellipse, les sommets d'un
+					//    trace, les extremites d'une ligne et l'englobant d'une decoupe
+					//    passent tous par cette fonction. *Une seule porte a diviser.*
+					if (!m.Affine()) {
+						float32 w = m.g * x + m.h * y + 1.f;
+						if (w < NkPaintWMin())
+							w = NkPaintWMin();
+						return nkgui::NkVec2{(m.a * x + m.c * y + m.e) / w,
+											 (m.b * x + m.d * y + m.f) / w};
+					}
+					return nkgui::NkVec2{m.a * x + m.c * y + m.e, m.b * x + m.d * y + m.f};
 				}
 				/// h o m : d'abord m (la nouvelle), puis h (celle du dessus).
 				static NkPaintTransform Composer(const NkPaintTransform &h,
 												 const NkPaintTransform &m) noexcept {
 					NkPaintTransform r;
-					r.a = h.a * m.a + h.c * m.b;
-					r.b = h.b * m.a + h.d * m.b;
-					r.c = h.a * m.c + h.c * m.d;
-					r.d = h.b * m.c + h.d * m.d;
-					r.e = h.a * m.e + h.c * m.f + h.e;
-					r.f = h.b * m.e + h.d * m.f + h.f;
+					if (h.Affine() && m.Affine()) { // le chemin d'avant, inchange
+						r.a = h.a * m.a + h.c * m.b;
+						r.b = h.b * m.a + h.d * m.b;
+						r.c = h.a * m.c + h.c * m.d;
+						r.d = h.b * m.c + h.d * m.d;
+						r.e = h.a * m.e + h.c * m.f + h.e;
+						r.f = h.b * m.e + h.d * m.f + h.f;
+						return r;
+					}
+					// le produit 3x3 puis la normalisation -- la meme regle que
+					// `NkMatComposer` cote document : `w = g x + h y + 1` a chaque etage.
+					const float32 A = h.a * m.a + h.c * m.b + h.e * m.g;
+					const float32 C = h.a * m.c + h.c * m.d + h.e * m.h;
+					const float32 E = h.a * m.e + h.c * m.f + h.e;
+					const float32 B = h.b * m.a + h.d * m.b + h.f * m.g;
+					const float32 D = h.b * m.c + h.d * m.d + h.f * m.h;
+					const float32 F = h.b * m.e + h.d * m.f + h.f;
+					const float32 G = h.g * m.a + h.h * m.b + m.g;
+					const float32 H = h.g * m.c + h.h * m.d + m.h;
+					const float32 I = h.g * m.e + h.h * m.f + 1.f;
+					if (I == 0.f)
+						return r;
+					const float32 k = 1.f / I;
+					r.a = A * k;
+					r.b = B * k;
+					r.c = C * k;
+					r.d = D * k;
+					r.e = E * k;
+					r.f = F * k;
+					r.g = G * k;
+					r.h = H * k;
 					return r;
 				}
 				static void Coins(const NkPaintTransform &m, const NkPaintRect &r,
@@ -403,9 +569,15 @@ namespace nkentseu {
 					const float32 x = Px(r.x), y = Px(r.y);
 					return {x, y, Px(r.x + r.w) - x, Px(r.y + r.h) - y};
 				}
-				static nkgui::NkColor Unpack(uint32 c) noexcept {
-					return {(uint8)((c >> 24) & 0xFFu), (uint8)((c >> 16) & 0xFFu),
-							(uint8)((c >> 8) & 0xFFu), (uint8)(c & 0xFFu)};
+				/// ⚠️ LE POINT UNIQUE DE COULEUR DE CE PEINTRE, et c'est pour ca que la
+				///    TEINTE se pose ICI : `C(role)` y passe (onze sites), `FillColor` y
+				///    passe, et `PolygonHexBrut` y passe depuis le 12/09 -- il recopiait
+				///    ce calcul a la main, ce qui en faisait un second point de couleur.
+				/// ⚠️ NON STATIQUE DESORMAIS : elle lit la teinte de l'instance.
+				nkgui::NkColor Unpack(uint32 c) const noexcept {
+					const uint32 t = Teinter(c);
+					return {(uint8)((t >> 24) & 0xFFu), (uint8)((t >> 16) & 0xFFu),
+						(uint8)((t >> 8) & 0xFFu), (uint8)(t & 0xFFu)};
 				}
 				nkgui::NkColor C(uint16 role) const noexcept {
 					return Unpack(mTheme.Get(role));

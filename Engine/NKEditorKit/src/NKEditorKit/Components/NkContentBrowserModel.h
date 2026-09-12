@@ -213,6 +213,50 @@ namespace nkentseu {
 				///    rendus identiques a un mot pres ne justifient pas deux dessins.
 				NkString headerTitle;
 
+				// ── ⑦ (2026-09-06) LE GLISSER, ET IL EST NEUF ────────────────────
+				// Rodolf : « le glisser-deposer doit deplacer ». Ce n'etait PAS un
+				// crochet a brancher.
+				//
+				// ⚠️ CE QUI EXISTAIT, MESURE AVANT D'ECRIRE : `NkComponentInput` porte
+				//    `dragType` (une charge POSEE PAR L'HOTE qui survole) et
+				//    `dragReleased` (elle vient d'etre lachee). Les deux disent ce qui
+				//    ARRIVE au composant. **Aucun des deux ne dit qu'un glisser COMMENCE
+				//    ici**, et rien dans le navigateur n'etait une SOURCE : il n'y avait
+				//    donc pas de crochet a cabler, il manquait la notion elle-meme.
+				//    `NkTreeViewModel::dragSource` est le seul debut de reponse du kit,
+				//    et il ne couvre que l'arbre -- pas la grille, pas le passage de
+				//    l'un a l'autre.
+				//
+				// ⚠️ L'ETAT VIT ICI, ET PAS DANS L'UN DES DEUX VOLETS : un glisser
+				//    TRAVERSE les volets (de la grille vers le rail, du rail vers la
+				//    grille). Le mettre dans l'arbre ou dans la grille aurait oblige a
+				//    le recopier dans l'autre, et deux copies d'un meme geste divergent.
+				//
+				// ⚠️ ET IL Y A UN SEUIL, EN PIXELS : sans lui, tout clic de selection
+				//    serait un glisser d'un pixel, et lacher sur un dossier deplacerait
+				//    ce qu'on voulait seulement choisir. Un geste destructeur ne doit
+				//    pas naitre d'un geste ordinaire. D'ou DEUX etats : ARME (l'appui a
+				//    eu lieu, on ne sait pas encore) puis ACTIF (le seuil est franchi).
+				NkString armeChemin;   ///< ce sur quoi l'appui a eu lieu ; vide = rien d'arme
+				NkString armeLibelle;
+				bool armeRail = false; ///< l'appui venait du rail plutot que de la grille
+				float32 armeX = 0.f, armeY = 0.f; ///< le point de l'appui, pour le seuil
+				NkString glisserChemin;  ///< non vide = un glisser est EN COURS
+				NkString glisserLibelle; ///< ce que le fantome affiche
+				bool glisserRail = false;
+
+				/// Tout oublier : appele au lacher, et par l'hote quand le dialogue se
+				/// ferme. Un glisser qui survit a la fermeture se reveillerait au
+				/// prochain lacher, sur une liste qui n'a plus rien a voir.
+				void AnnulerGlisser() {
+					armeChemin = NkString();
+					armeLibelle = NkString();
+					glisserChemin = NkString();
+					glisserLibelle = NkString();
+					armeRail = false;
+					glisserRail = false;
+				}
+
 				bool IsChosen(int32 i) const {
 					for (uint32 k = 0; k < (uint32)chosen.Size(); ++k)
 						if (chosen[k] == i)
@@ -411,6 +455,99 @@ namespace nkentseu {
 				/// voit : sur un dossier de 124 entrees, c'est une quinzaine au lieu de 124.
 				int32 premierVisible = -1;
 				int32 dernierVisible = -1;
+
+				// ── ② (2026-09-06) LE CLIC DROIT, RAPPORTE ET SITUE ─────────────────
+				// Le crochet `onContextMenu` existait deja — mais il ne dit RIEN du rail
+				// (l'arbre embarque ne relayait que la selection), et il ne dit pas SUR QUOI
+				// on a clique quand c'est un nœud de dossier plutot qu'une entree de la
+				// grille. Un hote qui doit ouvrir un menu a besoin des trois : quoi, ou, et
+				// dans quel volet.
+				// ⚠️ ADDITIF, ET INERTE POUR QUI L'IGNORE : `menuIndex` vaut -2 tant qu'aucun
+				//    clic droit n'a eu lieu, et les quatre consommateurs existants ne lisent
+				//    pas ce champ. `onContextMenu` continue de partir exactement comme avant.
+				int32 menuIndex = -2;	 ///< -2 = aucun ; -1 = le FOND du volet ; >= 0 = une entree
+				NkString menuCheminRail; ///< non vide : le clic droit visait CE nœud du rail
+				float32 menuX = 0.f, menuY = 0.f;
+
+				// ── ① (2026-09-06) LES DEUX GOUTTIERES DE DEFILEMENT ────────────────
+				// Rodolf : « pas de scrollbar vertical ni a gauche ni a droite pour
+				// montrer LA PROFONDEUR ». Deux volets, donc deux gouttieres — et le
+				// navigateur est le seul a connaitre leur geometrie (il tient le partage
+				// rail/grille, le nombre de colonnes et le defilement).
+				//
+				// ⚠️ MEME FORME QUE L'INFOBULLE : le composant RESERVE la place et
+				//    RAPPORTE le rectangle ; l'hote y peint `NkVScrollbar`, la barre
+				//    STANDARD du kit (`NkEditorScrollbar.h`), et ecrit le resultat dans
+				//    `m.scroll` / `m.folders.scroll`. Aucune seconde barre n'est ecrite —
+				//    le composant ne peut d'ailleurs pas appeler celle-la : elle prend un
+				//    `NkGuiContext`, et ce fichier compile sans NKGui.
+				// ⚠️ CELLE DU RAIL EST **RELAYEE TELLE QUELLE** depuis l'arbre embarque,
+				//    en coordonnees ecran : c'est lui qui la reserve, pas nous. Deux
+				//    calculs pour une meme gouttiere, ce serait deux facons de diverger.
+				//
+				// `defilVue >= defilContenu` : rien a defiler. La barre reste peinte
+				// (gouttiere sans pouce) — c'est l'information « tout est visible ».
+				float32 defilX = 0.f, defilY = 0.f, defilW = 0.f, defilH = 0.f;
+				float32 defilContenu = 0.f, defilVue = 0.f, defilPas = 0.f;
+				float32 railDefilX = 0.f, railDefilY = 0.f, railDefilW = 0.f, railDefilH = 0.f;
+				float32 railDefilContenu = 0.f, railDefilVue = 0.f, railDefilPas = 0.f;
+
+				// ── ⑦ (2026-09-06) LE GLISSER : CE QUI EST TRAINE, ET OU IL SE POSE ──
+				// Le composant SIGNALE, l'hote DECIDE et AGIT -- il est le seul a savoir
+				// ce qu'est un deplacement (ici, un couper/coller sur le disque), et le
+				// seul a pouvoir peindre le fantome dans la couche modale.
+				//
+				/// Non vide : un glisser est en cours, et c'est CE chemin qu'on traine.
+				/// L'hote peint le fantome a `glisserX/Y`.
+				NkString glisserChemin;
+				NkString glisserLibelle;
+				float32 glisserX = 0.f, glisserY = 0.f;
+				/// Le dossier SURVOLE pendant le glisser, vide si aucun. C'est ce que
+				/// l'hote surligne, et ce sur quoi le lacher tomberait.
+				NkString glisserCible;
+				/// LE LACHER, et il n'est rendu QU'UNE image : source et cible, toutes
+				/// deux non vides. L'hote deplace.
+				/// ⚠️ Le composant ne bouge RIEN lui-meme : il ne connait ni le disque ni
+				///    l'annulation. La meme separation que le renommage et le menu.
+				NkString deposeSource;
+				NkString deposeCible;
+
+				// ── ① (2026-09-06) LE BORD SUPERIEUR DES DEUX VOLETS ────────────────
+				// Rodolf : « le separateur vertical traverse le fil d'Ariane ». La cause
+				// n'est pas le trait : c'est que l'HOTE ne pouvait pas savoir OU les deux
+				// volets commencent. Il posait donc sa poignee sur `rect`, qui inclut les
+				// rangees PLEINE LARGEUR (barre d'outils + fil d'Ariane, puces de filtre,
+				// rangee d'information) -- des rangees que le composant ajoute ou retire
+				// selon ses parametres, et dont l'hote ne connait ni le nombre ni la
+				// hauteur.
+				//
+				// ⚠️ CE N'EST PAS UNE HAUTEUR, C'EST UN BORD. Une constante « 66 px »
+				//    aurait ete juste aujourd'hui et fausse a la prochaine rangee
+				//    ajoutee -- exactement le defaut qu'on repare. Ici, le composant
+				//    RAPPORTE ce qu'il vient de calculer, donc les deux ne peuvent plus
+				//    diverger : c'est le meme nombre que celui du trait `VLine` qu'il
+				//    peint lui-meme entre les deux volets.
+				//
+				// ⚠️ ADDITIF ET INERTE : un consommateur qui l'ignore ne change pas d'un
+				//    pixel -- rien n'est peint differemment, un champ de plus est rempli.
+				float32 panneauxY = 0.f; ///< bord SUPERIEUR de la zone a deux volets (ecran)
+				float32 panneauxH = 0.f; ///< sa hauteur (jusqu'au-dessus de la barre d'etat)
+
+				// ── ② (2026-09-06) LA BOITE DE RECHERCHE, RESERVEE ET RAPPORTEE ─────
+				// Rodolf : « la barre de recherche dans ce dialogue ne fonctionne pas ».
+				// LA CAUSE MESUREE est la premiere des trois : le champ ne recoit JAMAIS
+				// la frappe. `NkComponentInput` n'a pas d'entree clavier (dit en toutes
+				// lettres au champ `searchFocused` du modele), le composant se contente
+				// donc de POSER le focus au clic ; personne n'ecrivait ensuite dans
+				// `filter`. Le filtrage, lui, EXISTE et marche : `PassesFilter` est
+				// applique a la liste visible avant le tri.
+				//
+				// ⚠️ MEME FORME QUE L'INFOBULLE ET LES DEUX GOUTTIERES : le composant
+				//    reserve la place et rapporte le rectangle ; l'hote, qui a le
+				//    clavier (`NkOverlayTextField`, du VRAI clavier), y peint le champ et
+				//    ecrit dans `filter`. Aucun second chemin de saisie n'est ecrit.
+				/// w == 0 : cette variante n'a pas de boite de recherche (minimal).
+				float32 rechercheX = 0.f, rechercheY = 0.f, rechercheW = 0.f, rechercheH = 0.f;
 		};
 
 		// ── LA SIGNATURE TYPE ───────────────────────────────────────────────────
@@ -488,6 +625,22 @@ namespace nkentseu {
 				// fichiers) eteint celui-ci : deux commandes pour un reglage, c'est une
 				// de trop. Defaut 1 : le navigateur d'assets garde la sienne.
 				{"show_sort", "Bouton « Trier par »", NkParamKind::Bool, 1.f, 0.f, 0.f, nullptr, 0},
+				// ① (06/09) LE DEFAUT D'OUVERTURE DU RAIL, TRANSMIS A L'ARBRE EMBARQUE.
+				// L'arbre porte deja `default_open` ; le navigateur ne le lui passait PAS, donc
+				// le rail prenait le defaut de la DECLARATION de l'arbre (1 = tout deplie). Un
+				// hote qui charge ses sous-dossiers a la demande -- le selecteur de fichiers --
+				// voyait alors TOUS ses chevrons dessines « ouverts » alors que rien ne l'etait,
+				// et le sens du clic etait inverse entre le peintre et lui.
+				// ⚠️ DEFAUT 1 : le navigateur d'assets ne bouge pas d'un pixel. Seul l'hote qui
+				//    le met a 0 change de comportement, et il le fait en le disant.
+				{"tree_default_open", "Rail : nœuds dépliés par défaut", NkParamKind::Bool, 1.f, 0.f,
+				 0.f, nullptr, 0},
+				// ④ (06/09) LE CTRL+CLIC ACCUMULE-T-IL ? Il le faisait SANS CONDITION, y
+				// compris dans un dialogue « choisir UN fichier » : l'utilisateur en
+				// selectionnait cinq, la confirmation en gardait un, et rien ne le disait.
+				// ⚠️ DEFAUT 1 : le navigateur d'assets garde sa selection multiple.
+				{"multi_select", "Ctrl+clic ajoute à la sélection", NkParamKind::Bool, 1.f, 0.f, 0.f,
+				 nullptr, 0},
 			};
 			static const NkTokenDecl kTokens[] = {
 				{"panel_bg", "PanelBg", "fond du panneau"},
@@ -522,6 +675,18 @@ namespace nkentseu {
 				{"search_w", 180.f, "largeur de la boîte de recherche"},
 				{"slider_w", 90.f, "largeur du curseur de taille de vignettes"},
 				{"badge_h", 16.f, "hauteur du badge de type posé sur la vignette"},
+				// ① La gouttiere que la GRILLE reserve a droite et que l'hote peint avec
+				//    `NkVScrollbar`. Celle du rail appartient a l'arbre, qui la declare
+				//    de son cote sous le meme nom et la meme valeur.
+				{"scrollbar_w", 14.f, "gouttiere de défilement réservée à droite de la grille ; "
+									  "l'hôte y peint la barre standard du kit"},
+				// ⑦ Le SEUIL du glisser : en dessous, l'appui reste un clic de
+				//    selection. Sans lui, tout clic serait un glisser d'un pixel et un
+				//    lacher sur un dossier deplacerait ce qu'on voulait seulement
+				//    choisir -- un geste destructeur ne doit pas naitre d'un geste
+				//    ordinaire.
+				{"drag_threshold", 5.f,
+				 "distance à parcourir, appui maintenu, avant qu'un clic devienne un glisser"},
 			};
 			// ⚠️ TROIS ENTREES ONT QUITTE CETTE TABLE le 18/08 (seconde passe) :
 			//    `on_activate`, `on_context_menu`, `on_drop_into` sont des

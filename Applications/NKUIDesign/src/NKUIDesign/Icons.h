@@ -178,10 +178,16 @@ namespace nkuidesign {
 					NkGuiComponentPaint::TextHex(r, s, rgba, roleRepli, align, px, graisse);
 					return;
 				}
-				const nkentseu::nkgui::NkColor col = {(uint8)((rgba >> 24) & 0xFFu),
-													  (uint8)((rgba >> 16) & 0xFFu),
-													  (uint8)((rgba >> 8) & 0xFFu),
-													  (uint8)(rgba & 0xFFu)};
+				// ⚠️ LE SEUL SITE DE COULEUR HORS DU KIT : ce peintre-ci choisit son atlas et
+				//    construit sa couleur lui-meme, donc `Unpack` ne le couvre pas. La teinte
+				//    s'y applique par la MEME porte (`Teinter`), sinon le texte d'un bouton
+				//    teinte resterait seul a sa couleur d'origine. (Le chemin de repli, lui,
+				//    retombe sur `Text(role)` donc sur `Unpack` : il est deja couvert.)
+				const uint32 rgbaT = Teinter(rgba);
+				const nkentseu::nkgui::NkColor col = {(uint8)((rgbaT >> 24) & 0xFFu),
+															  (uint8)((rgbaT >> 16) & 0xFFu),
+															  (uint8)((rgbaT >> 8) & 0xFFu),
+															  (uint8)(rgbaT & 0xFFu)};
 				const float32 largeur = f->MeasureWidth(s) * echelle;
 				float32 tx = r.x;
 				if (align == nkentseu::editorkit::NkTextAlign::Center)
@@ -195,20 +201,14 @@ namespace nkuidesign {
 												* (echelle > 1.f ? echelle : 1.f)
 										  : 0.f;
 				if (const nkentseu::editorkit::NkPaintTransform *m = TransformeActive()) {
-					// Sous la matrice du noeud : la mise a l'echelle des glyphes S
-					// (facteur `echelle` autour de l'origine de ligne o) se compose
-					// SOUS M -- M o S : p -> M(o) + echelle * L(p - o). Le texte tourne
-					// avec sa boite, a la meme matrice que les formes.
-					const float32 ta = m->a * echelle, tb = m->b * echelle;
-					const float32 tc = m->c * echelle, td = m->d * echelle;
-					for (int32 passe = 0; passe < (eGras > 0.f ? 2 : 1); ++passe) {
-						const float32 ox = tx + (passe ? eGras : 0.f);
-						const float32 mox = m->a * ox + m->c * yBase + m->e;
-						const float32 moy = m->b * ox + m->d * yBase + m->f;
-						mCtx.DL().AddTextTransforme(f->Face(), f->TexId(), {ox, yBase}, s, col, ta, tb,
-													tc, td, mox - (ta * ox + tc * yBase),
-													moy - (tb * ox + td * yBase));
-					}
+					// PALIER B (11/09) : LA PORTE DU KIT DECIDE -- perspective : chaque glyphe
+					// par ses quatre coins ; affine : la matrice du nœud composée avec l'échelle
+					// des glyphes autour de l'origine de ligne, comme avant. *La décision ne
+					// se recopie pas ici : recopiée, elle serait hors de portée du témoin.*
+					for (int32 passe = 0; passe < (eGras > 0.f ? 2 : 1); ++passe)
+						nkentseu::editorkit::NkTexteTransforme(mCtx.DL(), f->Face(), f->TexId(),
+															   {tx + (passe ? eGras : 0.f), yBase}, s, col,
+															   *m, echelle);
 					return;
 				}
 				mCtx.DL().AddTextScaled(f->Face(), f->TexId(), {tx, yBase}, s, col, echelle);

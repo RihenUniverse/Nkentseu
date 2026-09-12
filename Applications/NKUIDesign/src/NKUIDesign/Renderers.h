@@ -95,6 +95,47 @@ namespace nkuidesign {
 			//    68 essais verts sur un ecran magenta. Un defaut par defaut vaut
 			//    mieux qu'un champ vide quand le champ vide autorise deux verites.
 			NkRoleResolver resolve = &NkDesignResolveRole;
+			// ── L'APERCU D'UNE COULEUR, QUI N'EST PAS UNE MODIFICATION ───────────
+			//
+			// 🔴 RODOLF (08/09) : *« la couleur sur le marqueur n'est pas envoyée à
+			//    l'objet [...] et ça décide quand fournir une couleur sans se
+			//    préoccuper du clic gauche ni du clic droit »*.
+			//
+			// ⚠️ MESURE : l'aperçu de la pipette écrivait **dans la destination** --
+			//    `couleurCourante` est une référence vers `fills[i].couleur`. Il n'y
+			//    avait donc rien à valider ni à annuler : l'objet avait déjà changé.
+			//    *Un aperçu qui écrit dans la destination n'est pas un aperçu, c'est
+			//    une modification.*
+			//
+			// ⚠️ ET CE QUE JE CROYAIS PROTEGER NE PROTEGEAIT RIEN : j'évitais
+			//    soigneusement `touche()` pour ne pas marquer d'édition. C'est vrai,
+			//    et sans effet -- **j'avais protégé le JOURNAL, pas la DONNÉE.**
+			//
+			// ⚠️ LA VALEUR VIT DONC ICI, DANS L'HOTE : le canal de ce qui est VU sans
+			//    être ÉCRIT (il porte déjà `editionNode`, `docScale`, `langueDoc`). Le
+			//    peintre la lit EN PRIORITÉ ; le document, lui, ne bouge pas -- ce qui
+			//    rend la validation et l'annulation possibles **par construction**, et
+			//    non par une énumération des sorties qu'on finirait par oublier.
+			int32 apercuNoeud = -1;	 ///< le nœud dont une couleur est en aperçu (-1 = aucun)
+			int32 apercuIndex = -1;	 ///< le remplissage visé (-1 = le fond effectif)
+			char apercuHex[12] = {}; ///< « #rrggbb », vide = pas d'aperçu
+			// ── L'ETAT AFFICHE (08/09) ──────────────────────────────────────────
+			//
+			// 🔴 INVENTAIRE Q141 : les états s'écrivaient, se relisaient du fichier,
+			//    et **aucun peintre ne lisait `NkApparenceEtat`**. Modèle complet,
+			//    interface, aller-retour -- et rien à l'écran. *Déclaré, jamais
+			//    livré*, dans sa forme la plus pure.
+			//
+			// ⚠️ MESURE AVANT D'ECRIRE : aucune notion d'« état courant » n'existait
+			//    nulle part (zéro occurrence) ; le fond se résout à TROIS sites, déjà
+			//    derrière la porte de l'aperçu de pipette ; le rayon à quatre, dont
+			//    trois dans `DrawShape` ; l'opacité du fond dans `NkGFondRGBADe`.
+			//    L'état se lit donc PAR LES MEMES PORTES -- pas une seconde résolution.
+			//
+			// ⚠️ C'EST UN MODE DE VUE, PAS UNE DONNEE : « montrer le nœud dans son état
+			//    Hover » pour le DESSINER, sans tenir la souris. Le vrai survol viendra
+			//    avec les comportements. Vide = l'état de base, exactement comme avant.
+			char etatAffiche[16] = {};
 			/// L'ECHELLE DU DOCUMENT (le zoom de la vue), posee par la toile a
 			/// chaque image (correction du 31/08 : « quand on zoome ou dezoome
 			/// le texte garde sa taille... ca devrait evoluer comme les elements
@@ -434,6 +475,144 @@ namespace nkuidesign {
 			return NkGHexRGBA(v);
 		}
 
+		/// LA COULEUR D'UN REMPLISSAGE, APERÇU COMPRIS -- **la seule porte**.
+		/// Si l'aperçu vise ce nœud et ce remplissage, c'est LUI qu'on peint ; sinon
+		/// la couleur du modèle, inchangée. `index` vaut -1 pour le fond effectif.
+		/// ⚠️ ELLE NE MODIFIE RIEN : elle CHOISIT ce qu'on lit. Le document reste
+		///    exactement ce qu'il était -- c'est toute la différence entre voir et
+		///    écrire.
+		inline const char *NkCouleurApercue(const NkDocumentHost &h, nkentseu::int32 noeud,
+											nkentseu::int32 index, const char *duModele) {
+			if (h.apercuHex[0] == '\0' || h.apercuNoeud < 0 || h.apercuNoeud != noeud)
+				return duModele;
+			if (h.apercuIndex != index)
+				return duModele;
+			return h.apercuHex;
+		}
+
+		// ── L'ORDRE DE PRIORITE, ECRIT UNE FOIS ET LU PARTOUT ───────────────────
+		//
+		//        aperçu de pipette  >  état affiché  >  valeur de base
+		//
+		// ⚠️ POURQUOI DANS CET ORDRE : l'aperçu est un GESTE en cours, posé par-dessus
+		//    ce qu'on regarde ; l'état est un MODE de vue ; la base est le document.
+		//    Deux surcharges qui ne se connaissent pas finissent par se marcher
+		//    dessus un jour -- c'est pour ça qu'elles se composent ici, en une
+		//    expression, et nulle part ailleurs.
+		//
+		/// LE BLOC D'ETAT VU pour ce nœud : celui de l'état affiché s'il existe et
+		/// pose quelque chose ; nullptr sinon -- et alors RIEN ne change.
+		inline const NkApparenceEtat *NkEtatVu(const NkDocumentHost &h, const NkUINode &n) {
+			if (h.etatAffiche[0] == '\0')
+				return nullptr;
+			const NkApparenceEtat *a = NkBlocEtatSi(n, h.etatAffiche);
+			return (a && !a->Vide()) ? a : nullptr;
+		}
+		/// LE FOND VU : celui de l'état s'il en pose un, sinon le fond effectif.
+		inline const char *NkFondVu(const NkDocumentHost &h, const NkUINode &n) {
+			const NkApparenceEtat *a = NkEtatVu(h, n);
+			return (a && !a->fond.Empty()) ? a->fond.Data() : n.FondEffectif();
+		}
+		/// LA TEINTE VUE (12/09) : le MULTIPLICATEUR de l'etat affiche, `0xFFFFFFFF`
+		/// (l'identite) quand aucun etat n'en pose -- donc un document sans teinte peint
+		/// exactement comme avant, a l'octet.
+		///
+		/// ⚠️ L'ORDRE, FIXE UNE FOIS : **on remplace d'abord, on multiplie ensuite.** Le
+		///    `fond` de l'etat choisit QUOI est peint ; la teinte multiplie CE QUI A ETE
+		///    CHOISI. Dans l'autre sens un remplacement ecraserait la teinte, et les deux
+		///    reglages se contrediraient.
+		///
+		/// Les references « @cle » sont resolues comme partout ailleurs (`NkGCouleur`, qui
+		/// rend MAGENTA si la variable est absente), et le visiteur unique des couleurs les
+		/// compte : une variable teinte est protegee de la suppression comme les autres.
+		inline nkentseu::uint32 NkTeinteVue(const NkDocumentHost &h, const NkUINode &n) {
+			const NkApparenceEtat *a = NkEtatVu(h, n);
+			if (!a || a->teinte.Empty())
+				return 0xFFFFFFFFu;
+			return NkGCouleur(a->teinte.Data());
+		}
+		/// L'ETAT AFFICHE POSE-T-IL UN FOND ? (12/09) -- la question que le peintre doit
+		/// poser AVANT de peindre un degrade : un fond d'etat REMPLACE le remplissage du
+		/// dessus, degrade compris. Une seule porte, pour que le peintre et le banc
+		/// repondent pareil.
+		inline bool NkFondDEtatPose(const NkDocumentHost &h, const NkUINode &n) {
+			const NkApparenceEtat *a = NkEtatVu(h, n);
+			return a && !a->fond.Empty();
+		}
+		/// LA COULEUR DU TEXTE VUE : celle de l'état s'il en pose une, sinon la base.
+		/// (Mesure Q143 : UN seul site la résout chez le peintre -- porte unique.)
+		inline const char *NkCouleurTexteVue(const NkDocumentHost &h, const NkUINode &n) {
+			const NkApparenceEtat *a = NkEtatVu(h, n);
+			return (a && !a->couleurTexte.Empty()) ? a->couleurTexte.Data()
+													: (n.textColor.Empty() ? nullptr
+																		   : n.textColor.Data());
+		}
+		/// LES BORDURES VUES : celles de la porte du modele (`BorduresEffectives`),
+		/// avec la surcharge de l'état affiché PAR CHAMP -- couleur, épaisseur -- sur
+		/// CHAQUE bordure qui se peint. `logement` : `cap + 1` bordures fournies par
+		/// l'appelant (les copies surchargées, plus la clé historique) ; AUCUNE copie
+		/// tant qu'aucun état ne pose de bordure. Épaisseur posée à 0 = retirée.
+		/// ⚠️ L'EXPORT SVG lit la porte du MODELE, pas celle-ci : il exporte la base,
+		///    et c'est dit -- un état est un mode de vue.
+		inline nkentseu::uint32 NkBorduresVues(const NkDocumentHost &h, const NkUINode &n,
+											   const NkBordure **out, nkentseu::uint32 cap,
+											   NkBordure *logement) {
+			const nkentseu::uint32 nb = n.BorduresEffectives(out, cap, logement[cap]);
+			const NkApparenceEtat *a = NkEtatVu(h, n);
+			if (!a || !a->BordurePosee())
+				return nb;
+			nkentseu::uint32 gardees = 0u;
+			for (nkentseu::uint32 i = 0; i < nb; ++i) {
+				logement[gardees] = *out[i];
+				if (!a->bordureCouleur.Empty())
+					logement[gardees].couleur = a->bordureCouleur;
+				if (a->bordureEpaisseur >= 0.f) {
+					logement[gardees].epaisseur = a->bordureEpaisseur;
+					for (nkentseu::uint32 c = 0; c < 4u; ++c)
+						logement[gardees].cotes[c] = -1.f; // l'état pose une épaisseur UNIFORME
+				}
+				if (logement[gardees].epaisseur <= 0.f)
+					continue; // retirée dans cet état
+				out[gardees] = &logement[gardees];
+				++gardees;
+			}
+			return gardees;
+		}
+		/// L'OPACITE DU NŒUD VUE (③, 11/09, tranché par Rodolf) : celle de l'état si
+		/// posée (>= 0), sinon celle du nœud (CALQUE) -- celle qui s'applique aux
+		/// enfants. 🔴 LE CHAMP `opacite` D'UN ETAT A CHANGE DE SENS : le lot
+		///    652632e6e l'avait branché sur l'opacité du FOND (`NkOpaciteFondVue`, qui
+		///    n'existe plus). Sa raison est celle du design : un bouton Disabled à 50 %
+		///    s'estompe EN ENTIER, texte et enfants compris -- ce que fait le CSS.
+		///    Aucun document n'en portait ; le sens est dit ici, au fichier et au commit.
+		///    L'opacité du FOND reste celle du remplissage : la base, sans surcharge.
+		inline nkentseu::float32 NkOpaciteNoeudVue(const NkDocumentHost &h, const NkUINode &n) {
+			const NkApparenceEtat *a = NkEtatVu(h, n);
+			return (a && a->opacite >= 0.f) ? a->opacite : n.opacite;
+		}
+		/// UN RGBA SOUS L'OPACITE HERITEE (0..1) : l'alpha est multiplié. Sert au
+		/// texte, qui composait sa couleur SANS l'héritage (mesure du 11/09).
+		inline nkentseu::uint32 NkGRGBAHerite(nkentseu::uint32 rgba, nkentseu::float32 heritee) {
+			const nkentseu::float32 k = heritee < 0.f ? 0.f : (heritee > 1.f ? 1.f : heritee);
+			const nkentseu::uint32 a = (nkentseu::uint32)((rgba & 0xFFu) * k + 0.5f);
+			return (rgba & 0xFFFFFF00u) | (a & 0xFFu);
+		}
+
+		/// LE FOND, A PARTIR D'UNE COULEUR DEJA CHOISIE (aperçu et état compris),
+		/// et d'une opacité déjà choisie de la même façon.
+		inline nkentseu::uint32 NkGFondRGBADe(const NkUINode &n, const char *c,
+											  nkentseu::float32 o) {
+			(void)n;
+			if (!c)
+				return 0x808080FFu;
+			const nkentseu::uint32 rgba = NkGCouleur(c);
+			if (o >= 100.f)
+				return rgba;
+			const nkentseu::float32 k = o < 0.f ? 0.f : o * 0.01f;
+			const nkentseu::uint32 a = (nkentseu::uint32)((rgba & 0xFFu) * k + 0.5f);
+			return (rgba & 0xFFFFFF00u) | (a & 0xFFu);
+		}
+
 		/// LE FOND D'UN NŒUD, OPACITÉ COMPRISE — le seul endroit qui traduit la
 		/// liste de remplissages en une couleur pour les peintres de FORME.
 		/// ⚠️ LES FORMES NE COMPOSITENT PAS ENCORE, ET C'EST DIT ICI PLUTÔT QUE
@@ -459,9 +638,23 @@ namespace nkuidesign {
 
 		/// LES QUATRE RAYONS EFFECTIFS d'un nœud, dans l'ordre horaire depuis le
 		/// haut-gauche. Passe par `RayonCoin` — la porte, jamais `radius` en direct.
+		/// LES RAYONS VUS : un état pose UN rayon pour les quatre coins (le modèle
+		/// d'état n'en connaît qu'un) ; sans état, les quatre de la base.
+		inline void NkGRayonsVus(const NkDocumentHost &h, const NkUINode &n,
+								 nkentseu::float32 out[4]);
 		inline void NkGRayons(const NkUINode &n, nkentseu::float32 out[4]) {
 			for (nkentseu::uint32 i = 0; i < 4u; ++i)
 				out[i] = n.RayonCoin(i);
+		}
+		inline void NkGRayonsVus(const NkDocumentHost &h, const NkUINode &n,
+								 nkentseu::float32 out[4]) {
+			const NkApparenceEtat *a = NkEtatVu(h, n);
+			if (a && a->radius >= 0.f) {
+				for (nkentseu::uint32 i = 0; i < 4u; ++i)
+					out[i] = a->radius;
+				return;
+			}
+			NkGRayons(n, out);
 		}
 
 		/// BORNER QUATRE RAYONS CONTRE LA BOÎTE — la règle, en un seul endroit.
@@ -1117,6 +1310,29 @@ namespace nkuidesign {
 		}
 		/// La garde : pousse le mode a la construction, le retire a la destruction --
 		/// un `continue` dans la boucle des remplissages ne laisse jamais un mode derriere lui.
+		/// LA TEINTE D'UN NŒUD, POSEE ET RESTAUREE DANS LA MEME FONCTION (12/09).
+		///
+		/// 🔴 CE N'EST PAS UNE GARDE D'APPELANT, et la distinction est tout le sujet.
+		///    Un `PushTint`/`PopTint` obligerait chaque appelant a poser ET a depiler ;
+		///    le premier qui oublie fait fuir la teinte sur le nœud suivant. *Un etat
+		///    qu'il faut ARMER se fait oublier par la porte que les appelants
+		///    empruntent.* Ici SEULE `DrawShape` s'en sert, dans son propre corps.
+		///
+		/// ⚠️ ET L'OBJET DE PORTEE N'EST PAS UN RAFFINEMENT : `DrawShape` compte
+		///    TREIZE `return`. Une restauration ecrite a la main en oublierait un,
+		///    et la teinte fuirait sur le nœud suivant -- exactement le defaut qu'on
+		///    refuse. Elle protege aussi du jour ou quelqu'un peindra apres les enfants.
+		struct NkGardeTeinte {
+			NkComponentPaint &p;
+			nkentseu::uint32 avant;
+			NkGardeTeinte(NkComponentPaint &peintre, nkentseu::uint32 t)
+				: p(peintre), avant(peintre.tint) {
+				p.tint = t;
+			}
+			~NkGardeTeinte() {
+				p.tint = avant;
+			}
+		};
 		struct NkGardeFusion {
 				NkComponentPaint &p;
 				bool actif;
@@ -1543,7 +1759,8 @@ namespace nkuidesign {
 		/// pas peindre une image : l'appelant peint le damier.
 		inline bool NkGPeindreImage(NkComponentPaint &p, const NkPaintRect &r, const nkentseu::float32 R[4],
 									const NkRemplissage &f, const nkentseu::float32 *trace = nullptr,
-									nkentseu::uint32 traceNb = 0u) {
+									nkentseu::uint32 traceNb = 0u,
+									nkentseu::float32 heritee = 1.f) {
 			using namespace nkentseu;
 			NkFournisseurImages &fi = NkFournisseurCourant();
 			NkImageSource src;
@@ -1590,7 +1807,8 @@ namespace nkuidesign {
 						uv[i * 2] = u0 + (x - x0) / w * (u1 - u0);
 						uv[i * 2 + 1] = v0 + (y - y0) / h * (v1 - v0);
 					}
-					if (!p.ImagePolygone(coupe, uv, (int32)ncp, src.handle, f.opacite))
+					if (!p.ImagePolygone(coupe, uv, (int32)ncp, src.handle,
+										 f.opacite * (heritee < 0.f ? 0.f : (heritee > 1.f ? 1.f : heritee))))
 						su = false;
 				});
 			};
@@ -1636,9 +1854,22 @@ namespace nkuidesign {
 			return su;
 		}
 
+		/// ⑤ (07/09) LE FACTEUR D'ALPHA, EN UN SEUL SITE. La même expression de
+		/// bornage était écrite CINQ fois (damier, deux fois pour les bordures, les
+		/// ombres, les remplissages) : y ajouter l'opacité du nœud aurait été cinq
+		/// occasions d'en oublier une. `heritee` est déjà un facteur 0..1 -- le
+		/// produit des opacités du nœud et de tous ses ancêtres.
+		inline nkentseu::float32 NkKOpacite(nkentseu::float32 pourcent,
+											nkentseu::float32 heritee) {
+			const nkentseu::float32 c =
+				(pourcent < 0.f ? 0.f : (pourcent > 100.f ? 100.f : pourcent)) * 0.01f;
+			const nkentseu::float32 h = heritee < 0.f ? 0.f : (heritee > 1.f ? 1.f : heritee);
+			return c * h;
+		}
+
 		inline void NkGDamier(NkComponentPaint &p, const NkPaintRect &r, const nkentseu::float32 R[4],
-							  nkentseu::float32 opacite) {
-			const nkentseu::float32 k = (opacite < 0.f ? 0.f : (opacite > 100.f ? 100.f : opacite)) * 0.01f;
+							  nkentseu::float32 opacite, nkentseu::float32 heritee = 1.f) {
+			const nkentseu::float32 k = NkKOpacite(opacite, heritee);
 			const nkentseu::uint32 a = (nkentseu::uint32)(255.f * k + 0.5f) & 0xFFu;
 			NkGRectCoins(p, r, 0x9A9A9A00u | a, R);
 			const nkentseu::float32 c = 8.f;
@@ -1731,18 +1962,18 @@ namespace nkuidesign {
 
 		/// LA PORTE NOMMEE : une `NkBordure` (couleur en texte, opacite) devient
 		/// une couleur resolue, puis c'est le meme anneau. Comportement inchange.
-		inline nkentseu::uint32 NkGBordureRGBA(const NkBordure &b) {
+		inline nkentseu::uint32 NkGBordureRGBA(const NkBordure &b,
+											   nkentseu::float32 heritee = 1.f) {
 			const nkentseu::uint32 base = NkGCouleur(b.couleur.Data());
-			const nkentseu::float32 k =
-				(b.opacite < 0.f ? 0.f : (b.opacite > 100.f ? 100.f : b.opacite)) * 0.01f;
+			const nkentseu::float32 k = NkKOpacite(b.opacite, heritee);
 			const nkentseu::uint32 a = (nkentseu::uint32)((base & 0xFFu) * k + 0.5f);
 			return (base & 0xFFFFFF00u) | (a & 0xFFu);
 		}
 		inline void NkGCadre(NkComponentPaint &p, const NkPaintRect &r, const NkBordure &b,
-							 const nkentseu::float32 R[4], nkentseu::uint32 interieur) {
+							 const nkentseu::float32 R[4], nkentseu::uint32 interieur,
+							 nkentseu::float32 heritee = 1.f) {
 			const nkentseu::uint32 base = NkGCouleur(b.couleur.Data());
-			const nkentseu::float32 k =
-				(b.opacite < 0.f ? 0.f : (b.opacite > 100.f ? 100.f : b.opacite)) * 0.01f;
+			const nkentseu::float32 k = NkKOpacite(b.opacite, heritee);
 			const nkentseu::uint32 a = (nkentseu::uint32)((base & 0xFFu) * k + 0.5f);
 			const nkentseu::float32 eC[4] = {b.Cote(0), b.Cote(1), b.Cote(2), b.Cote(3)};
 			NkGCadreCotes(p, r, (base & 0xFFFFFF00u) | (a & 0xFFu), eC, b.position, R, interieur,
@@ -1790,23 +2021,37 @@ namespace nkuidesign {
 		/// noeud (un coin droit reste droit, un coin arrondi s'arrondit de R +
 		/// grossi). Le flou est approche par des anneaux de plus en plus
 		/// transparents -- le peintre n'a pas de primitive floue, et ca se dit.
-		inline void NkGOmbres(NkComponentPaint &p, const NkPaintRect &r, const NkUINode &n) {
+		/// ⚠️ L'HOTE ENTRE ICI (11/09) : **un appelant modifie, pas une seconde
+		///    résolution**. L'ombre était le seul des quatre « oui » du recensement
+		///    dont la porte était unique MAIS sans hôte -- elle ne pouvait donc pas
+		///    lire l'état affiché. Le rayon des ombres, lui, suit toujours la base :
+		///    dit en Q142, hors de ce lot, et désormais à un jeton près.
+		inline void NkGOmbres(NkComponentPaint &p, const NkPaintRect &r, const NkUINode &n,
+							  const NkDocumentHost &host, nkentseu::float32 heritee = 1.f) {
 			nkentseu::float32 R[4], c[4];
 			NkGRayons(n, R);
 			NkGBornerRayons(r.w, r.h, R, c);
+			// LA SURCHARGE D'ETAT DE L'OMBRE, PAR CHAMP : le flou et l'opacité posés par
+			// l'état remplacent ceux de CHAQUE ombre du nœud ; le déport, l'étendue et
+			// la couleur restent ceux du nœud. « Hover = un peu plus d'ombre » sans
+			// recopier l'ombre entière.
+			const NkApparenceEtat *etat = NkEtatVu(host, n);
 			for (nkentseu::uint32 i = 0; i < (nkentseu::uint32)n.effets.Size(); ++i) {
 				const NkEffet &e = n.effets[i];
 				if (!e.visible || e.couleur.Empty() || e.type != NkEffetType::OmbrePortee)
 					continue;
+				const nkentseu::float32 flouVu =
+					(etat && etat->ombreFlou >= 0.f) ? etat->ombreFlou : e.flou;
+				const nkentseu::float32 opaciteVue =
+					(etat && etat->ombreOpacite >= 0.f) ? etat->ombreOpacite : e.opacite;
 				const nkentseu::uint32 base = NkGCouleur(e.couleur.Data());
-				const nkentseu::float32 op =
-					(e.opacite < 0.f ? 0.f : (e.opacite > 100.f ? 100.f : e.opacite)) * 0.01f;
+				const nkentseu::float32 op = NkKOpacite(opaciteVue, heritee);
 				if (op <= 0.f)
 					continue;
-				const int32 kAnneaux = e.flou > 0.5f ? 4 : 1;
+				const int32 kAnneaux = flouVu > 0.5f ? 4 : 1;
 				for (int32 k = kAnneaux; k >= 1; --k) {
 					const nkentseu::float32 t = (nkentseu::float32)k / (nkentseu::float32)kAnneaux;
-					const nkentseu::float32 grossi = e.etendue + e.flou * t;
+					const nkentseu::float32 grossi = e.etendue + flouVu * t;
 					const nkentseu::float32 a01 = op / (nkentseu::float32)kAnneaux;
 					const nkentseu::uint32 a =
 						(nkentseu::uint32)((base & 0xFFu) * a01 + 0.5f);
@@ -1818,7 +2063,7 @@ namespace nkuidesign {
 					// s'adoucit que du flou (grossi > 0), jamais d'un rayon invente
 					nkentseu::float32 Rq[4];
 					for (nkentseu::uint32 j = 0; j < 4u; ++j)
-						Rq[j] = c[j] > 0.f ? c[j] + grossi : (e.flou > 0.5f ? grossi : 0.f);
+						Rq[j] = c[j] > 0.f ? c[j] + grossi : (flouVu > 0.5f ? grossi : 0.f);
 					NkGRectCoins(p, q, (base & 0xFFFFFF00u) | (a & 0xFFu), Rq);
 				}
 			}
@@ -1919,12 +2164,31 @@ namespace nkuidesign {
 		/// `mEff` : LA COMPOSITION DU NOEUD ET DE SES ANCETRES, calculee une
 		/// fois par `NkDrawDocument` et lue AUSSI par le pointage. Deux calculs
 		/// auraient laisse un objet se voir a un endroit et se cliquer a un autre.
+		/// ⑤ `heritee` : le produit des opacités du nœud et de tous ses ancêtres,
+		/// 0..1. Défaut 1 -- les appelants d'aperçu (la palette, les vignettes) ne
+		/// changent donc pas d'un pixel.
+		/// `noeud` : l'index du nœud dessiné -- il ne sert QU'A l'aperçu, et il vaut
+		/// -1 partout où l'aperçu n'a pas de sens (un composant, une mise en scène).
 		inline void DrawShape(NkComponentPaint &p, const NkPaintRect &r, const NkUINode &n,
-							  const NkDocumentHost &host, const NkMat2D &mEff) {
+							  const NkDocumentHost &host, const NkMat2D &mEff,
+							  nkentseu::float32 heritee = 1.f, nkentseu::int32 noeud = -1) {
 			// Une forme OUVERTE (ligne) n'a besoin que d'une dimension : une ligne
 			// horizontale a une hauteur NULLE, et elle doit se voir (sonde 52).
 			if (NkFormeOuverte(n) ? (r.w <= 0.f && r.h <= 0.f) : (r.w <= 0.f || r.h <= 0.f))
 				return;
+			// L'APERCU PASSE AVANT LE MODELE -- une seule porte (`NkCouleurApercue`).
+			// aperçu > état > base -- l'ordre est écrit UNE fois, plus haut ; ici on
+			// ne fait que le composer.
+			// ⚠️ LA TEINTE DE L'ETAT, POSEE POUR TOUT CE QUE CE NŒUD EMET -- fond, degrade,
+			//    image, bordures, texte -- et RESTAUREE a la sortie, treize `return` plus
+			//    bas. C'est LA porte : elle multiplie a l'emission, donc elle traverse ce
+			//    qu'elle ne comprend pas. Un degrade GARDE ses deux couleurs, leur rapport
+			//    est intact, seule la luminance bouge -- ce que Rodolf a demande.
+			const renderdetail::NkGardeTeinte gardeTeinte(p, NkTeinteVue(host, n));
+			const char *fondApercu = NkCouleurApercue(host, noeud, -1, NkFondVu(host, n));
+			// ③ L'opacité du FOND est celle du remplissage -- l'état, lui, agit sur le NŒUD
+			//   (`NkOpaciteNoeudVue`, lue par `NkDrawDocument`, héritée par les enfants).
+			const nkentseu::float32 opaciteVue = n.FondOpacite();
 			const char *name = n.label.Data();
 			const char *shape = n.shape.Data();
 
@@ -1945,7 +2209,7 @@ namespace nkuidesign {
 				//    (dessin normal et renommage d'etiquette). Une page a
 				//    laquelle Rodolf donne un arrondi se peignait carree.
 				float32 Ra[4];
-				NkGRayons(n, Ra);
+				NkGRayonsVus(host, n, Ra);
 				NkGBornerRayons(r.w, r.h, Ra, Ra);
 				const uint32 fondArt = p.ColorOf(host.Role("artboard_bg"));
 				NkGRectCoins(p, r, fondArt, Ra);
@@ -1988,7 +2252,7 @@ namespace nkuidesign {
 				//    primitive floue, donc on empile quelques anneaux de plus en
 				//    plus transparents. Ça DIT le flou sans le mentir — et le jour
 				//    où une primitive existera, ce site est le seul à changer.
-				NkGOmbres(p, r, n); // par coin : l'ombre lit les quatre rayons du noeud
+				NkGOmbres(p, r, n, host, heritee); // par coin : l'ombre lit les quatre rayons du noeud
 				// ⚠️ ET LE TRACÉ ÉDITÉ PASSE APRÈS L'OMBRE, POUR LA MÊME RAISON.
 				//    Sortir avant `NkGOmbres` aurait fait DISPARAÎTRE l'ombre au
 				//    moment précis où l'on déplace un coin — une propriété perdue
@@ -2067,7 +2331,7 @@ namespace nkuidesign {
 					if (r.w <= 0.f || r.h <= 0.f)
 						return true;
 					float32 Rg[4], cg[4];
-					NkGRayons(n, Rg);
+					NkGRayonsVus(host, n, Rg);
 					NkGBornerRayons(r.w, r.h, Rg, cg);
 					float32 contour[80];
 					const uint32 nc = NkGContourArrondi(r, cg, contour, 8u);
@@ -2215,7 +2479,7 @@ namespace nkuidesign {
 				};
 				// LES QUATRE RAYONS EFFECTIFS, lus par la porte du modèle.
 				float32 Rc[4];
-				NkGRayons(n, Rc);
+				NkGRayonsVus(host, n, Rc);
 				// L'UNI : le contour du trace edite s'il y en a un (et si le peintre sait le
 				// polygone), la boite arrondie sinon -- une seule porte pour les trois sites
 				auto peindreUni = [&](uint32 rgba) {
@@ -2232,6 +2496,23 @@ namespace nkuidesign {
 						const NkRemplissage &f = n.fills[fi];
 						if (!f.visible)
 							continue;
+						// L'APERCU VISE UN REMPLISSAGE PRECIS (ou le fond effectif, -1) :
+						// la porte repond pour CE remplissage-ci, et rend sa couleur du
+						// modele partout ailleurs.
+						// LE REMPLISSAGE DU DESSUS est celui que l'état surcharge : c'est
+						// lui que `FondEffectif` rend, donc c'est lui que `NkFondVu`
+						// remplace. Les autres gardent leur couleur du modèle.
+						// ⚠️ PAR INDICE, PLUS PAR POINTEUR (12/09). L'ancienne ligne comparait
+						//    `n.FondEffectif()` a `f.couleur.Data()` : sur un degrade nu, la premiere
+						//    rend `nullptr` et la comparaison est FAUSSE pour tous les remplissages --
+						//    `NkFondVu` n'etait jamais consulte, et le fond d'etat se perdait en
+						//    silence (0 commande sur 30). L'indice, lui, designe le dessus meme quand
+						//    il n'a aucune couleur unie a montrer.
+						const bool duDessus = ((nkentseu::int32)fi == n.IndexDessusVisible());
+						const char *couleurVue = NkCouleurApercue(
+							host, noeud, (nkentseu::int32)fi,
+							NkCouleurApercue(host, noeud, -1,
+											 duDessus ? NkFondVu(host, n) : f.couleur.Data()));
 						// ②-2 le mode de fusion EXACT de ce remplissage, pousse au peintre le temps
 						//     de le peindre (Multiply, Screen, Darken, Lighten, Plus Lighter)
 						const renderdetail::NkGardeFusion gardeFusion(p, f.fusion);
@@ -2246,22 +2527,30 @@ namespace nkuidesign {
 						if (f.EstImage()) {
 							// LA SOURCE, si le fournisseur la donne et si le peintre sait
 							// peindre une image ; sinon le damier, et l'absence est notee
-							if (!NkGPeindreImage(p, r, Rc, f, traceNb >= 3u ? traceXY : nullptr, traceNb))
-								NkGDamier(p, r, Rc, f.opacite);
+							if (!NkGPeindreImage(p, r, Rc, f, traceNb >= 3u ? traceXY : nullptr, traceNb,
+												 heritee))
+								NkGDamier(p, r, Rc, f.opacite, heritee);
 							peint = true;
 							continue;
 						}
-						if (peindreDegrade(f.degrade)) {
+						// ⚠️ ON REMPLACE D'ABORD, ON MULTIPLIE ENSUITE -- l'ordre se decide une fois.
+						//    Un etat qui pose un `fond` REMPLACE le remplissage du dessus, degrade
+						//    compris : le degrade cede la place a l'aplat, et la teinte multiplie
+						//    ENSUITE ce qui a ete choisi. Dans l'autre sens, le remplacement
+						//    ecraserait la teinte et les deux reglages se contrediraient.
+						//
+						// 🔴 C'EST LE SECOND VERROU NOMME EN Q155 : ce `continue` courait AVANT tout
+						//    usage de `couleurVue`, donc la couleur d'etat calculee juste au-dessus
+						//    etait jetee. Il ne court plus quand un etat remplace ce fond-la.
+						const bool remplaceParEtat = duDessus && NkFondDEtatPose(host, n);
+						if (!remplaceParEtat && peindreDegrade(f.degrade)) {
 							peint = true;
 							continue;
 						}
-						if (f.couleur.Empty())
+						if ((!couleurVue || !*couleurVue))
 							continue;
-						const uint32 base = NkGCouleur(f.couleur.Data());
-						const float32 k = (f.opacite < 0.f ? 0.f
-										   : f.opacite > 100.f ? 100.f
-															   : f.opacite)
-										  * 0.01f;
+						const uint32 base = NkGCouleur(couleurVue);
+						const float32 k = NkKOpacite(f.opacite, heritee);
 						const uint32 a = (uint32)((base & 0xFFu) * k + 0.5f);
 						const uint32 rgbaF = (base & 0xFFFFFF00u) | (a & 0xFFu);
 						peindreUni(rgbaF);
@@ -2289,11 +2578,19 @@ namespace nkuidesign {
 					}
 					fondPeint = peint;
 				} else if (!n.fill.Empty()) {
-					rgbaFond = NkGCouleur(n.fill.Data());
+					// L'APERCU PASSE AVANT LA CLE SIMPLE, comme il passe avant la liste :
+					// meme porte, meme priorite (`NkCouleurApercue`).
+					// ③ (11/09) LA CLE SIMPLE HERITE L'OPACITE DU NŒUD, comme la liste
+					//   (`NkKOpacite(f.opacite, heritee)`) : elle l'IGNORAIT -- un nœud a
+					//   `fill` seul restait opaque sous un CALQUE a 50 %, et le cas 151 l'a
+					//   vu (fond a=255 pendant que le texte enfant passait a 128). Mesure :
+					//   aucun nœud du document de Rodolf n'est sous 100.
+					rgbaFond = NkGRGBAHerite(NkGCouleur(NkCouleurApercue(host, noeud, -1, NkFondVu(host, n))),
+											 heritee);
 					peindreUni(rgbaFond);
 					fondPeint = true;
 				} else {
-					rgbaFond = p.ColorOf(host.Role("doc_field_bg"));
+					rgbaFond = NkGRGBAHerite(p.ColorOf(host.Role("doc_field_bg")), heritee);
 					peindreUni(rgbaFond);
 					fondPeint = true; // le fond de rôle EST un fond
 				}
@@ -2302,25 +2599,21 @@ namespace nkuidesign {
 				// l'inspecteur grise la rangee et le dit), la position et la jointure du
 				// modele ; sans polygone au peintre, le contour de la boite dit qu'il y a
 				// une bordure.
+				// ── LES BORDURES QUI SE PEIGNENT : LA PORTE, UNE FOIS (11/09) ────────
+				// ⚠️ Plus aucun filtre ni recopie de `borderColor` ici : la porte
+				//    `BorduresEffectives` decide seule de ce qui se peint -- les deux
+				//    boucles ci-dessous et la ligne plus bas ne font que dessiner.
+				const NkBordure *bordures[NkUINode::kMaxBorduresPeintes];
+				NkBordure logementBordures[NkUINode::kMaxBorduresPeintes + 1u];
+				const uint32 nbBordures =
+					NkBorduresVues(host, n, bordures, NkUINode::kMaxBorduresPeintes, logementBordures);
 				if (traceNb >= 3u) {
-					bool unTrait = false;
-					auto anneau = [&](const NkBordure &b) {
-						if (!b.visible || b.couleur.Empty() || b.epaisseur <= 0.f)
-							return;
-						unTrait = true;
-						if (!NkGAnneauTrace(p, traceXY, traceNb, NkGBordureRGBA(b), b.epaisseur, b.position, b.jointure.Data()))
+					for (uint32 bi = 0; bi < nbBordures; ++bi) {
+						const NkBordure &b = *bordures[bi];
+						if (!NkGAnneauTrace(p, traceXY, traceNb, NkGBordureRGBA(b, heritee), b.epaisseur, b.position, b.jointure.Data()))
 							p.OutlineSharp(r, host.Role("border"));
-					};
-					for (uint32 bi = 0; bi < (uint32)n.borders.Size(); ++bi)
-						anneau(n.borders[bi]);
-					if (n.borders.Empty() && !n.borderColor.Empty()) {
-						NkBordure b;
-						b.couleur = n.borderColor;
-						b.epaisseur = n.borderW > 0.f ? n.borderW : 1.f;
-						b.position = NkBordurePos::Interieur; // le geste historique
-						anneau(b);
 					}
-					if (!unTrait && !fondPeint)
+					if (nbBordures == 0u && !fondPeint)
 						p.OutlineSharp(r, host.Role("border"));
 					return;
 				}
@@ -2329,35 +2622,11 @@ namespace nkuidesign {
 				//    fichier porte et que l'écran ignore. `NkGCadre` déplace les
 				//    quatre bandes selon intérieur / centre / extérieur : c'est
 				//    tout ce que « position » veut dire, et ça se voit.
-				if (!n.borders.Empty()) {
-					bool trace = false;
-					for (uint32 bi = 0; bi < (uint32)n.borders.Size(); ++bi) {
-						const NkBordure &b = n.borders[bi];
-						if (!b.visible || b.couleur.Empty() || b.epaisseur <= 0.f)
-							continue;
-						NkGCadre(p, r, b, Rc, rgbaFond);
-						trace = true;
-					}
-					if (!trace && !fondPeint) {
-					// 🔴 `OutlineSharp` ET NON UN ANNEAU ARRONDI, ET C'EST UNE
-					//    LIMITE, PAS UN CHOIX. Ici AUCUN fond n'a ete peint : il
-					//    n'existe donc pas de couleur pour creuser l'interieur, et
-					//    ce peintre n'a ni primitive d'anneau ni masque.
-					//    `OutlineSharp` (`AddRect`, non rempli) est la SEULE forme
-					//    creuse disponible -- et elle ne sait pas arrondir.
-					//    J'ai essaye l'anneau : il peignait un BLOC PLEIN couleur
-					//    bordure par-dessus le noeud, et le banc l'a vu.
-					//    Manque porte au canal : une primitive de contour arrondi
-					//    (ou un decoupage arrondi) dans NkComponentPaint.
-						p.OutlineSharp(r, host.Role("border"));
-					}
-				} else if (!n.borderColor.Empty()) {
-					NkBordure b;
-					b.couleur = n.borderColor;
-					b.epaisseur = n.borderW > 0.f ? n.borderW : 1.f;
-					b.position = NkBordurePos::Interieur; // le geste historique
-					NkGCadre(p, r, b, Rc, rgbaFond);
-				} else if (!fondPeint) {
+				// (la liste, la cle simple, rien : trois branches d'avant, UNE boucle
+				//  depuis la porte -- une liste toute masquee rend 0, comme avant)
+				for (uint32 bi = 0; bi < nbBordures; ++bi)
+					NkGCadre(p, r, *bordures[bi], Rc, rgbaFond, heritee);
+				if (nbBordures == 0u && !fondPeint) {
 					// 🔴 `OutlineSharp` ET NON UN ANNEAU ARRONDI, ET C'EST UNE
 					//    LIMITE, PAS UN CHOIX. Ici AUCUN fond n'a ete peint : il
 					//    n'existe donc pas de couleur pour creuser l'interieur, et
@@ -2398,10 +2667,15 @@ namespace nkuidesign {
 				// LA BORDURE D'UNE LIGNE : sa premiere bordure visible donne couleur,
 				// epaisseur et EXTREMITES (plate / ronde / carree) ; sans bordure, le
 				// trait d'avant (role doc_text, 2 px, plate).
-				const NkBordure *bd = nullptr;
-				for (uint32 bi = 0; bi < (uint32)n.borders.Size() && !bd; ++bi)
-					if (n.borders[bi].visible && !n.borders[bi].couleur.Empty() && n.borders[bi].epaisseur > 0.f)
-						bd = &n.borders[bi];
+				// ⚠️ PAR LA PORTE, donc la cle historique `borderColor` vaut AUSSI pour
+				//    une ligne (11/09) : avant, seule la ligne l'ignorait. Mesure sur
+				//    le document de Rodolf : aucune ligne ne la porte -- son image ne
+				//    change pas ; c'est dit en Q145 plutot que glisse.
+				const NkBordure *bordures[NkUINode::kMaxBorduresPeintes];
+				NkBordure logementBordures[NkUINode::kMaxBorduresPeintes + 1u];
+				const uint32 nbBordures =
+					NkBorduresVues(host, n, bordures, NkUINode::kMaxBorduresPeintes, logementBordures);
+				const NkBordure *bd = nbBordures > 0u ? bordures[0] : nullptr;
 				const float32 ep = bd ? bd->epaisseur : 2.f;
 				const char *ext = bd ? bd->extremite.Data() : "";
 				float32 ux = bx - ax, uy = by - ay;
@@ -2426,7 +2700,8 @@ namespace nkuidesign {
 					bx += ux * ep * 0.5f;
 					by += uy * ep * 0.5f;
 				}
-				const uint32 rgbaL = bd ? NkGBordureRGBA(*bd) : p.ColorOf(host.Role("doc_text"));
+				const uint32 rgbaL = bd ? NkGBordureRGBA(*bd, heritee)
+										: p.ColorOf(host.Role("doc_text"));
 				bool ok = false;
 				if (bd) { // couleur propre : le trait est un quadrilatere (rgba)
 					const float32 nx = -uy * ep * 0.5f, ny = ux * ep * 0.5f;
@@ -2461,7 +2736,7 @@ namespace nkuidesign {
 			if (shape
 				&& (StrEq(shape, "triangle") || StrEq(shape, "pentagone")
 					|| StrEq(shape, "etoile"))) {
-				const uint32 rgba = n.FondEffectif() ? NkGFondRGBA(n)
+				const uint32 rgba = fondApercu ? NkGFondRGBADe(n, fondApercu, opaciteVue)
 													: p.ColorOf(host.Role("doc_field_bg"));
 				// ⚠️ LES SOMMETS VIENNENT DE `Sommets.h`, PAS D'UNE TABLE LOCALE.
 				//    Le mode points doit poser une poignee SUR CHAQUE SOMMET
@@ -2487,7 +2762,7 @@ namespace nkuidesign {
 				// LA FLECHE : le fut horizontal a mi-hauteur + la pointe pleine
 				// a droite (l'eventail Lunacy « Line ▸ arrow »).
 				const float32 ym = r.y + r.h * 0.5f;
-				const uint32 rgba = n.FondEffectif() ? NkGFondRGBA(n)
+				const uint32 rgba = fondApercu ? NkGFondRGBADe(n, fondApercu, opaciteVue)
 													: p.ColorOf(host.Role("doc_text"));
 				const float32 tete = r.w * 0.25f < 16.f ? (r.w * 0.25f) : 16.f;
 				bool ok = p.Line(r.x, ym, r.x + r.w - tete * 0.6f, ym, host.Role("doc_text"),
@@ -2507,13 +2782,13 @@ namespace nkuidesign {
 				// chantier nomme : ce cadre est l'objet reel du maquettage
 				// (wireframe), pas une mise en scene — il se pose, se deplace,
 				// se sauve, et dira son fichier le jour ou la cle existera.
-				const uint32 rgba = n.FondEffectif() ? NkGFondRGBA(n)
+				const uint32 rgba = fondApercu ? NkGFondRGBADe(n, fondApercu, opaciteVue)
 													: p.ColorOf(host.Role("doc_field_bg"));
 				// ⚠️ LE FOND SUIVAIT LE RAYON UNIFORME, LE CONTOUR AUCUN : le
 				//    coin etait donc arrondi ET souligne d'un angle droit.
 				//    Les deux lisent maintenant LES QUATRE rayons.
 				float32 Ri[4];
-				NkGRayons(n, Ri);
+				NkGRayonsVus(host, n, Ri);
 				// Le repli historique a 2 px quand AUCUN coin n'est pose --
 				// garde tel quel : le retirer changerait le dessin de tous les
 				// cadres d'image existants, ce qui n'est pas l'objet ici.
@@ -2539,7 +2814,7 @@ namespace nkuidesign {
 				// L'AVATAR (la variante de la famille Image) : pastille de profil
 				// — cercle plein + tete/epaules en creux (le vocabulaire des
 				// listes d'utilisateurs). Meme contrat de repli que l'Ellipse.
-				const uint32 rgba = n.FondEffectif() ? NkGFondRGBA(n)
+				const uint32 rgba = fondApercu ? NkGFondRGBADe(n, fondApercu, opaciteVue)
 													: p.ColorOf(host.Role("doc_field_bg"));
 				const float32 d = r.w < r.h ? r.w : r.h;
 				const NkPaintRect rc = {r.x + (r.w - d) * 0.5f, r.y + (r.h - d) * 0.5f, d, d};
@@ -2582,15 +2857,23 @@ namespace nkuidesign {
 				if (!vide) {
 					// non traduit = attenue MEME si une couleur est posee : le
 					// repli doit se voir.
-					const uint32 rgba = (n.textColor.Empty() || !traduit)
-											? p.ColorOf(roleTexte)
-											: NkGCouleur(n.textColor.Data());
+					// LA COULEUR VIENT DE LA PORTE D'ETAT (aperçu > état > base n'a pas
+					// de sens ici : la pipette ne vise pas le texte) ; « non traduit »
+					// attenue toujours, état ou pas -- le repli doit se voir.
+					const char *couleurTexte = NkCouleurTexteVue(host, n);
+					const uint32 rgbaTexte = (!couleurTexte || !traduit) ? p.ColorOf(roleTexte)
+																		 : NkGCouleur(couleurTexte);
+					// ③ LE TEXTE HERITE L'OPACITE (11/09) : il l'IGNORAIT -- un nœud à 50 %
+					//   gardait son texte à 100 %, et un Disabled ne pouvait pas estomper
+					//   son libellé. Mesure : aucun nœud du document de Rodolf n'est sous
+					//   100 -- son image ne change pas.
+					const uint32 rgba = NkGRGBAHerite(rgbaTexte, heritee);
 					const float32 corps = (n.fontPx > 0.f ? n.fontPx : 12.f) * host.docScale;
 					p.TextHex(r, t, rgba, roleTexte, al, corps, n.fontWeight);
 				} else
 					// LE MEME CORPS QUE LA BRANCHE D'AU-DESSUS : un repli qui ne
 					// suit pas le zoom est le defaut que Rodolf a signale DEUX fois.
-					p.TextHex(r, name ? name : "Texte", p.ColorOf(roleTexte), roleTexte, al,
+					p.TextHex(r, name ? name : "Texte", NkGRGBAHerite(p.ColorOf(roleTexte), heritee), roleTexte, al,
 							  (n.fontPx > 0.f ? n.fontPx : 12.f) * host.docScale, n.fontWeight);
 				return;
 			}
@@ -2792,11 +3075,18 @@ namespace nkuidesign {
 		t.d = m.d;
 		t.e = m.e;
 		t.f = m.f;
+		t.g = m.g; // la rangee de perspective (11/09) : zero pour l'orthogonal
+		t.h = m.h;
 		return t;
 	}
 
+	/// ⑤ `opaciteHeritee` : le produit des opacités des ancêtres, 0..1. Il
+	/// descend PAR LA RECURSION, comme `masque` se transmet par son `return` --
+	/// aucun drapeau n'est recopié sur les descendants, donc rien ne peut dériver
+	/// quand un nœud change de parent.
 	inline void NkDrawDocument(NkComponentPaint &p, const NkComponentInput &in, const NkUIDocument &doc,
-							   const NkLayoutResult &lay, NkDocumentHost &host, int32 node = 0) {
+							   const NkLayoutResult &lay, NkDocumentHost &host, int32 node = 0,
+							   nkentseu::float32 opaciteHeritee = 1.f) {
 		if (node == 0)
 			renderdetail::NkPoserResolveur(&doc); // les references « @cle » se resolvent ici
 		if (!doc.IsValidIndex(node) || !lay.Has(node))
@@ -2815,6 +3105,30 @@ namespace nkuidesign {
 			return;
 		const NkUINode &n = doc.nodes[(uint32)node];
 		const NkPaintRect r = lay.At(node);
+		// ⑤ L'OPACITÉ EFFECTIVE de ce nœud : la sienne, fois celle de ses ancêtres.
+		// ⚠️ UNE OPACITÉ NULLE NE COUPE PAS LA RÉCURSION, contrairement à `masque` :
+		//    les deux ne disent pas la même chose. Un nœud masqué est RETIRÉ ; un
+		//    nœud à 0 % est toujours là, simplement invisible -- et le pointage doit
+		//    continuer de le trouver. Confondre les deux ferait disparaître un objet
+		//    qu'on ne pourrait plus rattraper qu'en le cherchant dans l'arbre.
+		// ③ (11/09) L'ETAT AFFICHE PEUT POSER L'OPACITE DU NŒUD : une seule porte,
+		//   `NkOpaciteNoeudVue` -- et parce qu'elle entre ICI, dans le produit hérité,
+		//   un Disabled à 50 % estompe le nœud ET sa descendance.
+		const nkentseu::float32 opaciteEff =
+			opaciteHeritee * renderdetail::NkKOpacite(renderdetail::NkOpaciteNoeudVue(host, n), 1.f);
+		// ⑥ (07/09) LE MODE DE FUSION DU NŒUD, VERSION PARTIELLE : par COMMANDE.
+		//    La garde couvre le dessin du nœud ET sa descendance (elle vit jusqu'au
+		//    bout de la fonction) -- c'est ce qu'un mode de calque veut dire. La pile
+		//    de mélange de NKGui est une VRAIE pile (profondeur 16) : un enfant qui
+		//    pose le sien reprend la main pour ses propres commandes, puis rend.
+		// ⚠️ ON REUTILISE `NkGardeFusion`, celle des remplissages -- on n'en écrit
+		//    pas une seconde. Cinq modes exacts au GPU, treize « enregistrés, pas
+		//    peints » : la garde ne pousse rien pour ceux-là, donc rien n'est
+		//    approché. *Un repli qui reste plausible est pire qu'un refus.*
+		// ⚠️ CE N'EST PAS UN CALQUE COMPOSITÉ UNE SEULE FOIS : le nœud se fond avec
+		//    ce qui est déjà sur la toile. Le vrai calque demande une cible hors
+		//    écran -- chiffré (Q121), pas commencé.
+		const renderdetail::NkGardeFusion gardeFusionNoeud(p, n.fusion);
 		// ── LA MATRICE DU NOEUD, DANS LE PEINTRE ──────────────────────────
 		// Tout ce que ce noeud dessine (forme, composant, texte) passe par
 		// elle : rotation, miroirs, echelle, ancetres compris. Depilee AVANT
@@ -2850,7 +3164,8 @@ namespace nkuidesign {
 			if (posee && node != host.editionNode)
 				// UNE SEULE COMPOSITION, LUE PAR LES DEUX CHEMINS : celle que le
 				// pointage utilise deja (`NkPointDansNoeud` -> `NkMatEffective`).
-				renderdetail::DrawShape(p, r, n, host, NkMat2D{}); // le peintre transforme
+				renderdetail::DrawShape(p, r, n, host, NkMat2D{}, opaciteEff,
+										node); // le peintre transforme
 			else if (posee && host.editionEtiquette) {
 				// RENOMMAGE d'etiquette : le CORPS de l'artboard se dessine,
 				// seule l'etiquette se tait (le champ superpose la remplace).
@@ -2922,7 +3237,7 @@ namespace nkuidesign {
 			p.PopTransform(); // avant les enfants : chacun empile la sienne
 
 		for (uint32 i = 0; i < (uint32)n.children.Size(); ++i)
-			NkDrawDocument(p, in, doc, lay, host, n.children[i]);
+			NkDrawDocument(p, in, doc, lay, host, n.children[i], opaciteEff);
 	}
 
 } // namespace nkuidesign

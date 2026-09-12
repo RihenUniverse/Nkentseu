@@ -68,6 +68,19 @@ namespace nkuidesign {
 				bool embarquer = false;
 				NkString dossierSortie; ///< avec separateur final ; "" = le dossier du document
 				int32 profondeur = 0;
+				/// ③ (palier C) APLATIR LA PERSPECTIVE EN POLYGONE. Faux = la silhouette
+				/// orthogonale, declaree sur le groupe (le defaut du dialogue).
+				bool aplatir = false;
+				/// Les textes qu'on n'a PAS projetes en mode aplati : comptes ici, NOMMES
+				/// dans le rapport. Un fichier incomplet qui se tait est ce qu'on refuse.
+				uint32 textesNonProjetes = 0;
+				/// La projection PROPRE du nœud en cours, quand elle fuit ET qu'on aplatit ;
+				/// l'identite sinon. ⚠️ ELLE VIT ICI PLUTOT QUE DANS SIX SIGNATURES : les
+				/// ecrivains de forme recoivent deja l'`Ecrivain`, et un parametre de plus
+				/// par fonction serait six occasions de l'oublier -- la famille de defaut
+				/// qu'on demonte depuis quatre jours.
+				NkMat2D projectionCourante;
+				bool projeteLaForme = false;
 		};
 
 		inline void Nombre(float32 v, char *b, nkentseu::usize cap) {
@@ -138,16 +151,32 @@ namespace nkuidesign {
 		inline float32 Pourcent(float32 p) {
 			return p < 0.f ? 0.f : (p > 100.f ? 1.f : p * 0.01f);
 		}
+		/// LE MODE DE FUSION, TEL QUE LE FORMAT LE CONNAIT -- pas tel que notre
+		/// peintre le sait faire.
+		///
+		/// 🔴 CORRIGE LE 07/09 : cette table ne rendait que les CINQ modes exacts
+		///    de notre peintre et jetait les treize autres. *L'export s'alignait sur
+		///    la limite de l'ECRAN au lieu de la capacite du FORMAT.* Un document qui
+		///    porte « overlay » perdait le mot en chemin, alors que tout lecteur SVG
+		///    sait le peindre. Ce que NOUS ne savons pas peindre n'est pas une raison
+		///    de ne pas l'ECRIRE.
+		/// ⚠️ MAIS ON N'INVENTE RIEN : `plus-darker` est un nom de Lunacy, PAS une
+		///    valeur de `mix-blend-mode`. Il n'est pas exporte, et l'appelant le note.
 		inline const char *Fusion(const NkString &f) {
 			const char *c = f.Data();
 			if (!c || !*c)
 				return nullptr;
-			if (StrEq(c, "multiply")) return "multiply";
-			if (StrEq(c, "screen")) return "screen";
-			if (StrEq(c, "darken")) return "darken";
-			if (StrEq(c, "lighten")) return "lighten";
-			if (StrEq(c, "plus-lighter")) return "plus-lighter";
-			return nullptr; // un mode que le peintre ne sait pas non plus : alpha
+			// Les valeurs de `mix-blend-mode` (CSS Compositing 1, plus `plus-lighter`
+			// de Compositing 2). Nos cles SONT deja ces noms -- une table de
+			// traduction serait une seconde orthographe a tenir.
+			static const char *const kCss[16] = {
+				"multiply", "screen",      "overlay",   "darken",     "lighten",   "color-dodge",
+				"color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue",
+				"saturation", "color",     "luminosity", "plus-lighter"};
+			for (nkentseu::uint32 i = 0; i < 16u; ++i)
+				if (StrEq(c, kCss[i]))
+					return kCss[i];
+			return nullptr; // hors CSS (`plus-darker`) ou mode inconnu : non exporte, et dit
 		}
 		inline void Style(NkString &s, const NkRemplissage *f) {
 			const char *m = f ? Fusion(f->fusion) : nullptr;
@@ -256,8 +285,45 @@ namespace nkuidesign {
 			}
 			d.Append("Z");
 		}
-		inline Forme FormeRect(const NkUINode &n, const NkPaintRect &r, float32 retrait) {
+		/// ③ (palier C) LA SILHOUETTE APLATIE : les quatre coins PROJETES, en polygone.
+		///
+		/// 🔑 Mode « aplatir » de Rodolf : SVG n'a pas de perspective, donc pour que le
+		///    contour soit exact il faut l'ECRIRE en points. On perd la nature du nœud
+		///    (un `rect` devient un `polygon`) -- c'est le prix, et le dialogue le dit.
+		/// ⚠️ LE GROUPE NE PORTE ALORS PLUS SA MATRICE : les points sont deja dans le
+		///    repere de la page. Sans cela la projection s'appliquerait DEUX fois --
+		///    exactement le genre de fichier qui parait juste et ne l'est pas.
+		inline bool FormeProjetee(const NkMat2D &m, const NkPaintRect &r, float32 retrait, Forme &f) {
+			if (m.Affine())
+				return false; // rien a aplatir : l'affine passe par la matrice du groupe
+			const NkPaintRect q = {r.x + retrait, r.y + retrait, r.w - 2.f * retrait, r.h - 2.f * retrait};
+			float32 xy[8] = {q.x, q.y, q.x + q.w, q.y, q.x + q.w, q.y + q.h, q.x, q.y + q.h};
+			for (uint32 k = 0; k < 4u; ++k)
+				NkMatPoint(m, xy[k * 2u], xy[k * 2u + 1u]);
+			f.estRect = false;
+			f.ouverture = NkString();
+			f.ouverture.Append("<polygon points=\"");
+			char b[48], c2[48];
+			for (uint32 k = 0; k < 4u; ++k) {
+				Nombre(xy[k * 2u], b, sizeof(b));
+				Nombre(xy[k * 2u + 1u], c2, sizeof(c2));
+				if (k)
+					f.ouverture.Append(" ");
+				f.ouverture.Append(b);
+				f.ouverture.Append(",");
+				f.ouverture.Append(c2);
+			}
+			f.ouverture.Append("\"");
+			return true;
+		}
+		inline Forme FormeRect(const NkUINode &n, const NkPaintRect &r, float32 retrait,
+							   const NkMat2D *projection = nullptr) {
 			Forme f;
+			// ③ en mode « aplatir », la silhouette PROJETEE prime sur tout le reste :
+			//    l'arrondi n'a plus de sens sur un quadrilatere qui fuit, et il est dit
+			//    dans le rapport par la note du mode.
+			if (projection && FormeProjetee(*projection, r, retrait, f))
+				return f;
 			float32 R[4], c[4];
 			renderdetail::NkGRayons(n, R);
 			const NkPaintRect q = {r.x + retrait, r.y + retrait, r.w - 2.f * retrait, r.h - 2.f * retrait};
@@ -499,7 +565,7 @@ namespace nkuidesign {
 		// ── LE RECT ──────────────────────────────────────────────────────────
 		inline void Rect(Ecrivain &e, const NkUINode &n, const NkPaintRect &r, const char *fondRole) {
 			using namespace nkentseu;
-			const Forme forme = FormeRect(n, r, 0.f);
+			const Forme forme = FormeRect(n, r, 0.f, e.projeteLaForme ? &e.projectionCourante : nullptr);
 			auto plein = [&](const char *fill, float32 opacite, const NkRemplissage *f) {
 				++e.elements;
 				Indenter(e);
@@ -563,7 +629,7 @@ namespace nkuidesign {
 					const float32 retrait = b.position == NkBordurePos::Interieur ? ep * 0.5f
 											: b.position == NkBordurePos::Exterieur ? -ep * 0.5f
 																					 : 0.f;
-					const Forme ft = FormeRect(n, r, retrait);
+					const Forme ft = FormeRect(n, r, retrait, e.projeteLaForme ? &e.projectionCourante : nullptr);
 					++e.elements;
 					Indenter(e);
 					e.corps.Append(ft.ouverture.Data());
@@ -605,16 +671,15 @@ namespace nkuidesign {
 				}
 				return true;
 			};
+			// LA MEME PORTE QUE LE PEINTRE (11/09) : l'export ne recopie plus la cle
+			// historique, il lit ce qui se peint.
 			bool unTrait = false;
-			for (uint32 i = 0; i < (uint32)n.borders.Size(); ++i)
-				unTrait = trait(n.borders[i]) || unTrait;
-			if (n.borders.Empty() && !n.borderColor.Empty()) {
-				NkBordure b;
-				b.couleur = n.borderColor;
-				b.epaisseur = n.borderW > 0.f ? n.borderW : 1.f;
-				b.position = NkBordurePos::Interieur;
-				unTrait = trait(b);
-			}
+			const NkBordure *bordures[NkUINode::kMaxBorduresPeintes];
+			NkBordure bordureHistorique;
+			const uint32 nbBordures =
+				n.BorduresEffectives(bordures, NkUINode::kMaxBorduresPeintes, bordureHistorique);
+			for (uint32 i = 0; i < nbBordures; ++i)
+				unTrait = trait(*bordures[i]) || unTrait;
 			(void)peint;
 			(void)unTrait;
 		}
@@ -653,6 +718,21 @@ namespace nkuidesign {
 			}
 			++e.elements;
 			++e.textes;
+			// ③ (palier C) LE TEXTE N'A PAS DE FORME PROJETABLE, ET ON LE NOMME. En mode
+			//    << aplatir >>, les formes partent en polygones exacts ; un `<text>`, lui,
+			//    s'ecrit DROIT dans son cadre incline -- le projeter demanderait les
+			//    contours de chaque glyphe (que l'export n'a pas) ou l'atlas embarque en
+			//    `<image>` (qui ne serait plus du texte). *Le fichier ne doit pas paraitre
+			//    juste sans l'etre :* chaque texte concerne est compte ET nomme ici.
+			if (e.aplatir && e.st && n.perspective && (n.inclinaisonX != 0.f || n.inclinaisonY != 0.f)) {
+				++e.textesNonProjetes;
+				char avis[220];
+				snprintf(avis, sizeof(avis),
+						 "texte NON PROJETE (ecrit droit) en mode « aplatir » : « %s » — un texte n'a pas de "
+						 "forme projetable sans les contours de ses glyphes",
+						 contenu ? contenu : "(sans texte)");
+				Note(e, avis);
+			}
 			Indenter(e);
 			e.corps.Append("<text");
 			Ajouter(e.corps, "x", x);
@@ -703,8 +783,23 @@ namespace nkuidesign {
 			if (n.masque)
 				return;
 			const NkPaintRect r = e.lay->At(i);
-			const NkMat2D eff = NkMatEffective(doc, *e.lay, i);
+			// ⚠️ LA MATRICE ORTHOGONALE, ET L'EXPORT LE DIT (11/09) : SVG n'a pas de
+			//    perspective -- sa `matrix(...)` est affine par definition. On ecrit donc
+			//    la silhouette SANS fuite, et on pose `data-projection` / `data-focale`
+			//    sur le groupe pour que le fichier ne fasse pas croire au contraire.
+			//    *Un fichier qui a l'air juste et ne l'est pas est ce qu'on refuse.* Le
+			//    dialogue a deux modes (garder orthogonal / aplatir en polygone), tranche
+			//    par Rodolf, vient au palier C.
+			const NkMat2D eff = NkMatEffective(doc, *e.lay, i, false);
 			const NkMat2D propre = NkMatComposer(NkMatInverse(parentEff), eff);
+			// ③ (palier C) EN MODE << APLATIR >>, la silhouette part en POLYGONE PROJETE :
+			//    on calcule ici la projection propre du nœud (celle qui fuit), et le
+			//    groupe ne portera PAS sa matrice -- les points sont deja dans le repere
+			//    de la page. Sans cette garde, la projection s'appliquerait deux fois.
+			const NkMat2D effP = NkMatEffective(doc, *e.lay, i, true);
+			const NkMat2D propreP = NkMatComposer(NkMatInverse(parentEff), effP);
+			e.projeteLaForme = e.aplatir && !propreP.Affine();
+			e.projectionCourante = e.projeteLaForme ? propreP : NkMat2D();
 			++e.groupes;
 			Indenter(e);
 			e.corps.Append("<g");
@@ -715,7 +810,40 @@ namespace nkuidesign {
 			}
 			if (!n.label.Empty())
 				Ajouter(e.corps, "data-nom", Echapper(n.label.Data()).Data());
-			if (!propre.Identite()) {
+			if (n.perspective && (n.inclinaisonX != 0.f || n.inclinaisonY != 0.f)) {
+				Ajouter(e.corps, "data-projection", "perspective");
+				Ajouter(e.corps, "data-focale", n.focale);
+			}
+			// ① (07/09) L'OPACITE ET LA FUSION DU NŒUD, SUR SON GROUPE.
+			// 🔴 Elles etaient PERDUES EN SILENCE : `Style()` prend un
+			//    `NkRemplissage*`, jamais un nœud, donc l'export portait celles des
+			//    REMPLISSAGES et jetait celles du CALQUE. A l'ecran elles agissent, au
+			//    fichier elles disparaissaient -- un SVG coherent avec lui-meme et
+			//    incomplet, la meme famille que l'arrondi par coin.
+			// ⚠️ SUR LE `<g>`, ET C'EST EXACTEMENT LA BONNE PLACE : SVG applique
+			//    `opacity` au GROUPE -- donc au nœud ET a ses enfants, composite UNE
+			//    SEULE FOIS. C'est le vrai calque que notre peintre ne sait pas encore
+			//    faire (il multiplie element par element) : sur ce point l'export est
+			//    PLUS JUSTE que l'ecran. C'est un fait, pas un defaut -- et il faut le
+			//    savoir avant de comparer les deux.
+			// ⚠️ ADDITIVES : rien tant qu'elles valent leur defaut.
+			if (n.opacite != 100.f)
+				Ajouter(e.corps, "opacity", Pourcent(n.opacite));
+			if (!n.fusion.Empty()) {
+				if (const char *mf = Fusion(n.fusion)) {
+					e.corps.Append(" style=\"mix-blend-mode:");
+					e.corps.Append(mf);
+					e.corps.Append("\"");
+				} else {
+					char t[160];
+					snprintf(t, sizeof(t),
+							 "mode de fusion « %s » sans equivalent CSS : non exporte",
+							 n.fusion.Data());
+					Note(e, t);
+				}
+			}
+			// ③ APLATI : pas de `matrix(...)` -- la silhouette porte deja la projection.
+			if (!propre.Identite() && !e.projeteLaForme) {
 				char t[200], a[48], b[48], c[48], d[48], f[48], g[48];
 				Nombre(propre.a, a, sizeof(a));
 				Nombre(propre.b, b, sizeof(b));
@@ -965,6 +1093,7 @@ namespace nkuidesign {
 		e.st = &st;
 		e.lay = lay;
 		e.embarquer = o.embarquer;
+		e.aplatir = o.aplatirPerspective; // ③ palier C : le mode choisi au dialogue
 		e.dossierSortie = NkString(dossierSortie ? dossierSortie : "");
 		e.profondeur = 2;
 		for (uint32 i = 0; i < (uint32)noeuds.Size(); ++i) {
@@ -1010,8 +1139,16 @@ namespace nkuidesign {
 		res.images = e.images;
 		res.largeur = (int32)(res.zone.w + 0.5f);
 		res.hauteur = (int32)(res.zone.h + 0.5f);
-		snprintf(res.message, sizeof(res.message), "SVG : %u élément(s), %u texte(s), %u dégradé(s), %u image(s), %u note(s)",
-				 e.elements, e.textes, e.degrades, e.images, e.notesNb);
+		// ③ (palier C) LE RAPPORT DIT CE QUE LE FICHIER NE FAIT PAS : en mode « aplatir »,
+		//    le nombre de textes ecrits DROIT -- chacun deja nomme dans une note.
+		if (e.textesNonProjetes > 0u)
+			snprintf(res.message, sizeof(res.message),
+					 "SVG aplati : %u élément(s), %u texte(s) dont %u NON PROJETÉS (écrits droits, nommés "
+					 "dans les notes), %u dégradé(s), %u image(s), %u note(s)",
+					 e.elements, e.textes, e.textesNonProjetes, e.degrades, e.images, e.notesNb);
+		else
+			snprintf(res.message, sizeof(res.message), "SVG : %u élément(s), %u texte(s), %u dégradé(s), %u image(s), %u note(s)",
+					 e.elements, e.textes, e.degrades, e.images, e.notesNb);
 		return true;
 	}
 
@@ -1275,6 +1412,7 @@ namespace nkuidesign {
 		o.selection = c.selection;
 		o.embarquer = c.embarquer;
 		o.unFichierParObjet = c.parObjet;
+		o.aplatirPerspective = c.aplatirPerspective; // ③ palier C : retenu d'un export a l'autre
 		// ④ UN FICHIER PAR OBJET : c'est le DOSSIER choisi qui compte, pas le nom saisi
 		if (o.unFichierParObjet && o.selection && st.sel.Count() >= 2u) {
 			NkString msg;

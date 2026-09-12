@@ -38,7 +38,10 @@
 //   faudrait pour s'en passer.
 // -----------------------------------------------------------------------------
 
+#include "NKGui/Core/NkGuiDrawListRaster.h" // LE rasteriseur de la maison (la pipette le PILOTE)
 #include "NKEditorKit/Components/NkGuiComponentPaint.h"
+#include "NKEditorKit/Components/NkComponentRole.h" // LE catalogue de roles du kit --
+// la seule table qui porte les EVENEMENTS exiges et le masque d'ETATS (mesure Q155)
 #include "NKEditorKit/NkFilePickerNav.h"
 #include "NKWindow/Core/NkLauncher.h" // ⑤ LE lanceur systeme de la maison (un seul) // ② le selecteur a deux volets (vignettes)
 #include "NKEditorKit/NkEditorKit.h"
@@ -495,6 +498,53 @@ namespace nkuidesign {
 				return entrees[(uint32)entrees.Size() - 1];
 			}
 	};
+
+	// ── ③ LE FOND DE LA TOILE : UNE COULEUR CHOISIE, OU LE RÔLE DU THÈME ─────
+	//
+	// 🔴 CADRAGE DE RODOLF (07/09) : *« modifier sa couleur ou changer son fond,
+	//    soit avec des grilles soit laisser comme c'est actuellement »*.
+	//    **L'APPARENCE ACTUELLE EST UNE OPTION VALIDE**, pas un défaut à
+	//    remplacer : c'est pour ça que le champ vide ne veut pas dire « noir »,
+	//    il veut dire « le thème décide », et c'est l'état de départ.
+	//
+	// ⚠️ CE QU'ELLE NE FAIT PAS, ET POURQUOI. Elle ne touche PAS aux rôles
+	//    `canvas_bg` / `canvas_dot` du thème. Ces rôles vivent dans les fichiers
+	//    de thème que la coquille charge pour TOUTES les applications de la
+	//    maison (`NkLoadTheme`) : les réécrire d'ici changerait le fond de NKCode
+	//    en réglant celui de NkUIDesign. Un réglage d'application se pose donc
+	//    PAR-DESSUS le thème, il ne le remplace pas.
+	//
+	// ⚠️ ET ELLE REFUSE PLUTÔT QUE DE REPLIER. Un code illisible ne devient ni
+	//    noir ni magenta : elle rend `false`, et l'appelant peint le rôle du
+	//    thème — *un repli qui reste plausible est pire qu'un refus*. Le MAGENTA
+	//    du document (`NkGCouleur`) dit « variable absente » ; ici il n'y a pas de
+	//    variable, il y a un champ qu'on est en train de taper.
+	//
+	// ⚠️ LE PARSEUR EST CELUI DU DOCUMENT (`renderdetail::NkGHexRGBA`), pas un
+	//    neuvième : la toile et les remplissages lisent le même « #rrggbb ».
+	//
+	/// Rend `true` si `hex` désigne une couleur ; `rgba` n'est écrit que dans ce cas.
+	inline bool NkFondCanvasExplicite(const char *hex, nkentseu::uint32 &rgba) noexcept {
+		if (!hex || hex[0] != '#')
+			return false;
+		nkentseu::uint32 n = 0u;
+		for (const char *p = hex + 1; *p; ++p, ++n) {
+			const char c = *p;
+			const bool hexa = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+							  || (c >= 'A' && c <= 'F');
+			if (!hexa)
+				return false;
+		}
+		// ⚠️ SIX CHIFFRES, PAS TROIS NI HUIT — et c'est le parseur qui le dit, pas
+		//    une préférence. `NkGHexRGBA` lit `hex[1..6]` et pose l'alpha à 255 :
+		//    « #abc » lui ferait lire l'octet nul et rendre du gris, « #rrggbbaa »
+		//    perdrait son alpha en silence. Accepter une forme que le parseur ne
+		//    sait pas lire, c'est promettre une couleur et en peindre une autre.
+		if (n != 6u)
+			return false;
+		rgba = renderdetail::NkGHexRGBA(hex);
+		return true;
+	}
 
 	struct DesignState {
 			NkUIDocument doc;
@@ -1057,6 +1107,49 @@ namespace nkuidesign {
 				(void)SetGfxConfig(api);
 			}
 
+			// ── ③ LE DÉCOR DE LA TOILE, LU ET ÉCRIT AU MÊME ENDROIT ─────────
+			//
+			// ⚠️ DEUX PORTES BASCULENT LA GRILLE : le clic droit dans le vide et
+			//    la section CANVAS de l'inspecteur. Elles écrivent la MÊME variable
+			//    et appellent le MÊME enregistrement — c'est la leçon de
+			//    `SetGfxConfig` juste au-dessus, où le menu et le panneau avaient
+			//    commencé par écrire chacun de son côté.
+			//
+			// ⚠️ ET LE RÉGLAGE SURVIT À LA FERMETURE, sinon la section mentirait par
+			//    omission : un champ qu'on remplit et qui se vide au prochain
+			//    lancement, sans qu'une ligne le dise, se découvre trop tard.
+			//    Le fichier est `nkuidesign.cfg`, il porte déjà `gfx` et `hier_bas` ;
+			//    on remplace la ligne de la clé, jamais le fichier.
+			void EnregistrerDecor() {
+				(void)NkGfxConfigSetKey(NkGfxConfigPath(), "canvas_grille",
+										grilleVisible ? "1" : "0");
+				(void)NkGfxConfigSetKey(NkGfxConfigPath(), "canvas_fond",
+										canvasFill.couleur.Empty() ? "" : canvasFill.couleur.Data());
+			}
+			/// Lecture PARESSEUSE, une seule fois — le geste de `hier_bas`. Elle ne
+			/// touche à rien si le fichier n'existe pas : l'état par défaut EST
+			/// l'apparence d'aujourd'hui.
+			void LireDecorUneFois() {
+				if (decorLu)
+					return;
+				decorLu = true;
+				const NkString cfg = nkentseu::NkFile::ReadAllText(NkPath(NkGfxConfigPath()));
+				if (cfg.Empty())
+					return;
+				char v[64];
+				if (NkGfxConfigValue(cfg.Data(), "canvas_grille", v, sizeof(v)))
+					grilleVisible = (v[0] != '0');
+				if (NkGfxConfigValue(cfg.Data(), "canvas_fond", v, sizeof(v))) {
+					uint32 rgbaLu = 0u;
+					// ⚠️ ON NE CHARGE PAS CE QU'ON NE SAIT PAS PEINDRE. Un fichier
+					//    édité à la main peut porter n'importe quoi ; une valeur
+					//    illisible laisse le thème décider plutôt que d'installer un
+					//    champ que la toile ignorera en silence.
+					if (NkFondCanvasExplicite(v, rgbaLu))
+						canvasFill.couleur = NkString(v);
+				}
+			}
+
 			/// PEUPLER LE REGISTRE — la porte, hors de toute interface.
 			///
 			/// 🔴 ELLE ETAIT ENFERMEE DANS `Init()`, ET LE BANC A TROUVE : le
@@ -1281,6 +1374,58 @@ namespace nkuidesign {
 			/// peint, et ce chantier ne change pas ce que Rodolf voit au
 			/// démarrage — il lui donne l'interrupteur qui manquait.
 			bool grilleVisible = true;
+			/// ── ③ LE FOND CHOISI DE LA TOILE ────────────────────────────�
+			/// « #rrggbb », ou VIDE = le rôle `canvas_bg` du thème, c'est-à-dire
+			/// l'apparence d'aujourd'hui. Ce n'est PAS une donnée de document :
+			/// le fichier enregistré n'en sait rien (le décor d'éditeur n'a jamais
+			/// été dans le format), il vit dans `nkuidesign.cfg` comme le backend
+			/// graphique et la hauteur de la section basse.
+			/// ③ (07/09) UN VRAI `NkRemplissage`, ET C'EST CE QUI OUVRE L'ENVELOPPE.
+			/// Il ne portait qu'une chaine hexa : le popover complet -- fond opaque,
+			/// onglets, rangee hexa, opacite, croix -- exige un REMPLISSAGE (160
+			/// occurrences sur ses 1046 lignes) et n'exige un NŒUD que huit fois.
+			/// Lui en donner un vrai, c'est lui donner la seule chose qui manquait.
+			/// ⚠️ IL N'EST PAS DANS LE DOCUMENT, et le type ne dit rien de la : c'est
+			///    un champ d'ETAT, enregistre dans `nkuidesign.cfg` comme le reste du
+			///    decor. Sa couleur seule est persistee (cle `canvas_fond`).
+			NkRemplissage canvasFill;
+			/// ① LE REMPLISSAGE TRANSITOIRE D'UNE COULEUR SIMPLE (un champ d'etat, la
+			///   couleur d'un effet, celle du texte) : l'enveloppe exige un
+			///   `NkRemplissage`, ces champs portent une COULEUR. Celui-ci recoit la
+			///   couleur du champ vise a l'ouverture ; chaque ecriture de l'enveloppe le
+			///   traverse et se pose dans le bloc d'etat (`touche()`). Il n'est ni dans le
+			///   document ni dans le fichier : c'est une adaptation, pas une donnee.
+			NkRemplissage couleurFill;
+			/// L'APERCU DU FOND DE LA TOILE -- **vu, pas ecrit**. Le canvas n'est pas
+			/// un nœud : son aperçu ne peut pas vivre dans `host.apercu*`, qui est
+			/// indexe par nœud. Meme regle, meme priorite, autre porte.
+			char canvasApercu[12] = {};
+			// ── ② L'IMAGE FIGEE DU PRELEVEMENT (07/09) ──────────────────────
+			//
+			// 🔴 RODOLF : *« lorsqu'on prend la pipette le changement n'est pas
+			//    dynamique. Normalement ça doit l'être. »*
+			//
+			// ⚠️ ET IL N'Y A PAS BESOIN DE RASTERISER A CHAQUE IMAGE -- c'était mon
+			//    objection, et elle tombe : **pendant le prélèvement, rien n'est
+			//    édité**. Une seule rastérisation À L'ENTRÉE du mode, et le survol
+			//    n'est plus qu'une LECTURE dans cette image. Le coût est payé une
+			//    fois, pas soixante fois par seconde.
+			//
+			// ⚠️ PREMISSE VERIFIEE, ET DEUX EXCEPTIONS QUI PLAIDENT *POUR* LE GEL :
+			//    la page ne change pas, sauf (a) le caret d'un champ focalisé, qui
+			//    clignote sur `ctx.time`, et (b) **le survol lui-même** -- déplacer
+			//    le pointeur rallume des rangées sous lui. Sur une image vivante, la
+			//    pipette prélèverait donc SON PROPRE effet de survol. Le gel n'est
+			//    pas seulement bon marché : *il prélève la page telle qu'on l'a vue
+			//    en armant, pas telle que le geste l'a modifiée.*
+			nkgui::NkGuiDrawListRaster pipetteImage;
+			bool pipetteImagePrete = false;
+			/// Le décor a changé et n'est pas encore écrit : posé par le sélecteur
+			/// pendant le glisser, consommé au relâcher par le peintre de la toile.
+			bool decorSale = false;
+			/// Les deux réglages de décor ont-ils déjà été lus dans le fichier ?
+			/// Lecture PARESSEUSE, une fois — le même geste que `hier_bas`.
+			bool decorLu = false;
 			/// Le résultat VIVANT du geste en cours — les guides à peindre.
 			/// Remis à zéro au relâcher : un guide qui survit à son geste est un
 			/// trait qui ment.
@@ -1456,21 +1601,60 @@ namespace nkuidesign {
 			};
 			NkAvisExport avisExport;
 
+			// ── LA PILE DES BANDEAUX D'INCRUSTATION (06/09) ─────────────────────
+			// ⚠️ DEFAUT MESURE, ET C'EST LE PLUS COUTEUX DES QUATRE DU DIALOGUE
+			//    D'APRES-EXPORT : les DEUX bandeaux etaient ancres au MEME point
+			//    (`region + 12, region + 12`). Le premier -- l'avis court -- est peint
+			//    avant et ETEINT les deux entrees sur son propre rectangle (28 px de
+			//    haut) ; les trois boutons du second vivent a `+16 .. +40` de son cadre,
+			//    donc DANS cette bande. « Ouvrir le dossier », « Ouvrir le fichier » et
+			//    la croix de fermeture voyaient donc un clic deja consomme -- exactement
+			//    les trois symptomes que Rodolf decrit (« ca ne fait rien », « ca ne se
+			//    ferme pas »).
+			//
+			//    Le second bandeau se voyait quand meme : il est peint APRES, donc
+			//    par-dessus. C'est ce qui rendait le defaut illisible -- rien ne
+			//    recouvrait rien A L'ECRAN, et le mangeur de clic etait invisible.
+			//
+			// ⚠️ LE REMEDE N'EST PAS D'INVERSER L'ORDRE : deux bandeaux au meme endroit
+			//    resteraient deux bandeaux au meme endroit, et le suivant qu'on ajoutera
+			//    repaiera la meme facture. **UN SEUL ENDROIT DECIDE QUI EST OU** -- une
+			//    pile, dont chaque etage connait la hauteur de celui du dessus. Le dessin
+			//    ET la sonde lisent la meme, comme pour les boutons du bandeau.
+			static constexpr float32 kBandeauX = 12.f;	  ///< marge gauche de la pile
+			static constexpr float32 kBandeauY = 12.f;	  ///< haut de la pile
+			static constexpr float32 kBandeauAvisH = 28.f; ///< hauteur de l'avis court
+			static constexpr float32 kBandeauEcart = 8.f;  ///< entre deux etages
+
+			/// L'ETAGE 1 : l'avis court. `lTexte` = la largeur mesuree du libelle.
+			static nkgui::NkRect GeomBandeauAvis(const nkgui::NkRect &region, float32 lTexte) {
+				float32 lb = lTexte + 28.f;
+				if (lb > region.w - 24.f)
+					lb = region.w - 24.f;
+				return {region.x + kBandeauX, region.y + kBandeauY, lb, kBandeauAvisH};
+			}
+
 			/// Les rectangles du bandeau, calcules UNE FOIS et lus par le dessin ET par la
 			/// sonde. Deux calculs separes auraient permis au bouton peint et au bouton
 			/// cliquable de diverger -- le defaut le plus cher de ce chantier.
 			struct NkGeomAvisExport {
 				nkgui::NkRect cadre, vignette, dossier, fichier, fermer;
 			};
+			/// L'ETAGE 2 : le resultat exporte. `avisPresent` DESCEND le bandeau d'un
+			/// etage -- il n'a PAS de valeur par defaut, et c'est delibere : une valeur
+			/// par defaut qui produit le defaut qu'on chasse le refabrique a chaque nouvel
+			/// appelant. L'appelant doit dire s'il y a un avis au-dessus de lui.
 			static NkGeomAvisExport GeomAvisExport(const nkgui::NkRect &region, float32 lTitre,
-						 float32 lDetail, bool avecVignette) {
+						 float32 lDetail, bool avecVignette, bool avisPresent) {
 				NkGeomAvisExport g;
 				const float32 h = 56.f, pad = 10.f;
 				const float32 lv = avecVignette ? 40.f : 0.f;
 				const float32 lTexte = (lTitre > lDetail ? lTitre : lDetail) + 8.f;
 				const float32 lb = pad + lv + (avecVignette ? pad : 0.f) + lTexte + pad + 120.f + 8.f
 						 + 118.f + 8.f + 20.f + pad;
-				g.cadre = {region.x + 12.f, region.y + 12.f, lb, h};
+				const float32 y = region.y + kBandeauY
+						 + (avisPresent ? kBandeauAvisH + kBandeauEcart : 0.f);
+				g.cadre = {region.x + kBandeauX, y, lb, h};
 				float32 x = g.cadre.x + pad;
 				g.vignette = {x, g.cadre.y + (h - 40.f) * 0.5f, lv, lv};
 				if (avecVignette)
@@ -1529,9 +1713,55 @@ namespace nkuidesign {
 					nkentseu::uint8 genre = 0;
 					nkentseu::int32 noeud = -1;
 					nkentseu::int32 index = -1;
+					/// ① (11/09 soir) LA CIBLE D'ETAT : vide = pas un etat. Rodolf : « le color
+					///   picker a ce niveau n'est pas correct » -- la pastille d'ETATS ouvrait le
+					///   NOYAU NU, le defaut du canvas revenu. La demande dit desormais QUEL bloc
+					///   d'etat et QUEL champ (0 = fond, 1 = couleur du texte) elle edite ;
+					///   l'enveloppe recoit `couleurFill` et ecrit dans ce bloc, par `touche()`.
+					char etat[24] = {};
+					nkentseu::uint8 champEtat = 0;
+					/// ① (11/09, nuit) LA CIBLE D'UNE COULEUR SIMPLE DU NŒUD, hors etat :
+					///   1 = la couleur de l'effet `index`, 2 = la couleur du texte. 0 = aucune
+					///   (un remplissage, ou un etat). Meme mecanique que l'etat : l'enveloppe
+					///   recoit `couleurFill` et `touche()` ecrit dans le champ vise.
+					nkentseu::uint8 champNoeud = 0;
 					nkentseu::int32 arretSel = 0; ///< l'ARRET COURANT : c'est lui que le selecteur edite
 					nkentseu::int32 arretDrag = -1;
 					nkentseu::uint32 synchro = 0xFFFFFFFFu; ///< cle du dernier tampon hexa resynchronise
+					/// LE POPUP A-T-IL DEJA ETE POSE pour cette demande ? Sans ce
+					/// drapeau, << pas encore ouvert >> et << ferme a l'instant >> se
+					/// ressemblent, et le dessinateur ROUVRE ce que l'utilisateur vient
+					/// de fermer. Voir `NkPopupDeLaDemande`.
+					bool pose = false;
+					/// LE PRELEVEMENT EST ARME : le prochain clic prend la couleur sous
+					/// le pointeur. Echap l'annule sans rien changer.
+					bool pipette = false;
+					/// ① L'APERCU NE COMMENCE QU'AU PREMIER MOUVEMENT. Le point ou le mode
+					/// a ete arme, et le fait qu'on s'en soit ecarte une fois.
+					float32 armeX = 0.f, armeY = 0.f;
+					bool aBouge = false;
+					/// ① LE MODE NAIT EN ATTENTE DE RELACHEMENT. **Le meme appui ne peut
+					/// pas etre consomme deux fois** : celui qui ARME ne peut pas etre relu
+					/// comme celui qui PRELEVE.
+					bool attendRelache = false;
+					/// UN POINT A ETE PRIS et attend d'etre lu. ⚠️ DEUX MOMENTS, UN SEUL
+					/// MECANISME : le clic doit etre INTERCEPTE **avant** les panneaux
+					/// (sinon la toile le recoit et deplace la selection), mais le pixel
+					/// ne peut etre lu qu'**apres** eux -- la liste de dessin de l'image
+					/// n'est complete qu'a ce moment-la. On retient donc le point.
+					bool pipettePris = false;
+					float32 pipetteX = 0.f, pipetteY = 0.f;
+					// 🔴 LE DRAPEAU `apercu` A ETE RETIRE (08/09), et son retrait fait
+					//    partie du correctif : il servait a dire << applique cette couleur
+					//    a la destination pour la montrer >>. La destination ne recoit
+					//    plus rien au survol -- l'apercu vit dans l'hote et le peintre
+					//    l'y lit. *Un etat que plus personne ne pose est un piege pose
+					//    pour demain : quelqu'un le remettra, et la destination
+					//    rebougera.*
+					/// LE CLIC DROIT (ou Echap) ANNULE : on rend EXACTEMENT la couleur
+					/// d'avant, retenue a l'entree du mode.
+					bool annule = false;
+					char avant[12] = {};
 			};
 			DemandePicker picker;
 			/// ⑤ LA DECLARATION QUE LA HIERARCHIE MONTRE (« Voir le composant », 05/09) :
@@ -1570,6 +1800,21 @@ namespace nkuidesign {
 					nkentseu::editorkit::NkModal dialogue;
 					char nom[200] = {};
 					bool parObjet = false; ///< plusieurs objets : un fichier chacun
+					/// ② (07/09) LA CIBLE « TOUT LE CANVAS », et le COMPTE qu'on annonce.
+					/// Sans selection, l'export retombait sur la PREMIERE page -- muet, et
+					/// arbitraire des que le document en porte plusieurs (celui de Rodolf
+					/// en a trois). `tout` vise le canvas entier ; `nbExportables` est ce
+					/// que le panneau AFFICHE, et il vient de `NkElementsExportables` --
+					/// jamais d'un comptage refait ici, qui aurait pu annoncer des
+					/// elements que l'export refuse ensuite.
+					bool tout = false;
+					nkentseu::uint32 nbExportables = 0u;
+					/// ③ (11/09, palier C) LA PERSPECTIVE A L'EXPORT SVG : faux = garder
+					/// orthogonal (le defaut, celui qui ne ment sur rien), vrai = aplatir en
+					/// polygone. **Le choix se retient d'un export a l'autre**, comme le
+					/// format et l'echelle -- c'est un champ de cette structure, qui survit
+					/// a la fermeture du dialogue.
+					bool aplatirPerspective = false;
 			};
 			NkChoixExport choixExport;
 			/// ④ La DEMANDE d'export, posée par le menu contextuel et lue par l'overlay :
@@ -1679,7 +1924,6 @@ namespace nkuidesign {
 			/// mais appele par le crochet d'overlay : ce pont le rend joignable.
 			void (*popoverRemplissage)(nkgui::NkGuiContext &, void *) = nullptr;
 			void *popoverUser = nullptr;
-			void (*popoverBordure)(nkgui::NkGuiContext &, void *) = nullptr; ///< genre 2
 			void Consigner(const char *t) {
 				journal.PushBack(NkString(t ? t : ""));
 			}
@@ -4070,14 +4314,18 @@ namespace nkuidesign {
 				// Un controle dessine par-dessus se reclame AVANT ce qu'il recouvre
 				// (les deux entrees a eteindre), et se dessine dans la couche overlay
 				// pour rester au-dessus du document quel que soit l'ordre de peinture.
-				if (!mSt->avis.Empty() && ctx.popupDepth == 0) {
+				// ⚠️ LU AVANT que le bloc ne l'efface : cliquer l'avis le vide dans la
+				//    MEME image, et le bandeau d'export remonterait alors d'un etage sous
+				//    le curseur qui vient de cliquer. La pile se decide une fois par
+				//    image, jamais au milieu.
+				const bool avisPresent = !mSt->avis.Empty() && ctx.popupDepth == 0;
+				if (avisPresent) {
 					auto &Fa = costume::Fontes();
 					const nkgui::NkRect reg = ctx.layout.region;
 					const float32 lt = costume::Largeur(Fa.px11, mSt->avis.Data());
-					float32 lb = lt + 28.f;
-					if (lb > reg.w - 24.f)
-						lb = reg.w - 24.f;
-					const nkgui::NkRect rb = {reg.x + 12.f, reg.y + 12.f, lb, 28.f};
+					// ⑤ (06/09) LA PILE DECIDE, PAS LE BLOC : `GeomBandeauAvis` est lue
+					//    ici ET par la sonde. Voir « LA PILE DES BANDEAUX D'INCRUSTATION ».
+					const nkgui::NkRect rb = DesignState::GeomBandeauAvis(reg, lt);
 					const bool survol = NkGuiRectContains(rb, ctx.input.mousePos);
 					if (survol && in.mousePressed) {
 						mSt->avis = NkString(); // vu : il s'en va, et seulement comme ca
@@ -4108,8 +4356,11 @@ namespace nkuidesign {
 					const float32 lT = costume::Largeur(Fx.px11, mSt->avisExport.titre);
 					const float32 lD = costume::Largeur(Fx.px11, mSt->avisExport.detail);
 					const bool avecV = mSt->avisExport.vignette != 0u;
+					// ⑤ (06/09) UN ETAGE PLUS BAS QUAND L'AVIS COURT OCCUPE LE PREMIER.
+					//    Sans ce parametre, les deux bandeaux etaient au meme point et
+					//    l'avis mangeait le clic des trois boutons de celui-ci.
 					const DesignState::NkGeomAvisExport g =
-						DesignState::GeomAvisExport(reg, lT, lD, avecV);
+						DesignState::GeomAvisExport(reg, lT, lD, avecV, avisPresent);
 					const nkgui::NkVec2 mp = ctx.input.mousePos;
 					const bool surCadre = NkGuiRectContains(g.cadre, mp);
 					// ⚠️ LIRE LE CLIC AVANT DE L'ETEINDRE. Ce bandeau RECLAME l'entree (sinon un
@@ -4159,7 +4410,27 @@ namespace nkuidesign {
 					}
 					(void)bouton(g.dossier, "Ouvrir le dossier");
 					(void)bouton(g.fichier, "Ouvrir le fichier");
-					(void)bouton(g.fermer, "\u2715");
+					// \u2500\u2500 \u2464 (06/09) LA CROIX SE TRACE, ELLE NE S'ECRIT PAS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+					// \u26a0\ufe0f RODOLF VOYAIT \u00ab UN BOUTON ? \u00bb : le libelle etait le CARACTERE
+					//    U+2715 (\u2715), absent de la police de l'application -- le
+					//    rasteriseur rend alors le glyphe de remplacement, c'est-a-dire un
+					//    point d'interrogation. Ce n'etait donc ni un bouton nomme \u00ab ? \u00bb
+					//    ni un bouton casse : c'etait une croix qu'aucune police du
+					//    dossier ne sait dessiner.
+					//    Meme famille que le chevron du selecteur, et meme remede, deja
+					//    ecrit dans ce depot : *ce qui doit se voir se TRACE.* Deux
+					//    segments ne dependent d'aucun atlas et suivent le theme.
+					{
+						const bool hovF = NkGuiRectContains(g.fermer, mp);
+						ctx.dlOverlay.AddRectFilled(g.fermer, hovF ? ctx.theme.accent : ctx.theme.card, 4.f);
+						ctx.dlOverlay.AddRect(g.fermer, ctx.theme.border, 1.f, 4.f);
+						const float32 cx = g.fermer.x + g.fermer.w * 0.5f;
+						const float32 cy = g.fermer.y + g.fermer.h * 0.5f;
+						const float32 a = 4.f; // demi-diagonale de la croix
+						const nkgui::NkColor tc = hovF ? ctx.theme.panel : ctx.theme.text;
+						ctx.dlOverlay.AddLine({cx - a, cy - a}, {cx + a, cy + a}, tc, 1.4f);
+						ctx.dlOverlay.AddLine({cx - a, cy + a}, {cx + a, cy - a}, tc, 1.4f);
+					}
 					if (surCadre)
 						mSt->status = mSt->avisExport.chemin;
 				}
@@ -4436,8 +4707,35 @@ namespace nkuidesign {
 					// la vue Behavior) et #f5f7fb en clair (la valeur Banani V2),
 					// pose par les fabriques de themes du kit. Les points
 					// `canvas_dot` suivent pareil.
-					paint.Fill({area.x, area.y, area.w, area.h},
-							   NkDesignResolveRole("canvas_bg"), 0.f);
+					// ── ③ ET LE FOND CHOISI PASSE DEVANT LE RÔLE (07/09) ─────
+					// ⚠️ LE CHAMP PILOTE CE FOND-CI, IL N'EN AJOUTE PAS UN SECOND.
+					//    C'est l'exigence de Rodolf, mot pour mot : *« si un fond
+					//    est déjà peint en dur, le champ doit le piloter, pas le
+					//    doubler »*. Le fond n'était pas en dur — il venait du
+					//    thème — donc le champ se pose PAR-DESSUS, et vide il rend
+					//    la main au thème : l'apparence d'aujourd'hui reste ce
+					//    qu'on obtient sans rien régler.
+					mSt->LireDecorUneFois();
+					// ③ L'ECRITURE DU DECOR SE FAIT ICI, AU RELACHER, et une seule fois
+					//   par geste : le selecteur de couleur MARQUE pendant le glisser.
+					if (mSt->decorSale && !ctx.input.mouseDown[0]) {
+						mSt->decorSale = false;
+						mSt->EnregistrerDecor();
+					}
+					// ── L'APERCU PASSE AVANT LA VALEUR REELLE (08/09) ──────────────
+					// ⚠️ ET LA LECTURE EST POSEE **LA OU LE FOND EST PEINT**, pas la ou
+					//    `canvasFill` est range. Poser l'aperçu ailleurs, ce serait
+					//    ecrire une valeur que personne ne regarde -- le meme defaut
+					//    deplace d'un cran.
+					uint32 rgbaFond = 0u;
+					if (mSt->canvasApercu[0] != '\0'
+						&& NkFondCanvasExplicite(mSt->canvasApercu, rgbaFond))
+						paint.FillColor({area.x, area.y, area.w, area.h}, rgbaFond, 0.f);
+					else if (NkFondCanvasExplicite(mSt->canvasFill.couleur.Data(), rgbaFond))
+						paint.FillColor({area.x, area.y, area.w, area.h}, rgbaFond, 0.f);
+					else
+						paint.Fill({area.x, area.y, area.w, area.h},
+								   NkDesignResolveRole("canvas_bg"), 0.f);
 					const float32 pasEcran = kGrillePas * mSt->view.zoom;
 					// ⚠️ `grilleVisible` EST HONORÉE ICI, au seul endroit qui peint
 					//    la grille. Le menu qui la bascule serait sinon une case
@@ -4725,6 +5023,8 @@ namespace nkuidesign {
 					switch (av) {
 						case NkActionVide::GrillePixels:
 							mSt->grilleVisible = !mSt->grilleVisible;
+							// ③ Deux portes, un seul enregistrement (essai 135).
+							mSt->EnregistrerDecor();
 							Dire(mSt->grilleVisible ? "Grille de points affichée."
 													: "Grille de points masquée.",
 								 "", "");
@@ -10745,6 +11045,132 @@ namespace nkuidesign {
 		return (uint32)(sizeof(kNormal) / sizeof(kNormal[0]));
 	}
 
+	// ── ① (07/09) UNE SECTION QUI NE PEUT PAS S'APPLIQUER DISPARAIT ──────────
+	//
+	// Rodolf : « tu laisses visibles des titres dont les elements selectionnes ne
+	// possedent pas, au lieu tout simplement de les cacher -- par exemple un
+	// graphique qui n'est pas un texte n'a pas besoin de laisser visible sa
+	// partie typographie. »
+	//
+	// 🔴 LA REGLE QUI DECIDE, ET ELLE TIENT EN UNE LIGNE :
+	//
+	//      ON CACHE CE QUI NE PEUT PAS EXISTER.
+	//      ON EXPLIQUE CE QUI N'AGIT PAS ENCORE.
+	//
+	//    - IMPOSSIBLE PAR NATURE -> cache. La typographie d'un rectangle ne
+	//      deviendra jamais utile : le nœud ne portera jamais de texte.
+	//    - POSSIBLE MAIS INERTE DANS L'ETAT ACTUEL -> visible, et qui dit
+	//      pourquoi. L'ALIGNEMENT sous un parent `free` ou `anchor` en est
+	//      l'exemple : il suffit que Rodolf change le mode du parent pour qu'il
+	//      agisse. Le cacher rendrait la fonctionnalite INTROUVABLE -- il
+	//      conclurait qu'elle n'existe pas.
+	//
+	// ⚠️ CE N'EST DONC PAS UN GRAND MASQUAGE. Les huit controles « branches mais
+	//    bornes » disent leur borne : c'est la BONNE reponse pour eux, elle
+	//    reste. Seules disparaissent les sections dont AUCUNE ligne ne peut
+	//    s'appliquer au type selectionne.
+	//
+	// ⚠️ ET LA REGLE VIT ICI, PAS DANS LE CORPS DE LA SECTION. `CorpsTypographie`
+	//    l'appelle au lieu de reecrire son test : deux endroits qui decident
+	//    « est-ce que ca s'applique » divergeraient au premier type ajoute, et le
+	//    panneau cacherait une section dont le corps accepterait -- ou l'inverse.
+	//    Meme forme que `NkAlignementLuParLeSolveur` a cote du solveur.
+	/// ② (07/09) CE QU'UNE SECTION DIT QUAND ELLE N'A RIEN A MONTRER.
+	///
+	/// 🔴 « RIEN DE SELECTIONNE » EST UN CAS A PART ENTIERE, pas une selection
+	///    vide. La section TYPOGRAPHIE rendait la MEME phrase dans les deux cas :
+	///    « L'element selectionne ne porte pas de texte » -- juste dans la forme,
+	///    FAUSSE dans le sujet quand il n'y a aucun element. Rodolf l'a vue.
+	///
+	/// ⚠️ LE RECENSEMENT A DIT **UN**, PAS PLUSIEURS. ESPACEMENT et ALIGNEMENT
+	///    portent des phrases qui supposent un nœud (« ce nœud n'agence pas
+	///    d'enfants ») mais elles sont protegees par un `if (!n)` en amont : elles
+	///    ne s'affichent jamais sans nœud. Huit autres sections rendent un tiret
+	///    muet -- elles ne mentent pas, elles n'expliquent rien, et c'est le
+	///    panneau vide que les proprietes du CANVAS doivent remplacer.
+	///
+	/// ⚠️ ELLE EST LIBRE POUR ETRE SONDABLE : enfouie dans le corps de la section,
+	///    la phrase serait hors de portee du banc -- et le banc en aurait ecrit une
+	///    copie, puis mesure sa copie.
+	inline const char *NkPhraseSectionVide(const char *titre, const NkUINode *n) {
+		if (!n)
+			return "Aucune sélection.";
+		if (NkComponentDecl::StrEq(titre, "TYPOGRAPHIE"))
+			return "L'élément sélectionné ne porte pas de texte.";
+		return "";
+	}
+
+	// ── CE QU'UN ETAT PEUT VOULOIR DIRE (recensement Q143, 11/09) ───────────
+	//
+	// 🔴 LE CRITERE : *cette propriété peut-elle légitimement différer entre
+	//    Normal, Hover, Pressed, Focus et Disabled ?* Quinze sections, trois
+	//    réponses : OUI attendu (bordure, ombre, couleur du texte, opacité) ; NON
+	//    par nature -- un état qui déplace, redimensionne, tourne ou incline un
+	//    nœud **n'est plus un état, c'est une animation** ; douteux (typographie
+	//    entière, pile de remplissages, effets autres que l'ombre) -- pour Rodolf.
+	//
+	// ⚠️ ON CACHE CE QUI NE PEUT PAS EXISTER. Les huit « non par nature »
+	//    (DISPOSITION, ANCRAGE, ALIGNEMENT, ALIGNER LA SÉLECTION, ESPACEMENT,
+	//    CIBLE, POINTS DE RUPTURE, CANVAS) n'ont AUCUNE rangée dans ETATS, et ce
+	//    n'est pas un oubli : toute rangée d'état se pose PAR cette règle, donc une
+	//    rangée ajoutée pour DISPOSITION demain serait cachée par construction --
+	//    pas par vigilance. ⚠️ ELLE EST LIBRE POUR ETRE SONDABLE (cas 147).
+	inline bool NkProprieteAUnSensParEtat(const char *section) {
+		static const char *const kOui[] = {"REMPLISSAGES", "APPARENCE", "BORDURES",
+										   "EFFETS",		"TYPOGRAPHIE", "CALQUE"};
+		for (nkentseu::uint32 i = 0; i < 6u; ++i)
+			if (NkComponentDecl::StrEq(section, kOui[i]))
+				return true;
+		return false;
+	}
+
+	inline bool NkSectionSApplique(const char *titre, const NkUINode &n) {
+		if (!titre || !*titre)
+			return true;
+		// TYPOGRAPHIE -- la seule section dont une condition de TYPE refuse TOUT le
+		// corps. La condition est celle de `CorpsTypographie`, qui l'appelle
+		// desormais au lieu de la reecrire : un seul site decide, donc le panneau ne
+		// peut plus cacher une section dont le corps accepterait, ni l'inverse.
+		if (NkComponentDecl::StrEq(titre, "TYPOGRAPHIE"))
+			return NkComponentDecl::StrEq(n.shape.Data(), "text");
+		// TOUT LE RESTE PASSE, ET C'EST DELIBERE. Les sections qui n'agissent pas
+		// ENCORE -- ALIGNEMENT sous un parent libre, ESPACEMENT sur une feuille,
+		// POINTS DE RUPTURE -- restent VISIBLES et disent pourquoi. Les cacher
+		// rendrait la fonctionnalite introuvable : Rodolf conclurait qu'elle
+		// n'existe pas, alors qu'il suffit de changer le mode du parent.
+		return true;
+	}
+
+	/// LES SECTIONS RETENUES POUR UNE SELECTION -- l'INTERSECTION.
+	///
+	/// ⚠️ INTERSECTION, ET C'EST UNE CONVENTION POSEE DEVANT RODOLF : sur une
+	///    selection de types differents on ne garde que les sections communes a
+	///    TOUS. Sinon une section agirait sur une PARTIE de la selection sans
+	///    qu'on voie laquelle -- et l'utilisateur croirait avoir change dix
+	///    objets alors qu'il en a change trois.
+	/// ⚠️ UNE SELECTION VIDE NE CACHE RIEN : sans nœud, aucune impossibilite ne
+	///    peut etre etablie, et un panneau qui se vide au premier clic dans le
+	///    fond se lirait comme une panne.
+	inline uint32 NkSectionsRetenues(const NkUIDocument &doc, const int32 *sel, uint32 nSel,
+									 const char *const *titres, uint32 nTitres,
+									 const char **out, uint32 outMax) {
+		uint32 k = 0;
+		for (uint32 i = 0; i < nTitres && k < outMax; ++i) {
+			bool tous = true;
+			uint32 vus = 0;
+			for (uint32 j = 0; j < nSel && tous; ++j) {
+				if (!doc.IsValidIndex(sel[j]))
+					continue;
+				++vus;
+				if (!NkSectionSApplique(titres[i], doc.nodes[(uint32)sel[j]]))
+					tous = false;
+			}
+			if (vus == 0u || tous)
+				out[k++] = titres[i];
+		}
+		return k;
+	}
+
 	/// LA PASTILLE DE COULEUR, UNE FOIS POUR TOUS LES SITES (Rodolf, 04/09 :
 	/// « pourquoi pour le choix des couleurs on n'a pas de color picker ? »).
 	///
@@ -11209,14 +11635,129 @@ namespace nkuidesign {
 		return false;
 	}
 
+	// ── ② LA GARDE APPARTIENT A CELUI QUI L'OUVRE, PAS AU SELECTEUR ─────────
+	//
+	// 🔴 Le sélecteur de couleur **ne sert qu'à choisir une couleur**. Il n'a
+	//    aucune raison d'exiger un nœud. La règle « rien de sélectionné : je me
+	//    ferme » est juste pour ÉTATS, EFFETS, REMPLISSAGES et BORDURES — ils
+	//    décrivent un nœud — et fausse pour le décor de la toile, qui n'en
+	//    décrit aucun. Elle était posée chez celui qui ne s'en sert pas.
+	//
+	// ⚠️ RECENSEMENT AVANT DE DEPLACER (07/09) : **cinq portes** ouvrent ce
+	//    sélecteur. **Quatre décrivent un nœud**, une non. La garde est donc
+	//    DÉPLACÉE, pas retirée : chaque porte DÉCLARE le nœud qu'elle décrit
+	//    (`-1` = aucun), et le sélecteur honore cette déclaration.
+	//
+	/// Le sélecteur doit-il se refermer ? Oui si celui qui l'a ouvert décrivait un
+	/// nœud et que ce nœud n'est plus là — ou n'est plus celui qu'on regarde.
+	inline bool NkPickerDoitFermer(nkentseu::int32 noeudDecrit, nkentseu::int32 selection,
+								   bool noeudValide) noexcept {
+		if (noeudDecrit < 0)
+			return false; // il ne décrit aucun nœud : la sélection ne le concerne pas
+		return !noeudValide || selection != noeudDecrit;
+	}
+
+	/// `noeudDecrit` : l'index du nœud que cette pastille décrit, ou **-1** si elle
+	/// n'en décrit aucun (le décor de la toile). **Sans valeur par défaut**, exprès :
+	/// une porte de plus doit se poser la question plutôt que d'hériter d'un choix.
+	// ── LA PIPETTE : PRELEVER LA COULEUR D'UN PIXEL DE NOTRE FENETRE ────────
+	//
+	// 🔴 RODOLF (07/09) : *<< par defaut dans les color picker on doit avoir une
+	//    pipette en plus >>* -- dans TOUS les selecteurs. Elle vit donc dans
+	//    l'enveloppe, ecrite UNE fois.
+	//
+	// ⚠️ MESURE AVANT D'ECRIRE (quatrieme fois que ca paie) : **la lecture de
+	//    pixel existait deja**. `NkGuiDrawListRaster` (NKGui) rend une liste de
+	//    dessin en pixels et expose `Pixel(x, y)` en 0xRRGGBBAA -- c'est le
+	//    rasteriseur que l'EXPORT PNG pilote depuis le 06/09. La pipette le
+	//    PILOTE ; elle n'en ecrit pas un second.
+	//
+	// ⚠️ LA PORTEE EST LA FENETRE DE L'APPLICATION, PAS LE BUREAU. Neuf fois sur
+	//    dix on preleve une couleur de ses propres artboards, et l'application a
+	//    deja ces pixels. Une pipette qui lit le bureau lit tout ce qui est
+	//    affiche : **une capture d'ecran, meme d'un pixel, reste une capture
+	//    d'ecran.** Le bureau entier serait un lot a part, avec sa question posee.
+	//
+	// ⚠️ ON PRELEVE DANS LA COUCHE PRINCIPALE, PAS DANS L'OVERLAY : les surfaces
+	//    flottantes (le selecteur lui-meme, les menus) ne sont pas la page. Sans
+	//    ca, prelever sous le pointeur rendrait la couleur du popover qu'on a
+	//    ouvert -- il couvre precisement l'endroit ou l'on clique.
+	//
+	// ⚠️ LA CIBLE VA DE (0,0) AU POINT DEMANDE, et pas plus loin : les
+	//    coordonnees du rasteriseur sont CELLES DE L'ECRAN, donc aucun decalage a
+	//    poser -- et ce qui est a droite ou en dessous du point ne coute rien.
+	//    Une cible pleine fenetre serait 5 Mo peints pour lire quatre octets.
+	//
+	/// Preleve le pixel (x, y) de `dl` tel qu'il est peint, sur un fond `fondRgba`
+	/// (le sol de la fenetre : sans lui, une zone non peinte rendrait du noir
+	/// transparent, c'est-a-dire une couleur que personne ne voit). Ecrit
+	/// « #rrggbb » dans `hexOut`. Faux si le point est hors fenetre.
+	inline bool NkPreleverPixel(const nkgui::NkGuiDrawList &dl, nkentseu::int32 x, nkentseu::int32 y,
+								nkentseu::uint32 fondRgba, char *hexOut, nkentseu::uint32 cap) {
+		using namespace nkentseu;
+		if (!hexOut || cap < 8u || x < 0 || y < 0)
+			return false;
+		nkgui::NkGuiDrawListRaster raster;
+		if (!raster.Init(x + 1, y + 1))
+			return false;
+		raster.Effacer(fondRgba);
+		(void)raster.Rasteriser(dl); // les textures inconnues se peignent en couleur de sommet
+		const uint32 p = raster.Pixel(x, y);
+		// ⚠️ L'ESPACE DE COULEUR, VERIFIE ET NON SUPPOSE : le rasteriseur melange en
+		//    octets et rend 0xRRGGBBAA -- exactement l'empaquetage de `NkGHexRGBA`,
+		//    celui que le selecteur range dans `#rrggbb`. **Aucune conversion**, et
+		//    ce n'est pas une croyance : l'essai 139 preleve un aplat de couleur
+		//    CONNUE et exige EXACTEMENT cette couleur. Si un jour le selecteur passe
+		//    au lineaire, c'est cet essai qui rougira, pas l'utilisateur.
+		snprintf(hexOut, (size_t)cap, "#%02x%02x%02x", (unsigned)((p >> 24) & 0xFFu),
+				 (unsigned)((p >> 16) & 0xFFu), (unsigned)((p >> 8) & 0xFFu));
+		return true;
+	}
+
+	/// ⚠️ CE ROLE A-T-IL UN REPONDANT DANS LE KIT ? (12/09, mesure Q155)
+	///
+	/// 🔴 QUATRE VOCABULAIRES DE ROLES COEXISTENT, ET NE SE RENCONTRENT NULLE PART :
+	///    le MENU ecrit son LIBELLE D'AFFICHAGE en francais (« bouton a repetition ») --
+	///    un seul champ texte, dessine a l'ecran ET rendu au clic ; `main.cpp` pose
+	///    « bouton » et « titre » ; la table `NkGuiValidate` dit « Button » (44 entrees,
+	///    AUCUN appelant) ; et le CATALOGUE DU KIT dit « button » (9 roles) -- le seul
+	///    qui porte les evenements exiges et le masque d'etats. Les quatre documents
+	///    livres portent `role = Button`, une graphie qu'AUCUN geste d'interface ne
+	///    produit.
+	///
+	/// ⚠️ CETTE PORTE NE CHOISIT PAS LE VOCABULAIRE. Choisir lequel fait foi est une
+	///    decision de FORMAT : elle appartient a Rodolf, et elle touche des fichiers
+	///    DEJA ENREGISTRES. Ici on se borne a DIRE ce qui est -- ce role n'a pas de
+	///    repondant dans le kit, donc rien ne le consomme. **Aucune migration, aucune
+	///    correction, aucun document touche.**
+	///
+	/// UNE SEULE PORTE : la section RÔLE et le banc lisent la MEME reponse. Deux
+	/// lectures divergeraient au premier role ajoute au catalogue.
+	inline bool NkRoleHorsCatalogue(const char *role) {
+		return role && *role && !nkentseu::editorkit::NkFindRole(role);
+	}
+
 	inline bool NkPastilleCouleur(nkgui::NkGuiContext &ctx, DesignState &st, const char *idStr,
-								  const nkgui::NkRect &sw, char *hexBuf, nkentseu::uint32 cap) {
+								  const nkgui::NkRect &sw, char *hexBuf, nkentseu::uint32 cap,
+								  nkentseu::int32 noeudDecrit) {
 		using namespace nkentseu;
 		const nkgui::NkColor teinte = NkCouleurDepuisHex(hexBuf);
 		const bool lisible = NkHexLisible(hexBuf);
 		const nkgui::NkGuiId id = ctx.GetId(idStr);
 		bool survol = false, tenu = false;
 		const bool clic = ctx.ButtonBehavior(id, sw, nkgui::NkGuiButtonFlags::None, -1.f, -1.f, &survol, &tenu);
+		// ⚠️ LA PASTILLE SE DECLARE AU RELEVE (11/09, nuit), sous son identifiant : c'est
+		//    ce qui permet au recensement (cas 153) de les trouver TOUTES a l'ecran et de
+		//    cliquer chacune -- et non de compter des appels dans la source, qui dit
+		//    qu'une porte EXISTE, pas ce qu'elle OUVRE. Sans frais releve eteint.
+		if (nkgui::NkGuiIntrospectActif(ctx)) {
+			nkgui::NkGuiNoter(ctx, nkgui::NkGuiNature::Bouton, id, "pastille couleur", sw,
+							  survol ? (nkentseu::uint16)nkgui::NK_GUI_ETAT_SURVOLE : (nkentseu::uint16)0u);
+			// ⚠️ SANS LE `##` DE TETE : le releve coupe tout texte a `##` (la convention
+			//    d'affichage de NKGui) -- la cle `##insp...` arrivait VIDE. Paye au
+			//    premier essai du recensement : quatre pastilles, aucune nommee.
+			nkgui::NkGuiIntrospectCler(ctx, (idStr && idStr[0] == '#' && idStr[1] == '#') ? idStr + 2 : idStr);
+		}
 		const bool ouvertIci = st.picker.ouvert && st.picker.id == id;
 		if (lisible)
 			ctx.DL().AddRectFilled(sw, teinte, 3.f);
@@ -11231,12 +11772,32 @@ namespace nkuidesign {
 				st.picker.id = id;
 				st.picker.ancre = sw;
 				st.picker.change = false;
+				st.picker.pose = false; // une demande neuve : son popup reste a poser
+				// ② LA DECLARATION SE FAIT ICI, dans LA porte, pas dans chacune des
+				//   cinq : le nœud décrit (ou -1), et le genre par défaut.
+				st.picker.noeud = noeudDecrit;
+				// ⚠️ LE GENRE SE REMET A ZERO, et ce n'était pas fait : il gardait
+				//    celui du DERNIER ouvreur. Ouvrir la pastille d'un ÉTAT après
+				//    celle d'un remplissage laissait `genre = 1` — le sélecteur
+				//    partait dans le popover de remplissage. Les deux sections qui
+				//    ont besoin d'un autre genre le posent juste après leur appel.
+				st.picker.genre = 0u;
+				st.picker.etat[0] = '\0'; // ① meme regle : la cible d'etat ne survit pas a l'ouvreur precedent
+				st.picker.champEtat = 0u;
+				st.picker.champNoeud = 0u;
 				snprintf(st.picker.hex, sizeof(st.picker.hex), "%s", hexBuf ? hexBuf : "");
 			}
 		}
 		// LE RETOUR : le crochet d'overlay a bouge la couleur -> on la reprend, et
 		// l'appelant fait ce qu'il fait deja quand on tape le code a la main.
-		if (ouvertIci && st.picker.change && hexBuf && cap >= 8u) {
+		// \U0001f534 (11/09, nuit) SEULEMENT POUR LE NOYAU NU (genre 0). Quand une FENETRE est
+		//    ouverte (enveloppe, bordure), c'est ELLE qui ecrit -- par `ecrireCouleur`,
+		//    detachement de variable et ecart d'instance compris. Sans cette garde, un
+		//    `change` pose AVANT les panneaux etait vole ici et ecrit par l'ancien chemin
+		//    de la ligne : DEUX ECRIVAINS POUR UN GESTE. Le recensement (cas 153) l'a
+		//    montre : sa mutation << l'enveloppe n'ecrit plus l'effet >> restait VERTE,
+		//    parce que la ligne d'EFFETS ecrivait a sa place.
+		if (ouvertIci && st.picker.change && st.picker.genre == 0u && hexBuf && cap >= 8u) {
 			snprintf(hexBuf, (size_t)cap, "%s", st.picker.hex);
 			st.picker.change = false;
 			return true;
@@ -11262,6 +11823,266 @@ namespace nkuidesign {
 		return true;
 	}
 
+	// ── LE POPUP D'UNE DEMANDE : POSE UNE FOIS, JAMAIS ROUVERT ─────────────
+	//
+	// 🔴 RODOLF (07/09) : << quand on ouvre le color picker du canvas, si on clique
+	//    dans le vide ca ne se ferme pas >>.
+	//
+	// ⚠️ LE TABLEAU DES SORTIES (essai 138) A DIT PLUS QUE LE RAPPORT. Trois portes
+	//    x deux pastilles, mesurees cote a cote : **ni le clic dans le vide ni
+	//    Echap ne fermaient, pour AUCUNE des deux** -- seule la croix. Ce n'est pas
+	//    un defaut du canvas : c'est un defaut PARTAGE que le remplissage cachait.
+	//
+	// ⚠️ POURQUOI LE REMPLISSAGE SEMBLAIT SE FERMER : cliquer dans le vide de la
+	//    toile DESELECTIONNE, et sa garde << le nœud regarde n'est plus celui-ci >>
+	//    le refermait. **Deux mecanismes de fermeture, et le decor n'en a qu'un** --
+	//    celui, cassé, qu'ils partagent. *Un chemin repare par un effet de bord
+	//    d'ailleurs passe pour sain jusqu'a ce qu'on l'essaie sans cet ailleurs.*
+	//
+	// ⚠️ LA CAUSE, ET ELLE ETAIT ECRITE TROIS FOIS : chaque dessinateur faisait
+	//    `if (!IsPopupOpen(id)) OpenPopup(id);` a CHAQUE image. NKGui ferme bien la
+	//    chaine sur un clic dehors ou Echap ; a l'image suivante, le dessinateur la
+	//    ROUVRAIT. **Le geste de fermeture arrivait, et on le defaisait.**
+	//
+	// ⚠️ ET CE N'EST PAS LA GARDE DEPLACEE HIER QUI REVIENT : celle-la dit quand
+	//    une demande cesse d'avoir un SENS (son nœud a disparu) ; celle-ci dit que
+	//    le popup a ete FERME. Deux questions differentes, et la seconde n'avait de
+	//    reponse nulle part -- << pas encore ouvert >> et << ferme a l'instant >> se
+	//    ressemblaient comme deux gouttes d'eau.
+	//
+	/// Ouvre le popup la premiere fois ; rend **false** s'il a ete ferme depuis --
+	/// l'appelant abandonne alors la demande au lieu de la ressusciter.
+	inline bool NkPopupDeLaDemande(nkgui::NkGuiContext &ctx, DesignState::DemandePicker &d) noexcept {
+		if (ctx.IsPopupOpen(d.id)) {
+			d.pose = true;
+			return true;
+		}
+		if (d.pose)
+			return false; // pose, puis ferme : la demande tombe avec lui
+		ctx.OpenPopup(d.id);
+		d.pose = true;
+		return true;
+	}
+
+	// ── LA PIPETTE, PREMIER MOMENT : PRENDRE LE CLIC AVANT LES PANNEAUX ─────
+	//
+	// ⚠️ POURQUOI SI TOT. Le crochet d'overlay s'execute APRES les panneaux : un
+	//    clic pour prelever y arriverait **une fois que la toile l'a deja recu** --
+	//    elle aurait deselectionne, ou pose un nœud. Le geste doit donc etre pris
+	//    en amont ; l'application le fait dans son crochet de barre d'outils, qui
+	//    est dessine avant le dock (mesure : `DrawToolbar` precede `DrawPanels`).
+	//
+	// ⚠️ ET LE POPUP EST DEJA FERME QUAND ON ARRIVE ICI : NKGui applique sa regle
+	//    << un clic hors des popups ferme la chaine >> au tout debut de l'image.
+	//    Pendant un prelevement, ce clic n'est PAS un clic dehors -- c'est le
+	//    geste. On repose donc la demande (`pose = false`), et **uniquement dans ce
+	//    mode** : ce n'est pas la resurrection inconditionnelle qu'on vient de
+	//    retirer, c'est un etat nomme qui dit pourquoi.
+	// ══ TRACE DU PRELEVEMENT ET DU CURSEUR — `NK_TRACE_PIPETTE=1` ═════════
+	//
+	// 🔴 TROISIEME ALLER-RETOUR sur les deux memes defauts, et a chaque fois : mes
+	//    essais au vert, son ecran inchange. **Ce n'est plus un defaut de
+	//    correction, c'est un defaut de MESURE.** Une quatrieme correction a
+	//    l'aveugle serait la meme depense pour le meme resultat.
+	//
+	// ⚠️ ET LA CAUSE DU TROU EST NOMMEE : mes temoins LISENT LA SOURCE. *Lire une
+	//    source prouve qu'un appel EXISTE, pas qu'il S'EXECUTE* -- je l'avais ecrit
+	//    moi-meme pour le fond de la toile, et le trou s'est rouvert ici. Cette
+	//    trace execute le chemin et le DIT.
+	//
+	// ⚠️ ELLE NE CHANGE AUCUN COMPORTEMENT : elle est muette tant que la variable
+	//    d'environnement n'est pas posee, et elle n'ecrit que sur les images ou il
+	//    se passe quelque chose (pas soixante lignes par seconde au repos).
+	inline bool NkTracePipetteActive() noexcept {
+		static const bool actif = []() {
+			const char *v = getenv("NK_TRACE_PIPETTE");
+			return v && v[0] && v[0] != '0';
+		}();
+		return actif;
+	}
+
+	/// Le nom lisible d'un curseur -- pour que la trace dise ↔ et non << 3 >>.
+	inline const char *NkNomCurseur(nkgui::NkGuiCursor c) noexcept {
+		switch (c) {
+			case nkgui::NkGuiCursor::Arrow:
+				return "fleche";
+			case nkgui::NkGuiCursor::Text:
+				return "texte";
+			case nkgui::NkGuiCursor::Hand:
+				return "main";
+			case nkgui::NkGuiCursor::ResizeEW:
+				return "REDIM <->";
+			case nkgui::NkGuiCursor::ResizeNS:
+				return "redim haut-bas";
+		}
+		return "?";
+	}
+
+	/// QUI ECRIT LE CURSEUR, ET DANS QUEL ORDRE. Le nom du site, pas la valeur seule :
+	/// c'est le DERNIER de la liste qui gagne, et c'est lui qu'on cherche.
+	/// ⚠️ ELLE NE DIT PAS TOUT, ET C'EST VOULU : une trace qui ecrit soixante
+	///    lignes par seconde ne se lit pas, donc ne se copie pas, donc ne sert a
+	///    rien. Elle parle quand le prelevement est ARME (le cas qu'on cherche) ou
+	///    quand un site pose le curseur de REDIMENSIONNEMENT (le symptome qu'il
+	///    voit). Le reste est du bruit qui cacherait la ligne utile.
+	inline void NkTraceCurseur(const char *site, nkgui::NkGuiCursor c, bool arme) noexcept {
+		if (!NkTracePipetteActive())
+			return;
+		if (!arme && c != nkgui::NkGuiCursor::ResizeEW && c != nkgui::NkGuiCursor::ResizeNS)
+			return;
+		printf("[pipette] curseur <- %-24s : %s%s\n", site, NkNomCurseur(c),
+			   arme ? "   (prelevement ARME)" : "");
+	}
+
+	// ── ① L'APERCU NE COMMENCE QU'AU PREMIER MOUVEMENT ────────────────
+	//
+	// 🔴 CE QUE RODOLF VOYAIT, ET IL AVAIT RAISON DE LE DIRE : la trace prouve que
+	//    l'armement ne preleve PAS (deux appuis distincts, un seul prelevement).
+	//    Mais l'apercu, lui, demarrait A L'INSTANT DE L'ARMEMENT, a la position ou
+	//    le pointeur se trouvait deja -- **c'est-a-dire sur l'icone**. La couleur du
+	//    selecteur changeait donc au clic d'armement. *A l'œil, indistinguable d'un
+	//    << ce clic a valide la couleur >>.* Il n'a pas mal observe : il a observe
+	//    un AUTRE defaut.
+	//
+	// ⚠️ MEME FORME DE REGLE QUE `attendRelache` : une condition sur le GESTE, pas
+	//    sur le temps. Tant que le pointeur ne s'est pas ECARTE du point d'armement,
+	//    la couleur affichee reste celle d'avant. Et une fois qu'il a bouge, c'est
+	//    acquis -- revenir sur le point d'armement ne rearme pas l'attente.
+	//
+	/// A-t-on bouge depuis l'armement ? Le seuil est en pixels : deux, soit plus
+	/// qu'un tremblement de main et moins qu'un deplacement voulu.
+	inline bool NkPipetteAPuBouger(nkentseu::float32 x, nkentseu::float32 y, nkentseu::float32 armeX,
+								   nkentseu::float32 armeY, bool &aBouge) noexcept {
+		if (aBouge)
+			return true;
+		const nkentseu::float32 dx = x - armeX, dy = y - armeY;
+		if (dx * dx + dy * dy > 4.f)
+			aBouge = true;
+		return aBouge;
+	}
+
+	/// LE SURVOL DANS L'IMAGE FIGEE : rend faux si le point n'y est pas.
+	/// ⚠️ FONCTION LIBRE, ET C'EST DELIBERE : le banc doit lire par LA MEME porte
+	///    que le mode. Ecrite deux fois, l'essai aurait mesure sa propre copie --
+	///    la faute payee le 06/09 sur le cycle des metriques.
+	inline bool NkPipetteSurvol(const nkgui::NkGuiDrawListRaster &img, nkentseu::int32 x,
+								nkentseu::int32 y, char *hexOut, nkentseu::uint32 cap) noexcept {
+		if (!hexOut || cap < 8u)
+			return false;
+		const nkentseu::uint32 p = img.Pixel(x, y);
+		if (p == 0u)
+			return false; // hors image : on ne pose rien
+		snprintf(hexOut, (size_t)cap, "#%02x%02x%02x", (unsigned)((p >> 24) & 0xFFu),
+				 (unsigned)((p >> 16) & 0xFFu), (unsigned)((p >> 8) & 0xFFu));
+		return true;
+	}
+
+	// ── ① LE MEME APPUI NE SE CONSOMME PAS DEUX FOIS ──────────────────
+	//
+	// 🔴 RODOLF (07/09) : *<< le clic sur la pipette valide directement ce clic
+	//    comme le point a tirer la couleur >>*. Un seul appui servait deux fois :
+	//    il armait le mode, puis etait relu comme << preleve ici >>. **L'outil se
+	//    terminait avant d'avoir commence.**
+	//
+	// ⚠️ ET CE N'EST PAS << on ignore la premiere image >>. Un compteur d'images
+	//    marcherait aujourd'hui et casserait au premier changement de cadence : ce
+	//    qu'on veut dire n'est pas << plus tard >>, c'est **UN AUTRE APPUI**. Le mode
+	//    nait donc en attente de relachement et n'ecoute les appuis qu'apres avoir
+	//    VU le bouton remonter -- une condition sur le GESTE, pas sur le temps.
+	//
+	/// Cet appui doit-il prelever ? Consomme l'attente quand le bouton remonte.
+	inline bool NkPipetteAccepteAppui(bool boutonEnfonce, bool appuiNeuf,
+									  bool &attendRelache) noexcept {
+		if (attendRelache) {
+			if (!boutonEnfonce)
+				attendRelache = false; // le bouton est remonte : l'appui suivant comptera
+			return false;
+		}
+		return appuiNeuf;
+	}
+
+	/// L'ANNULATION D'UN PRELEVEMENT : rend **exactement** la couleur retenue a
+	/// l'armement, et repose l'apercu pour qu'elle se voie.
+	/// ⚠️ FONCTION LIBRE, MEME RAISON QUE LE SURVOL : ma premiere version de
+	///    l'essai 140 rejouait l'annulation A SA FACON, et la mutation
+	///    << l'annulation rend une couleur approchee >> restait VERTE. *Deuxieme
+	///    fois dans le meme lot qu'un banc mesure sa propre copie.*
+	inline void NkPipetteAnnuler(DesignState::DemandePicker &d) noexcept {
+		// 🔴 ELLE N'A PLUS RIEN A RESTAURER, ET C'EST LA PREUVE QUE LA FORME EST
+		//    JUSTE : la destination n'a jamais bouge. Elle rend au champ la couleur
+		//    d'avant (un affichage) et laisse mourir l'aperçu avec le mode.
+		//    *Avant, << annuler >> ne pouvait rendre que ce qu'on avait pense a
+		//    retenir ; maintenant il n'y a rien a rendre.*
+		snprintf(d.hex, sizeof(d.hex), "%s", d.avant);
+		d.annule = false;
+	}
+
+	/// ① LE CURSEUR DU PRELEVEMENT, REPOSE APRES TOUT LE MONDE.
+	/// ⚠️ UNE FONCTION, PAS DEUX LIGNES RECOPIEES : l'essai 141 compte ses APPELS.
+	///    Ma premiere version cherchait le motif de l'affectation dans la source --
+	///    et un commentaire suffisait a le faire mordre ou a le faire manquer.
+	inline void NkPipetteCurseur(nkgui::NkGuiContext &ctx,
+								 const DesignState::DemandePicker &d) noexcept {
+		// ⚠️ ON DIT CE QU'ON TROUVE EN ARRIVANT : si le curseur en place est deja
+		//    REDIM, c'est qu'un site a parle avant nous -- et la ligne precedente de la
+		//    trace le NOMME. C'est toute la question posee par ce lot.
+		if (NkTracePipetteActive() && d.pipette)
+			printf("[pipette] NkPipetteCurseur : mode ARME, curseur trouve en place = %s\n",
+				   NkNomCurseur(ctx.wantCursor));
+		if (d.pipette) {
+			ctx.wantCursor = nkgui::NkGuiCursor::Hand;
+			NkTraceCurseur("pipette (apres popover)", ctx.wantCursor, true);
+		}
+	}
+
+	inline void NkPipettePrendLeClic(nkgui::NkGuiContext &ctx, DesignState &st) {
+		DesignState::DemandePicker &d = st.picker;
+		if (!d.ouvert || !d.pipette)
+			return;
+		if (ctx.input.KeyPressed(nkgui::NkGuiKey::Escape)) {
+			// ÉCHAP ANNULE SANS RIEN CHANGER : ni le modele, ni le champ, ni la
+			// couleur courante. Le selecteur, lui, reste ouvert -- on annule le
+			// prelevement, pas la fenetre.
+			d.pipette = false;
+			d.annule = true; // ③ comme le clic droit : on REND la couleur d'avant
+			d.pose = false;
+			st.DireAuPied("Prélèvement annulé — la couleur d'avant est rendue.");
+			return;
+		}
+		// ③ LE CLIC DROIT ANNULE, et il est CONSOMME. Sans ca, le menu contextuel
+		//    s'ouvrirait derriere un geste qui voulait dire << laisse tomber >> --
+		//    la famille de defauts qu'on connait : *une fenetre qui apparait sous un
+		//    geste qui voulait dire autre chose.*
+		if (ctx.input.mouseClicked[1]) {
+			ctx.input.mouseClicked[1] = false;
+			ctx.input.mouseDown[1] = false;
+			d.pipette = false;
+			d.annule = true;
+			d.pose = false;
+			st.DireAuPied("Prélèvement annulé — la couleur d'avant est rendue.");
+			return;
+		}
+		const bool attendAvant = d.attendRelache;
+		const bool accepte = NkPipetteAccepteAppui(ctx.input.mouseDown[0], ctx.input.mouseClicked[0],
+												   d.attendRelache);
+		if (NkTracePipetteActive()
+			&& (ctx.input.mouseClicked[0] || attendAvant != d.attendRelache || accepte))
+			printf("[pipette] APPUI : enfonce=%d, appui neuf=%d, attendRelache %d->%d, "
+				   "accepte=%d\n",
+				   ctx.input.mouseDown[0] ? 1 : 0, ctx.input.mouseClicked[0] ? 1 : 0,
+				   attendAvant ? 1 : 0, d.attendRelache ? 1 : 0, accepte ? 1 : 0);
+		if (!accepte)
+			return;
+		d.pipettePris = true;
+		d.pipetteX = ctx.input.mousePos.x;
+		d.pipetteY = ctx.input.mousePos.y;
+		d.pipette = false;
+		d.pose = false;
+		// LE CLIC EST CONSOMME : il appartient au prelevement, a personne d'autre.
+		ctx.input.mouseClicked[0] = false;
+		ctx.input.mouseDown[0] = false;
+	}
+
 	inline void NkDessinerPickerDemande(nkgui::NkGuiContext &ctx, DesignState &st) {
 		using namespace nkentseu;
 		// « CHOISIR UNE IMAGE... » : le selecteur de fichier du kit, modal, ici (entree reelle)
@@ -11283,8 +12104,180 @@ namespace nkuidesign {
 			return;
 		if (!st.picker.ouvert)
 			return;
-		// ④ rien de selectionne : le selecteur generique (etats, effets) se ferme aussi
-		if (st.picker.genre == 0u && !st.doc.IsValidIndex(st.selected)) {
+		// ── LA PIPETTE, SECOND MOMENT : LIRE LE PIXEL ──────────────────
+		// Ici la liste principale de l'image est COMPLETE (tous les panneaux ont
+		// peint) et l'overlay n'y est pas : on preleve la page, pas les fenetres
+		// flottantes -- le selecteur couvre justement l'endroit ou l'on clique.
+		// (a) L'ENTREE DANS LE MODE : on GELE l'image, une fois.
+		if (st.picker.pipette && !st.pipetteImagePrete) {
+			st.pipetteImagePrete = true;
+			const nkentseu::uint32 sol = ((nkentseu::uint32)ctx.theme.bgPrimary.r << 24)
+										 | ((nkentseu::uint32)ctx.theme.bgPrimary.g << 16)
+										 | ((nkentseu::uint32)ctx.theme.bgPrimary.b << 8) | 0xFFu;
+			if (st.pipetteImage.Init(ctx.viewW, ctx.viewH)) {
+				st.pipetteImage.Effacer(sol);
+				(void)st.pipetteImage.Rasteriser(ctx.dl);
+			}
+		}
+		if (!st.picker.pipette && st.pipetteImagePrete) {
+			st.pipetteImagePrete = false;
+			st.pipetteImage.Init(1, 1); // on rend les pixels : l'image pesait la fenetre
+		}
+		// ⚠️ L'APERCU MEURT AVEC LE MODE, ET C'EST SA DUREE DE VIE ENTIERE. Pas une
+		//    enumeration des sorties -- clic droit, Echap, fenetre fermee, selection
+		//    changee : **toutes** passent par << le mode n'est plus arme >>. C'est
+		//    exactement ce qu'on gagne a ne pas ecrire dans la destination.
+		if (!st.picker.pipette) {
+			st.host.apercuNoeud = -1;
+			st.host.apercuIndex = -1;
+			st.host.apercuHex[0] = '\0';
+			st.canvasApercu[0] = '\0';
+		}
+		// (a bis) ① CE QUE LE CURSEUR DIT DU PROCHAIN CLIC -- ET IL LE DIT EN DERNIER.
+		//
+		// 🔴 RODOLF, deuxieme passage : << il y a toujours le symbole ↔ >>. Mon
+		//    correctif precedent (la bande des bords de fenetre) etait juste et
+		//    NE FERMAIT PAS SON CAS.
+		//
+		// ⚠️ RECENSEMENT (23 sites posent un curseur ; j'en avais corrige UN) : celui
+		//    qui gagne ici est la RANGEE DE NOMBRES du popover -- `ChampNombre` pose
+		//    ↔ des qu'on la survole, ce qui est VRAI puisqu'elle se tire. Mais elle
+		//    est dessinee APRES ce bloc : elle ecrasait le curseur du prelevement.
+		//    *Quand deux endroits ecrivent la meme variable, c'est le DERNIER qui
+		//    parle* -- la lecon du fond de toile, transposee au curseur.
+		//
+		// ⚠️ DONC ON PARLE APRES TOUT LE MONDE. Le reticule est peint ici (avant la
+		//    fenetre, pour ne pas la barrer) et le CURSEUR est repose a la toute fin,
+		//    quand plus personne n'ecrira. Pendant un prelevement, aucune autre
+		//    intention n'a de sens : le prochain clic preleve, et rien d'autre.
+		//
+		// 🔴 RODOLF : en mode pipette il voyait le curseur ↔. La cause de fond est
+		//    ailleurs (la bande de redimensionnement de la fenetre, corrigee dans le
+		//    kit) -- mais il reste a DIRE ce que fait le prochain clic.
+		//
+		// ⚠️ ET LE KIT N'A PAS DE CURSEUR DE PIPETTE : `NkGuiCursor` en compte
+		//    CINQ -- fleche, texte, main, ↔, ↕ -- et l'enumeration vit dans NKGui,
+		//    hors de ce chantier. **Je le dis plutot que de faire semblant.** Deux
+		//    reponses, et aucune n'est un mensonge : la MAIN (le prochain clic agit)
+		//    et surtout un RETICULE peint au pointeur, qui dit le geste exactement --
+		//    dessiner, ca, c'est chez nous.
+		if (st.picker.pipette) {
+			ctx.wantCursor = nkgui::NkGuiCursor::Hand;
+			NkTraceCurseur("pipette (avant popover)", ctx.wantCursor, true);
+			const nkgui::NkVec2 m = ctx.input.mousePos;
+			const nkgui::NkColor blanc = {255, 255, 255, 235}, noir = {0, 0, 0, 190};
+			// double trait : le reticule reste lisible sur clair COMME sur sombre
+			for (int32 e = 0; e < 2; ++e) {
+				const nkgui::NkColor c = e == 0 ? noir : blanc;
+				const float32 d = e == 0 ? 1.f : 0.f, ep = e == 0 ? 3.f : 1.f;
+				ctx.DL().AddLine({m.x - 11.f - d, m.y}, {m.x - 3.f + d, m.y}, c, ep);
+				ctx.DL().AddLine({m.x + 3.f - d, m.y}, {m.x + 11.f + d, m.y}, c, ep);
+				ctx.DL().AddLine({m.x, m.y - 11.f - d}, {m.x, m.y - 3.f + d}, c, ep);
+				ctx.DL().AddLine({m.x, m.y + 3.f - d}, {m.x, m.y + 11.f + d}, c, ep);
+			}
+		}
+		// (b) LE SURVOL : la couleur SUIT le pointeur, lue dans l'image figee.
+		// ⚠️ ET ON NE PRELEVE PAS SOUS LA FENETRE DU SELECTEUR. La regle << on lit la
+		//    couche principale >> ne suffit PAS a l'exclure : elle ecarte la chrome du
+		//    popover (dessinee dans l'overlay), mais elle rend ce qu'il y a DERRIERE
+		//    lui -- une couleur que l'œil ne voit pas. Voir sauter la couleur en
+		//    survolant sa propre fenetre n'apprend rien et brouille le geste.
+		const bool surLaFenetre =
+			ctx.popupDepth > 0 && nkgui::NkGuiRectContains(ctx.popupRects[0], ctx.input.mousePos);
+		// ══ TRACE DE L'APERCU (`NK_TRACE_PIPETTE=1`) ───────────────────────
+		//
+		// 🔴 Rodolf : le correctif << ne fait pas ce qui est demande, ca retarde juste
+		//    le prelevement >>. **Ma trace ne disait rien de l'apercu** -- ni le survol,
+		//    ni ce qui le retient : elle ne montrait que l'armement et le prelevement,
+		//    et RIEN ENTRE LES DEUX. On ne peut pas trancher sur un silence.
+		//
+		// ⚠️ ELLE DIT LA RAISON QUAND L'APERCU EST RETENU -- seuil de mouvement non
+		//    franchi, pointeur sur la chrome du selecteur, ou point hors de l'image
+		//    figee. *Un << retenu >> sans raison ne vaut pas mieux qu'un silence.*
+		if (st.picker.pipette) {
+			const bool bouge = NkPipetteAPuBouger(ctx.input.mousePos.x, ctx.input.mousePos.y,
+												  st.picker.armeX, st.picker.armeY,
+												  st.picker.aBouge);
+			char lu[12] = {};
+			const bool dansImage =
+				st.pipetteImagePrete
+				&& NkPipetteSurvol(st.pipetteImage, (nkentseu::int32)ctx.input.mousePos.x,
+								   (nkentseu::int32)ctx.input.mousePos.y, lu,
+								   (nkentseu::uint32)sizeof(lu));
+			const bool pose = !surLaFenetre && bouge && dansImage;
+			if (pose) {
+				snprintf(st.picker.hex, sizeof(st.picker.hex), "%s", lu);
+				// ── L'APERCU EST POSE, PAS ECRIT (08/09) ────────────────────────
+				// 🔴 Il ecrivait `couleurCourante`, **une reference vers le
+				//    remplissage** : l'objet avait deja change, donc il n'y avait rien
+				//    a valider ni a annuler. Il est desormais range LA OU LE PEINTRE
+				//    REGARDE -- l'hote pour un nœud, le champ du decor pour la toile.
+				if (st.picker.noeud >= 0) {
+					// ① UN ETAT : l'apercu vaut pour son FOND (aperçu > état > base, meme
+					//   porte) ; pour la couleur du TEXTE d'un etat il n'y a pas de porte
+					//   d'apercu (`apercuIndex` vise un remplissage) -- pas d'apercu, dit.
+					if (st.picker.champNoeud == 0u && (st.picker.etat[0] == '\0' || st.picker.champEtat == 0u)) {
+						st.host.apercuNoeud = st.picker.noeud;
+						st.host.apercuIndex = -1; // le fond effectif du nœud
+						snprintf(st.host.apercuHex, sizeof(st.host.apercuHex), "%s", lu);
+					}
+				} else
+					snprintf(st.canvasApercu, sizeof(st.canvasApercu), "%s", lu);
+			}
+			if (NkTracePipetteActive()) {
+				// on n'imprime que les CHANGEMENTS : la couleur lue, ou la raison
+				static char dernier[40] = {};
+				char etat[40];
+				snprintf(etat, sizeof(etat), "%s|%s", pose ? lu : "-",
+						 pose			? "pose"
+						 : surLaFenetre ? "sur la fenetre du selecteur"
+						 : !bouge		? "pas encore bouge"
+						 : !st.pipetteImagePrete ? "image non prete"
+												 : "hors de l'image figee");
+				if (!NkComponentDecl::StrEq(etat, dernier)) {
+					snprintf(dernier, sizeof(dernier), "%s", etat);
+					printf("[pipette] APERCU (%.0f, %.0f) : %s\n", (double)ctx.input.mousePos.x,
+						   (double)ctx.input.mousePos.y,
+						   pose		   ? lu
+						   : surLaFenetre ? "RETENU -- sur la fenetre du selecteur"
+						   : !bouge	   ? "RETENU -- pas encore bouge depuis l'armement"
+						   : !st.pipetteImagePrete ? "RETENU -- image non prete"
+												   : "RETENU -- hors de l'image figee");
+				}
+			}
+		}
+		// (c) L'ANNULATION rend EXACTEMENT la couleur d'avant.
+		if (st.picker.annule)
+			NkPipetteAnnuler(st.picker); // on REPOSE l'ancienne, sans marquer non plus
+		// (d) LA VALIDATION : le clic gauche ECRIT, une fois, par la porte.
+		if (st.picker.pipettePris) {
+			st.picker.pipettePris = false;
+			char pris[12] = {};
+			if (NkPreleverPixel(ctx.dl, (nkentseu::int32)st.picker.pipetteX,
+								(nkentseu::int32)st.picker.pipetteY,
+								// le SOL de la fenetre, empaquete 0xRRGGBBAA comme partout ici
+								((nkentseu::uint32)ctx.theme.bgPrimary.r << 24)
+									| ((nkentseu::uint32)ctx.theme.bgPrimary.g << 16)
+									| ((nkentseu::uint32)ctx.theme.bgPrimary.b << 8) | 0xFFu,
+								pris, (nkentseu::uint32)sizeof(pris))) {
+				snprintf(st.picker.hex, sizeof(st.picker.hex), "%s", pris);
+				st.picker.change = true; // la porte d'ecriture s'en saisit
+				if (NkTracePipetteActive())
+					printf("[pipette] PRELEVE %s au point (%.0f, %.0f)\n", pris,
+						   (double)st.picker.pipetteX, (double)st.picker.pipetteY);
+				char msgP[120];
+				snprintf(msgP, sizeof(msgP), "Prélevé : %s", pris);
+				st.DireAuPied(msgP);
+			} else
+				st.DireAuPied("Prélèvement hors de la fenêtre : rien n'a changé.");
+		}
+		// ② (07/09) LA GARDE EST CELLE QUE LA PORTE A DECLAREE, pas une regle que le
+		//    selecteur impose a tout le monde. Avant : « genre 0 et rien de
+		//    selectionne -> je me ferme » -- juste pour les etats et les effets, qui
+		//    DECRIVENT un nœud, faux pour le decor de la toile, qui n'en decrit
+		//    aucun. *Le selecteur ne sert qu'a choisir une couleur ; exiger un nœud
+		//    n'a jamais ete son affaire.*
+		if (NkPickerDoitFermer(st.picker.noeud, st.selected, st.doc.IsValidIndex(st.picker.noeud))) {
 			if (ctx.IsPopupOpen(st.picker.id))
 				ctx.ClosePopup();
 			st.picker.ouvert = false;
@@ -11292,29 +12285,31 @@ namespace nkuidesign {
 		}
 		if (st.picker.genre == 1u && st.popoverRemplissage) {
 			st.popoverRemplissage(ctx, st.popoverUser); // le popover complet (types, rampe, liste)
+			NkPipetteCurseur(ctx, st.picker); // ① on parle EN DERNIER
 			return;
 		}
-		if (st.picker.genre == 2u && st.popoverBordure) {
-			st.popoverBordure(ctx, st.popoverUser); // hexa, epaisseur, position, cotes, jointure, extremites
-			return;
-		}
+		// ① (11/09, nuit) LE GENRE 2 N'EXISTE PLUS : la bordure ouvre L'ENVELOPPE, qui
+		//    recoit ses champs propres (`BlocChampsBordure`). Une variante de selecteur
+		//    de moins -- c'etait la neuvieme.
 		float32 col[4] = {0.5f, 0.5f, 0.5f, 1.f};
 		const nkgui::NkColor c0 = NkCouleurDepuisHex(st.picker.hex);
 		col[0] = (float32)c0.r / 255.f;
 		col[1] = (float32)c0.g / 255.f;
 		col[2] = (float32)c0.b / 255.f;
 		const nkgui::NkRect sw = st.picker.ancre;
+		// ⚠️ LES DEUX NOMBRES VIENNENT DE `ColorPicker4` LUI-MEME (NKGui) : la
+		//    largeur du carre SV, l'ecart, la barre de teinte, et SIX rangees de
+		//    champs (R G B H S V, l'alpha en moins). C'est la meme formule que le
+		//    selecteur integre de la bibliotheque -- si elle bouge la-bas, elle
+		//    bougera ici, et c'est ecrit pour qu'on le sache.
 		const float32 pw = 160.f + 12.f + 16.f + 24.f;
 		const float32 ph = 160.f + 16.f + 6.f * (ctx.ItemHeight() + ctx.layout.itemSpacingY);
-		nkgui::NkRect pr = {sw.x - pw - 8.f, sw.y + sw.h + 2.f, pw, ph}; // a GAUCHE : le panneau est a droite
-		if (pr.x < 2.f)
-			pr.x = 2.f;
-		if (pr.y + pr.h > (float32)ctx.viewH)
-			pr.y = (float32)ctx.viewH - pr.h - 2.f;
-		if (pr.y < 2.f)
-			pr.y = 2.f;
-		if (!ctx.IsPopupOpen(st.picker.id))
-			ctx.OpenPopup(st.picker.id);
+		// ① (07/09) LE PLACEMENT VIENT DU KIT, PLUS D'ICI. Voir `NkPlacerPresDeLAncre`.
+		const nkgui::NkRect pr = editorkit::NkPlacerPresDeLAncre(sw, pw, ph, (float32)ctx.viewW, (float32)ctx.viewH, editorkit::NkCoteAncre::Dessous);
+		if (!NkPopupDeLaDemande(ctx, st.picker)) {
+			st.picker.ouvert = false; // clic dehors / Echap : NKGui a ferme, on suit
+			return;
+		}
 		if (nkgui::BeginPopupId(ctx, st.picker.id, pr, sw)) {
 			if (nkgui::ColorPicker4(ctx, "##nkuidesign.picker", col, nkgui::NkGuiColorFlags::NoAlpha)) {
 				static const char *const kHex = "0123456789abcdef";
@@ -11655,11 +12650,7 @@ namespace nkuidesign {
 				if (mSt) {
 					mSt->popoverRemplissage = &InspectorPanel::PopoverRemplissageC;
 					mSt->popoverUser = this;
-					mSt->popoverBordure = &InspectorPanel::PopoverBordureC;
 				}
-			}
-			static void PopoverBordureC(NkGuiContext &ctx, void *u) {
-				static_cast<InspectorPanel *>(u)->DessinerPopoverBordure(ctx);
 			}
 			/// Une rangée de choix (trois boutons) dans un popover ; rend l'indice cliqué ou -1.
 			int32 RangeeChoix(NkGuiContext &ctx, float32 x0, float32 x1, float32 y, const char *titre,
@@ -11691,96 +12682,29 @@ namespace nkuidesign {
 			/// LE POPOVER D'UNE BORDURE : le sélecteur (couleur) · hexa + opacité ·
 			/// épaisseur + position · côtés · jointure · extrémités (grisées sur une
 			/// forme fermée, et dit). Appelé par le crochet d'overlay, jamais par le panneau.
-			void DessinerPopoverBordure(NkGuiContext &ctx) {
-				DesignState::DemandePicker &d = mSt->picker;
-				if (!d.ouvert || !mSt->doc.IsValidIndex(d.noeud) || mSt->selected != d.noeud) {
-					if (d.ouvert && ctx.IsPopupOpen(d.id)) // ④ il suit la selection
-						ctx.ClosePopup();
-					d.ouvert = false;
-					return;
-				}
-				NkUINode &n = mSt->doc.nodes[(uint32)d.noeud];
-				if (d.index < 0 || (uint32)d.index >= (uint32)n.borders.Size()) {
-					d.ouvert = false;
-					return;
-				}
-				NkBordure &b = n.borders[(uint32)d.index];
+			/// ① LES CHAMPS PROPRES D'UNE BORDURE (epaisseur, position, cotes, jointure,
+			/// extremites), EXTRAITS DE LEUR FENETRE A PART (11/09, nuit).
+			///
+			/// 🔑 Rodolf, deux fois : « retire le color picker pour mettre le bon ». La
+			///    bordure ouvrait SA fenetre (236 px) -- ni le noyau nu, ni l'enveloppe :
+			///    une neuvieme variante de selecteur, sans pipette, sans modele
+			///    Hex/RGB/HSB, sans croix. **L'enveloppe RECOIT donc ces champs**, comme
+			///    elle recoit un bloc d'etat ; elle ne les perd pas, et la fenetre a part
+			///    disparait.
+			/// ⚠️ AUCUNE LIGNE DE DESSIN N'EST REECRITE : ce bloc est celui du popover,
+			///    deplace tel quel ; seul l'appel a `touche()` devient un drapeau, parce
+			///    que l'ecriture appartient desormais a l'appelant.
+			/// Rend la hauteur consommee ; `modifie` passe a vrai si un champ a change.
+			static float32 HauteurChampsBordure() {
+				return 26.f + 26.f + 48.f + 24.f + 24.f;
+			}
+			void BlocChampsBordure(NkGuiContext &ctx, float32 x0, float32 x1, float32 y,
+								   NkBordure &b, const NkUINode &n, bool &modifie) {
 				auto &F = costume::Fontes();
-				auto touche = [&]() {
-					mSt->doc.MarkHumanEdit(d.noeud);
-					mSt->host.SyncTo(mSt->doc);
-					mBordsGen = -1;
-				};
-				const uint32 cleSync = ((uint32)d.noeud << 20) ^ ((uint32)d.index << 12) ^ 0xB0Du;
-				if (d.synchro != cleSync) {
-					d.synchro = cleSync;
-					snprintf(d.hex, sizeof(d.hex), "%s", b.couleur.Data() ? b.couleur.Data() : "");
-				}
-				const float32 pw = 236.f;
-				const float32 hPicker = 160.f + 8.f; // ③ sans les six rangees
-				const float32 ph = 8.f + hPicker + 26.f + 26.f + 26.f + 48.f + 24.f + 24.f + 8.f;
-				const NkRect sw = d.ancre;
-				NkRect pr = {sw.x - pw - 8.f, sw.y - 8.f, pw, ph};
-				if (pr.x < 2.f)
-					pr.x = 2.f;
-				if (pr.y + pr.h > (float32)ctx.viewH)
-					pr.y = (float32)ctx.viewH - pr.h - 2.f;
-				if (pr.y < 2.f)
-					pr.y = 2.f;
-				if (!ctx.IsPopupOpen(d.id))
-					ctx.OpenPopup(d.id);
-				if (!nkgui::BeginPopupId(ctx, d.id, pr, sw)) {
-					d.ouvert = false;
-					return;
-				}
 				auto &dl = ctx.DL();
-				const float32 x0 = pr.x + 8.f, x1 = pr.x + pr.w - 8.f;
-				float32 y = pr.y + 8.f;
-				// 1. le sélecteur
-				{
-					float32 col[4] = {0.5f, 0.5f, 0.5f, 1.f};
-					const nkgui::NkColor c0 = NkCouleurDepuisHex(d.hex);
-					col[0] = (float32)c0.r / 255.f;
-					col[1] = (float32)c0.g / 255.f;
-					col[2] = (float32)c0.b / 255.f;
-					ctx.layout.cursor = {x0, y};
-					ctx.layout.lineStartX = x0;
-					if (nkgui::ColorPicker4(ctx, "##nkuidesign.popover.bord.pick", col,
-											 (nkgui::NkGuiColorFlags)((nkentseu::uint32)nkgui::NkGuiColorFlags::NoAlpha
-																   | (nkentseu::uint32)nkgui::NkGuiColorFlags::NoInputs))) {
-						static const char *const kHex = "0123456789abcdef";
-						d.hex[0] = '#';
-						for (int32 k = 0; k < 3; ++k) {
-							float32 v = col[k] < 0.f ? 0.f : (col[k] > 1.f ? 1.f : col[k]);
-							const int32 o = (int32)(v * 255.f + 0.5f);
-							d.hex[1 + k * 2] = kHex[(o >> 4) & 0xF];
-							d.hex[2 + k * 2] = kHex[o & 0xF];
-						}
-						d.hex[7] = '\0';
-						b.couleur = NkString(d.hex);
-						touche();
-					}
-					y += hPicker;
-				}
-				// 2. hexa + opacité
-				{
-					const NkRect rh = {x0, y + 3.f, 80.f, costume::HControle};
-					ctx.SetNextItemRect(rh);
-					if (nkgui::InputText(ctx, "##nkuidesign.popover.bord.hex", d.hex, 10) && NkPorteHex(d.hex, (uint32)sizeof(d.hex))) {
-						b.couleur = NkString(d.hex);
-						touche();
-					}
-					const NkRect ro = {x1 - 40.f - 12.f, y + 3.f, 40.f, costume::HControle};
-					float32 op = b.opacite;
-					if (ChampNombre(ctx, "insp.popover.bord.op", ro, op, 1.f, 0.f, 100.f)) {
-						b.opacite = op;
-						touche();
-					}
-					costume::Texte(dl, F.px9, ro.x + ro.w + 3.f, costume::CentrerY(F.px9, ro.y, 20.f), "%",
-								   ctx.theme.textMuted);
-					y += 26.f;
-				}
-				// 3. épaisseur + position
+				(void)F;
+				(void)dl;
+// 3. épaisseur + position
 				{
 					costume::Texte(dl, F.px10, x0, costume::CentrerY(F.px10, y + 3.f, 20.f), "Épaisseur",
 								   ctx.theme.textMuted);
@@ -11788,7 +12712,7 @@ namespace nkuidesign {
 					float32 ep = b.epaisseur > 0.f ? b.epaisseur : 1.f;
 					if (ChampNombre(ctx, "insp.popover.bord.ep", re, ep, 0.25f, 0.f, 64.f)) {
 						b.epaisseur = ep;
-						touche();
+						modifie = true;
 					}
 					costume::Texte(dl, F.px9, re.x + re.w + 4.f, costume::CentrerY(F.px9, re.y, 20.f), "px",
 								   ctx.theme.textMuted);
@@ -11798,7 +12722,7 @@ namespace nkuidesign {
 					const int32 c = RangeeChoix(ctx, x0, x1, y, "Position", kPos, 3u, actif, false);
 					if (c >= 0) {
 						b.position = c == 0 ? NkBordurePos::Interieur : (c == 1 ? NkBordurePos::Centre : NkBordurePos::Exterieur);
-						touche();
+						modifie = true;
 					}
 					y += 26.f;
 				}
@@ -11828,7 +12752,7 @@ namespace nkuidesign {
 						float32 v = b.Cote(kc);
 						if (ChampNombre(ctx, idc, rk, v, 0.25f, 0.f, 64.f)) {
 							b.cotes[kc] = v;
-							touche();
+							modifie = true;
 						}
 						costume::Texte(dl, F.px9, rk.x + 3.f, rk.y - 9.f, kCote[kc], ctx.theme.textMuted);
 					}
@@ -11846,7 +12770,7 @@ namespace nkuidesign {
 					const int32 cj = RangeeChoix(ctx, x0, x1, y, "Jointure", kJoint, 3u, aj, false);
 					if (cj >= 0) {
 						b.jointure = cj == 0 ? NkString() : NkString(kJoint[cj]);
-						touche();
+						modifie = true;
 					}
 					y += 24.f;
 					const bool ouverte = NkFormeOuverte(n);
@@ -11857,13 +12781,13 @@ namespace nkuidesign {
 					const int32 ce = RangeeChoix(ctx, x0, x1, y, "Extrémités", kExtLib, 3u, ae, !ouverte);
 					if (ce >= 0 && ouverte) {
 						b.extremite = ce == 0 ? NkString() : NkString(kExtCle[ce]);
-						touche();
+						modifie = true;
 					}
 					if (!ouverte && NkGuiRectContains({x0, y, x1 - x0, 22.f}, ctx.input.mousePos))
 						mSt->status = NkString("Extrémités : une forme fermée n'en a pas — elles valent pour une ligne.");
 				}
-				nkgui::EndPopup(ctx);
 			}
+
 			static void PopoverRemplissageC(NkGuiContext &ctx, void *u) {
 				static_cast<InspectorPanel *>(u)->DessinerPopoverRemplissage(ctx);
 			}
@@ -11879,23 +12803,134 @@ namespace nkuidesign {
 				//    selectionne ou si on a clique dans le vide ») : le noeud disparu, deselectionne
 				//    (le vide de la toile deselectionne), ou remplace par un autre -> il se ferme,
 				//    et le popup du kit avec lui.
-				if (!d.ouvert || !mSt->doc.IsValidIndex(d.noeud) || mSt->selected != d.noeud) {
-					if (d.ouvert && ctx.IsPopupOpen(d.id))
+				// ══════════════════════════════════════════════════════════════
+				//  ③ (07/09) CETTE FENETRE REÇOIT CE QU'ELLE EDITE, elle ne va plus
+				//     LE CHERCHER — et c'est tout le lot.
+				// ══════════════════════════════════════════════════════════════
+				// 🔴 RODOLF : la pastille du canvas ouvrait le CŒUR du sélecteur posé
+				//    NU — pas de fond opaque, pas d'onglets, pas de rangée hexa, pas
+				//    de croix ; le texte du panneau se lisait à travers.
+				//
+				// ⚠️ MESURE AVANT D'ECRIRE (Q127) : sur ses 1046 lignes, cette
+				//    fonction touche **160 fois** le remplissage `f`, et le NŒUD
+				//    **huit fois seulement** — toutes groupées ici, plus trois dans la
+				//    seule branche image. Elle n'a jamais eu besoin d'un nœud pour
+				//    dessiner un fond, un onglet et un bouton de fermeture : elle a
+				//    besoin d'UN REMPLISSAGE. *La même forme de condition mal placée
+				//    que la garde d'hier — déplacée, pas retirée.*
+				//
+				// ⚠️ ET AUCUNE LIGNE DE DESSIN N'EST DEPLACEE. Ce sont ces huit accès
+				//    directs qui deviennent une résolution déclarée ; le chemin
+				//    `d.noeud >= 0` est identique, et les essais 60b/86/87/88 le
+				//    prouvent sans avoir été touchés.
+				const bool surNoeud = d.noeud >= 0;
+				// ① UN ETAT : la demande decrit un nœud (les gardes de selection valent),
+				//   mais ce qu'elle edite est un BLOC D'ETAT, pas un remplissage du nœud.
+				const bool surEtat = surNoeud && d.etat[0] != '\0';
+				// ① UNE COULEUR SIMPLE DU NŒUD (etat, effet, texte) : l'enveloppe edite
+				//   `couleurFill`, pas un remplissage. Et ce qui a un SENS pour elle :
+				//   l'OPACITE existe pour un remplissage et pour un EFFET (le modele la
+				//   porte), pas pour un etat (celle du nœud, lot ③) ni pour le texte.
+				const bool surCible = surEtat || (surNoeud && d.champNoeud != 0u);
+				// l'OPACITE existe pour un remplissage, un EFFET et une BORDURE (le modele
+				// la porte) ; pas pour un etat (celle du nœud) ni pour le texte.
+				const bool opaciteAUnSens =
+					!surCible || (!surEtat && (d.champNoeud == 1u || d.champNoeud == 3u));
+				// ① LA BORDURE apporte SES champs dans l'enveloppe (voir `BlocChampsBordure`)
+				const bool surBordure = surNoeud && !surEtat && d.champNoeud == 3u;
+				if (!d.ouvert) {
+					if (ctx.IsPopupOpen(d.id))
 						ctx.ClosePopup();
 					d.ouvert = false;
 					return;
 				}
-				NkUINode &n = mSt->doc.nodes[(uint32)d.noeud];
-				if (d.index < 0 || (uint32)d.index >= (uint32)n.fills.Size()) {
+				// ④ LE SELECTEUR SUIT LA SELECTION (Rodolf : « fermer le picker lorsque rien n'est
+				//    selectionne ou si on a clique dans le vide ») : le noeud disparu, deselectionne
+				//    (le vide de la toile deselectionne), ou remplace par un autre -> il se ferme,
+				//    et le popup du kit avec lui. **Pour qui DECRIT un nœud, uniquement.**
+				if (surNoeud && (!mSt->doc.IsValidIndex(d.noeud) || mSt->selected != d.noeud)) {
+					if (ctx.IsPopupOpen(d.id))
+						ctx.ClosePopup();
 					d.ouvert = false;
 					return;
 				}
-				NkRemplissage &f = n.fills[(uint32)d.index];
+				NkUINode *const n = surNoeud ? &mSt->doc.nodes[(uint32)d.noeud] : nullptr;
+				if (surNoeud && !surCible && (d.index < 0 || (uint32)d.index >= (uint32)n->fills.Size())) {
+					d.ouvert = false;
+					return;
+				}
+				if (surNoeud && !surEtat && d.champNoeud == 1u
+					&& (d.index < 0 || (uint32)d.index >= (uint32)n->effets.Size())) {
+					d.ouvert = false; // l'effet vise a disparu
+					return;
+				}
+				if (surBordure && (d.index < 0 || (uint32)d.index >= (uint32)n->borders.Size())) {
+					d.ouvert = false; // la bordure visee a disparu
+					return;
+				}
+				// LE REMPLISSAGE EDITE : celui du nœud, celui d'un ETAT (transitoire), ou
+				// celui du DECOR de la toile -- l'enveloppe recoit ce qu'elle edite.
+				NkRemplissage &f = surCible ? mSt->couleurFill
+									: (surNoeud ? n->fills[(uint32)d.index] : mSt->canvasFill);
 				NkDegrade &g = f.degrade;
+				// ⚠️ L'IMAGE EST UN CHEMIN DE NŒUD, PAR CONSTRUCTION -- pas par l'absence
+				//    de l'onglet. Trois sites de cette branche lisent la BOITE du nœud
+				//    (couverture du recadrage) et son index (choix du fichier) ; les
+				//    laisser protégés par une décision d'INTERFACE, c'est les rouvrir au
+				//    premier changement d'interface. Le décor de la toile ne peut donc
+				//    pas être une image, quoi que porte son remplissage.
+				const bool estImage = surNoeud && !surCible && f.EstImage();
 				auto &F = costume::Fontes();
 				auto touche = [&]() {
-					if (!n.instanceDe.Empty())
-						n.ecarts |= NkUINode::EcartRemplissages;
+					if (surEtat) {
+						// ① L'ECRITURE D'UN ETAT : la couleur traverse `couleurFill` et se pose
+						//   dans le champ vise du bloc ; un bloc devenu vide disparait (pas de
+						//   cle fantome) ; les tampons d'ETATS se resynchronisent.
+						NkApparenceEtat &bloc = NkBlocEtat(*n, d.etat);
+						(d.champEtat == 1u ? bloc.couleurTexte
+						 : d.champEtat == 2u ? bloc.bordureCouleur
+						 : d.champEtat == 3u ? bloc.teinte
+											 : bloc.fond) = f.couleur;
+						if (bloc.Vide())
+							NkRetirerBlocEtat(*n, d.etat);
+						mSt->doc.MarkHumanEdit(d.noeud);
+						mSt->host.SyncTo(mSt->doc);
+						mEtatsGen = 0xFFFFFFFFu;
+						return;
+					}
+					if (surCible) {
+						// ① UNE COULEUR SIMPLE DU NŒUD : celle d'un effet (couleur ET opacite,
+						//   le modele porte les deux), ou celle du texte ; les tampons de la
+						//   section se resynchronisent.
+						if (d.champNoeud == 1u) {
+							NkEffet &ef = n->effets[(uint32)d.index];
+							ef.couleur = f.couleur;
+							ef.opacite = f.opacite;
+							mEffetsGen = 0xFFFFFFFFu;
+						} else if (d.champNoeud == 3u) {
+							NkBordure &bo = n->borders[(uint32)d.index];
+							bo.couleur = f.couleur;
+							bo.opacite = f.opacite;
+							mBordsGen = -1;
+						} else {
+							n->textColor = f.couleur;
+							mApparGen = 0xFFFFFFFFu;
+						}
+						mSt->doc.MarkHumanEdit(d.noeud);
+						mSt->host.SyncTo(mSt->doc);
+						return;
+					}
+					if (!surNoeud) {
+						// ⚠️ ON MARQUE, ON N'ECRIT PAS. Le selecteur appelle `touche()` a
+						//    CHAQUE image d'un glisser dans le carre de teinte : ecrire le
+						//    fichier ici, c'est un acces disque par image. Le decor est
+						//    marque sale et s'enregistre au relacher, la ou la toile le
+						//    peint deja -- un seul endroit, une seule ecriture par geste.
+						mSt->decorSale = true;
+						return;
+					}
+					if (!n->instanceDe.Empty())
+						n->ecarts |= NkUINode::EcartRemplissages;
 					mSt->doc.MarkHumanEdit(d.noeud);
 					mSt->host.SyncTo(mSt->doc);
 					mFillsGen = -1; // la ligne se resynchronise
@@ -11904,7 +12939,10 @@ namespace nkuidesign {
 					d.arretSel = 0;
 				// LA COULEUR COURANTE : celle de l'arrêt courant si dégradé, sinon celle du remplissage
 				NkString &couleurCourante = g.Actif() ? g.arrets[(uint32)d.arretSel].couleur : f.couleur;
-				const uint32 cleSync = ((uint32)d.noeud << 20) ^ ((uint32)d.index << 12) ^ (uint32)(g.Actif() ? d.arretSel + 1 : 0);
+				const uint32 cleSync = ((uint32)d.noeud << 20) ^ ((uint32)d.index << 12) ^ (uint32)(g.Actif() ? d.arretSel + 1 : 0)
+									   ^ (surCible ? (0x40000000u ^ ((uint32)d.champEtat << 8) ^ ((uint32)d.champNoeud << 16)
+													  ^ (uint32)d.etat[0])
+												   : 0u);
 				if (d.synchro != cleSync) {
 					d.synchro = cleSync;
 					mEditerVariable = false; // ③ changer de remplissage désarme « Modifier la variable »
@@ -11956,6 +12994,22 @@ namespace nkuidesign {
 					couleurCourante = NkString(hex);
 					touche();
 				};
+				// ⚠️ LA PIPETTE ECRIT PAR LA MEME PORTE QUE LA FRAPPE : detachement
+				//    d'une variable, ecart d'instance, message du pied -- tout ce que
+				//    `ecrireCouleur` fait, elle le fait aussi. Une seconde ecriture aurait
+				//    pose la couleur en oubliant la moitie des consequences.
+				// ② L'APERCU EST POSE POUR ETRE VU, PAS POUR ETRE ENREGISTRE : il
+				//    ecrit la couleur courante et **n'appelle pas** `touche()`. Sinon
+				//    chaque pixel survole marquerait une edition de document (et une
+				//    ecriture de fichier pour le decor) -- soixante par seconde.
+				// 🔴 ICI VIVAIT LE DEFAUT : ce bloc ecrivait `couleurCourante`, **une
+				//    reference vers le remplissage**. Il n'existe plus. Le champ hexa,
+				//    lui, montre toujours la couleur survolee -- c'est un affichage,
+				//    pas le modele.
+				if (d.change) {
+					d.change = false;
+					ecrireCouleur(d.hex);
+				}
 				// ── LA BOÎTE ──────────────────────────────────────────────────────
 				const float32 pw = 250.f; // ③ trois champs qui tiennent « -54,00 » (sonde 60f)
 				// ② LA HAUTEUR SE CALCULE, elle ne s'estime pas : les rangees de types
@@ -11970,7 +13024,22 @@ namespace nkuidesign {
 				// une rangée de plus quand la couleur est LIÉE : « Modifier la variable » (③) ;
 				// et TOUJOURS la rangée d'opacité (① du 05/09, après-midi)
 				const bool couleurLiee = NkEstReference(couleurCourante.Data());
-				const float32 hHex = 26.f + 26.f + 26.f + (couleurLiee ? 26.f : 0.f);
+				// ③ (07/09) LA HAUTEUR SUIT LE MASQUAGE. Trois rangées -- le modèle,
+				//    l'opacité, la variable -- et la variable N'EXISTE PAS pour le décor
+				//    de la toile. Garder sa hauteur aurait laissé un vide de 26 px au bas
+				//    de la fenêtre : *une hauteur qui ne suit pas son contenu, c'est la
+				//    même faute qu'une largeur décidée sans regarder le texte.*
+				// 🔴 (11/09, nuit) LA VARIABLE A UN SENS PARTOUT OU LE VISITEUR VOIT LE
+				//    CHAMP -- tout ce qui decrit un nœud, etats compris. 03c5ebb65 la cachait
+				//    pour un etat au motif que << ses champs sont des litteraux (le modele le
+				//    dit) >> : c'etait FAUX. `NkPorteHex` accepte << @cle >>, l'essai 68d
+				//    compte le fond d'un etat comme un usage, et le visiteur voit depuis
+				//    cb84ff87f la couleur du texte et de bordure d'un etat. Seul le decor de
+				//    la toile n'en a pas (machine, pas document).
+				const float32 hVariable = surNoeud ? 26.f + (couleurLiee ? 26.f : 0.f) : 0.f;
+				// ① LA RANGEE D'OPACITE N'EXISTE QUE LA OU LE MODELE PORTE UNE OPACITE.
+				const float32 hHex = 26.f + (opaciteAUnSens ? 26.f : 0.f) + hVariable
+									 + (surBordure ? HauteurChampsBordure() : 0.f);
 				// LIER UNE VARIABLE EXISTANTE : la liste se deplie DANS le popover (une rangee
 				// de 20 px par variable, six au plus -- au-dela, le rail Variables), et la
 				// boite grandit d'autant ; rien tant que la liste est repliee ou que la
@@ -11978,7 +13047,7 @@ namespace nkuidesign {
 				const uint32 nVarsDoc = (uint32)mSt->doc.variables.Size();
 				const uint32 nVarsListe = nVarsDoc < 6u ? nVarsDoc : 6u;
 				(void)nVarsListe; // le compte AFFICHE est desormais celui du filtre (③)
-				const bool listeVars = mVarsDeplie && nVarsDoc > 0u && !NkEstReference(couleurCourante.Data()) && !f.EstImage();
+				const bool listeVars = surNoeud && mVarsDeplie && nVarsDoc > 0u && !NkEstReference(couleurCourante.Data()) && !estImage;
 				// ③ les lignes RETENUES par le filtre (six au plus), plus le champ de recherche
 				uint32 varsFiltrees = 0u;
 				uint32 idxVars[6] = {0u, 0u, 0u, 0u, 0u, 0u};
@@ -11992,24 +13061,23 @@ namespace nkuidesign {
 				//    descendent a +30 -- a 26 px la rangee suivante les recouvrait (Rodolf)
 				const int32 genreP = renderdetail::NkGenreDegrade(g);
 				const float32 hRampe = g.Actif() ? 34.f + 26.f + (genreP != 0 ? 52.f : 0.f) + 26.f * (float32)(g.arrets.Size() < 12u ? g.arrets.Size() : 12u) : 0.f; // barre, angle, (rayons, origine), liste
-				const bool estCrop = f.EstImage() && NkComponentDecl::StrEq(f.cadrage.Data(), "crop");
+				const bool estCrop = estImage && NkComponentDecl::StrEq(f.cadrage.Data(), "crop");
 				// image : apercu, retirer le fond, cadrage, rotation, source, boutons, (crop)
-				const float32 ph = f.EstImage() ? 8.f + hTypes + 116.f + 26.f * 5.f + (estCrop ? 26.f : 0.f) + 8.f
+				const float32 ph = estImage ? 8.f + hTypes + 116.f + 26.f * 5.f + (estCrop ? 26.f : 0.f) + 8.f
 												   : 8.f + hTypes + hPicker + hHex + hVars + hRampe + 8.f;
 				const NkRect sw = d.ancre;
-				NkRect pr = {sw.x - pw - 8.f, sw.y - 8.f, pw, ph};
-				// ⑤ LE POPOVER NE SORT JAMAIS DE LA FENETRE : sa hauteur est BORNEE ; ce qui
-				//    deborde, c'est la liste des arrets, et elle DEFILE (ascenseur plus bas)
-				if (pr.h > (float32)ctx.viewH - 4.f)
-					pr.h = (float32)ctx.viewH - 4.f;
-				if (pr.x < 2.f)
-					pr.x = 2.f;
-				if (pr.y + pr.h > (float32)ctx.viewH)
-					pr.y = (float32)ctx.viewH - pr.h - 2.f;
-				if (pr.y < 2.f)
-					pr.y = 2.f;
-				if (!ctx.IsPopupOpen(d.id))
-					ctx.OpenPopup(d.id);
+				// ⑤ LA HAUTEUR EST BORNEE AVANT LE PLACEMENT : ce qui deborde, c'est la
+				//    liste des arrets, et elle DEFILE (ascenseur plus bas).
+				const float32 phBorne = ph > (float32)ctx.viewH - 4.f ? (float32)ctx.viewH - 4.f : ph;
+				// ① (07/09) LE PLACEMENT VIENT DU KIT, PLUS D'ICI : la MEME regle que le
+				//   selecteur generique et que NKGui -- sous l'ancre, retournee si besoin,
+				//   rentree dans la vue. Trois copies identiques vivaient dans ce fichier ;
+				//   toutes les trois avaient diverge de la BIBLIOTHEQUE.
+				NkRect pr = editorkit::NkPlacerPresDeLAncre(sw, pw, phBorne, (float32)ctx.viewW, (float32)ctx.viewH, editorkit::NkCoteAncre::AGauche);
+				if (!NkPopupDeLaDemande(ctx, d)) {
+					d.ouvert = false; // clic dehors / Echap : NKGui a ferme, on suit
+					return;
+				}
 				if (!nkgui::BeginPopupId(ctx, d.id, pr, sw)) {
 					d.ouvert = false; // clic dehors / Échap
 					return;
@@ -12065,11 +13133,26 @@ namespace nkuidesign {
 				bool fermerPopover = false;
 				{
 					const nkgui::NkColor sombre = {70, 70, 70, 255}, clair = {215, 215, 215, 255};
-					for (uint32 k = 0; k < 6u; ++k) {
-						const bool estUni = (k == 0u), estImage = (k == 5u);
-						const bool actif = estImage ? f.EstImage()
-											: (estUni ? (!g.Actif() && !f.EstImage())
-													  : (!f.EstImage() && g.Actif()
+					// ── ③ (07/09) POUR LE DECOR DE LA TOILE : LA VIGNETTE UNIE, ET RIEN
+					//    D'AUTRE ─────────────────────────────────────────────────────
+					// 🔴 ARBITRAGE DE RODOLF : couleur unie seulement. Le peintre de la
+					//    toile ne sait peindre qu'un aplat ; proposer « dégradé »,
+					//    « radial » ou « image » écrirait un fond que rien ne peint.
+					// ⚠️ C'EST UN MASQUAGE SOUS LA REGLE DU TYPE, PAS UNE SECTION MUETTE.
+					//    Ces choix NE PEUVENT PAS EXISTER pour un canvas ; ils ne sont pas
+					//    « pas encore branchés ». *On cache ce qui ne peut pas exister ; on
+					//    explique ce qui n'agit pas encore.* Les rouvrir en croyant réparer
+					//    un oubli remettrait un choix mort dans la fenêtre.
+					// ① ET UN ETAT NON PLUS : une couleur unie, c'est tout ce qu'un bloc porte.
+					const uint32 nVignettes = (surNoeud && !surCible) ? 6u : 1u;
+					for (uint32 k = 0; k < nVignettes; ++k) {
+						// ⚠️ RENOMMEE : elle s'appelait `estImage` et masquait la variable du
+						//    MEME nom qui dit si le REMPLISSAGE est une image. Deux sens pour
+						//    un mot dans dix lignes : la sixieme vignette, et l'etat du fond.
+						const bool estUni = (k == 0u), vignetteImage = (k == 5u);
+						const bool actif = vignetteImage ? estImage
+											: (estUni ? (!g.Actif() && !estImage)
+													  : (!estImage && g.Actif()
 														 && (NkComponentDecl::StrEq(g.type.Data(), kNkTypesRemplissageCle[k])
 															 || (k == 1u && g.type.Empty()))));
 						const NkRect v = {x0 + (float32)k * 24.f, y + 2.f, 18.f, 18.f};
@@ -12105,7 +13188,7 @@ namespace nkuidesign {
 												   : k == 5u ? "Image — le damier tant que la source n'est pas chargée."
 															 : "Nommé, pas encore peint : le fond prend la couleur du premier arrêt.");
 						if (sv && ctx.input.mouseClicked[0]) {
-							if (estImage) {
+							if (vignetteImage) {
 								f.genre = NkString("image");
 								g.arrets.Clear();
 							} else if (estUni) {
@@ -12129,6 +13212,9 @@ namespace nkuidesign {
 						}
 					}
 					// séparateur, la GOUTTE (fusion), la CROIX -- dessinés
+					// ① PAS DE GOUTTE POUR UNE COULEUR SIMPLE : le mode de fusion est celui
+					//   d'un remplissage ; un etat, un effet, un texte n'en portent pas.
+					if (!surCible) {
 					dl.AddLine({x0 + 150.f, y + 3.f}, {x0 + 150.f, y + 19.f}, ctx.theme.border, 1.f);
 					{
 						const NkRect rg = rGoutte;
@@ -12148,6 +13234,51 @@ namespace nkuidesign {
 							ctx.input.mouseClicked[0] = false;
 						}
 					}
+					}
+					// ── LA PIPETTE (07/09, Rodolf) : DANS L'ENVELOPPE, donc dans TOUS
+					//    les selecteurs -- une seule ecriture ────────────────────
+					// ⚠️ ELLE EST TRACEE, PAS PIOCHEE DANS UN ATLAS : le kit ne porte
+					//    aucune icone, tout ce qui doit se voir se DESSINE. Un tube
+					//    en biais, sa pointe, et le reservoir.
+					{
+						const NkRect rp = {x1 - 38.f, y + 3.f, 16.f, 16.f};
+						const bool svP = NkGuiRectContains(rp, ctx.input.mousePos);
+						const nkgui::NkColor cp =
+							d.pipette ? ctx.theme.accent : (svP ? ctx.theme.text : ctx.theme.textMuted);
+						dl.AddLine({rp.x + 4.f, rp.y + 12.f}, {rp.x + 11.f, rp.y + 5.f}, cp, 2.f);
+						dl.AddLine({rp.x + 9.f, rp.y + 3.f}, {rp.x + 13.f, rp.y + 7.f}, cp, 2.f);
+						dl.AddTriangleFilled({rp.x + 3.f, rp.y + 13.f}, {rp.x + 6.f, rp.y + 13.f},
+											 {rp.x + 3.f, rp.y + 10.f}, cp);
+						if (svP)
+							mSt->status = NkString(
+								d.pipette ? "Prélèvement armé : cliquez la couleur à prendre "
+											"(Échap annule)."
+										  : "Pipette : prélève une couleur DANS la fenêtre de "
+											"l'application (pas sur le bureau).");
+						if (svP && ctx.input.mouseClicked[0]) {
+							ctx.input.mouseClicked[0] = false;
+							d.pipette = !d.pipette;
+							// ③ LA COULEUR D'AVANT, RETENUE A L'ENTREE : c'est elle que le
+							//   clic droit et Echap rendront, a l'octet pres.
+							if (d.pipette) {
+								snprintf(d.avant, sizeof(d.avant), "%s", couleurCourante.Data());
+								// ① CET appui-ci a arme : il ne prelevera pas.
+								d.attendRelache = true;
+								// ① ... et l'apercu attendra le premier mouvement.
+								d.armeX = ctx.input.mousePos.x;
+								d.armeY = ctx.input.mousePos.y;
+								d.aBouge = false;
+							}
+							if (NkTracePipetteActive())
+								printf("[pipette] ICONE cliquee : mode=%d, attendRelache=%d, "
+									   "bouton enfonce=%d, avant=%s\n",
+									   d.pipette ? 1 : 0, d.attendRelache ? 1 : 0,
+									   ctx.input.mouseDown[0] ? 1 : 0, d.avant);
+							mSt->DireAuPied(d.pipette
+												? "Pipette : cliquez la couleur à prélever — Échap annule."
+												: "Pipette annulée.");
+						}
+					}
 					{
 						const NkRect rx = {x1 - 16.f, y + 3.f, 16.f, 16.f};
 						const bool svX = NkGuiRectContains(rx, ctx.input.mousePos);
@@ -12161,7 +13292,7 @@ namespace nkuidesign {
 					}
 					y += 26.f;
 				}
-				if (f.EstImage()) {
+				if (estImage) {
 					// ── LE POPOVER IMAGE, comme sa capture : damier · « Remove background » ·
 					//    menu de cadrage (Fill · Fit · Stretch · Tile · Crop) · rotation ──
 					const NkRect rd = {x0, y, x1 - x0, 110.f};
@@ -12308,7 +13439,8 @@ namespace nkuidesign {
 							mRectImageRecharger = bRe;
 							if (svCh && ctx.input.mouseClicked[0]) {
 								ctx.input.mouseClicked[0] = false;
-								mSt->OuvrirChoixImage(d.noeud, d.index);
+								if (surNoeud && !surCible) // un choix d'image s'ecrit DANS un nœud
+									mSt->OuvrirChoixImage(d.noeud, d.index);
 								fermerPopover = true;
 							} else if (svRe && ctx.input.mouseClicked[0]) {
 								ctx.input.mouseClicked[0] = false;
@@ -12415,14 +13547,19 @@ namespace nkuidesign {
 							ecrireCouleur(d.hex);
 						}
 					}
+					// ① PAS D'OPACITE POUR UN ETAT : le bloc pose une COULEUR ; l'opacite
+					//   d'un etat est celle du NŒUD (tranche par Rodolf, lot ③), pas un
+					//   pourcentage attache a cette couleur. Le champ ne peut pas exister.
 					float32 &opRef = g.Actif() ? g.arrets[(uint32)d.arretSel].opacite : f.opacite;
-					float32 op = opRef;
-					if (ChampNombre(ctx, "insp.popover.op", ro, op, 1.f, 0.f, 100.f, true)) {
-						opRef = op;
-						touche();
+					if (opaciteAUnSens) {
+						float32 op = opRef;
+						if (ChampNombre(ctx, "insp.popover.op", ro, op, 1.f, 0.f, 100.f, true)) {
+							opRef = op;
+							touche();
+						}
+						costume::Texte(dl, F.px9, ro.x + ro.w + 3.f, costume::CentrerY(F.px9, ro.y, 20.f), "%",
+									   ctx.theme.textMuted);
 					}
-					costume::Texte(dl, F.px9, ro.x + ro.w + 3.f, costume::CentrerY(F.px9, ro.y, 20.f), "%",
-								   ctx.theme.textMuted);
 					// LE MENU DES MODELES, dessine DANS la boite (un clic dedans ne ferme pas le
 					// popover) ; les six sans conversion sont nommes, grises, avec la raison
 					if (mModeleMenuOuvert) {
@@ -12466,7 +13603,7 @@ namespace nkuidesign {
 					// ⚠️ LE DAMIER EST SOUS LA BARRE, pas derrière la fenêtre : c'est lui qui rend la
 					//    transparence LISIBLE — sans lui, une barre qui va du fond du popover à la
 					//    couleur ne dit pas si le début est transparent ou sombre.
-					{
+					if (opaciteAUnSens) { // ① la rangee d'opacite, la ou le modele en porte une
 						const NkRect ra = {x0, y + 26.f + 3.f, x1 - x0, 20.f};
 						costume::Texte(dl, F.px9, ra.x, costume::CentrerY(F.px9, ra.y, 20.f), "Opacité", ctx.theme.textMuted);
 						const float32 xb = ra.x + 44.f;
@@ -12518,8 +13655,18 @@ namespace nkuidesign {
 							}
 						}
 					}
-					{
-						const NkRect rv = {x0, y + 52.f + 3.f, x1 - x0, 20.f};
+					// ③ (07/09) LA RANGEE << VARIABLE >> N'EXISTE PAS POUR LE DECOR.
+					// 🔴 ARBITRAGE DE RODOLF : pas de variable pour le canvas. Une couleur
+					//    liée s'écrirait dans `nkuidesign.cfg` sous forme de CLE (`@fond`) ;
+					//    au prochain lancement, ou dans un autre document, la clé ne
+					//    résoudrait rien et le thème reprendrait la main -- **un réglage qui
+					//    disparaît sans rien dire**. C'est aussi la cohérence de la phrase
+					//    validée ce matin : le décor suit la MACHINE, pas le document.
+					// ⚠️ MASQUAGE SOUS LA REGLE DU TYPE, pas une rangée muette : une variable
+					//    de DOCUMENT ne peut pas exister pour un décor de MACHINE.
+					if (surNoeud) {
+						// sous la rangee d'opacite quand elle existe, a sa place sinon
+						const NkRect rv = {x0, y + (opaciteAUnSens ? 52.f : 26.f) + 3.f, x1 - x0, 20.f};
 						if (NkEstReference(couleurCourante.Data())) {
 							const NkVariable *var = mSt->doc.TrouverVariable(couleurCourante.Data());
 							const char *res = mSt->doc.ResoudreCouleur(couleurCourante.Data());
@@ -12663,6 +13810,16 @@ namespace nkuidesign {
 								mSt->Consigner(msg);
 							}
 						}
+					}
+					// ① LES CHAMPS PROPRES DE LA BORDURE, RECUS PAR L'ENVELOPPE : ils occupent
+					//    la fin de la bande `hHex` (elle les a comptes plus haut). L'ecriture
+					//    passe par `touche()`, comme tout le reste de cette fenetre.
+					if (surBordure) {
+						bool modifieBordure = false;
+						BlocChampsBordure(ctx, x0, x1, y + hHex + hVars - HauteurChampsBordure(),
+										  n->borders[(uint32)d.index], *n, modifieBordure);
+						if (modifieBordure)
+							touche();
 					}
 					y += hHex + hVars;
 				}
@@ -13087,6 +14244,33 @@ namespace nkuidesign {
 				count = (int32)(sizeof(kSections) / sizeof(kSections[0]));
 				return kSections;
 			}
+			// ── ③ LA TABLE DE « RIEN DE SÉLECTIONNÉ » (07/09) ────────────────
+			//
+			// 🔴 CE QUE LA CAPTURE DE RODOLF MONTRAIT : treize sections, chacune
+			//    avec son tiret, occupant tout le panneau — *aucune ne pouvait
+			//    rien faire*. Ce n'était pas un bogue de section : c'est que le
+			//    cas « rien de sélectionné » n'avait PAS DE TABLE. Il tombait dans
+			//    celle « sans cible » avec une sélection vide, et
+			//    `NkSectionsRetenues` gardait tout — car sans nœud, aucune règle de
+			//    type ne peut disqualifier quoi que ce soit.
+			//    **Le filtre par type ne pouvait pas le corriger : il n'y avait
+			//    rien à filtrer. Il fallait une table.**
+			//
+			// ⚠️ « ALIGNER LA SÉLECTION » RESTE, ET C'EST DÉLIBÉRÉ (retour du
+			//    coordinateur, 07/09) : elle affiche *« rien de sélectionné »* —
+			//    elle est HONNÊTE, elle garde un sens, et elle agira dès qu'on
+			//    sélectionnera. Elle relève de « on explique ce qui n'agit pas
+			//    encore », pas de « on cache ce qui ne peut pas exister ». La
+			//    ranger avec les douze muettes aurait effacé la seule qui disait
+			//    vrai.
+			static const editorkit::NkInspectorSection *SectionsCanvas(int32 &count) noexcept {
+				static const editorkit::NkInspectorSection kCanvas[] = {
+					{"CANVAS", &CorpsCanvasC, false},
+					{"ALIGNER LA SÉLECTION", &CorpsAlignerSelectionC, false},
+				};
+				count = (int32)(sizeof(kCanvas) / sizeof(kCanvas[0]));
+				return kCanvas;
+			}
 
 		private:
 			// ── CE QUE LA CHARPENTE VIENT CHERCHER ICI ──────────────────────
@@ -13195,13 +14379,68 @@ namespace nkuidesign {
 						return kForme;
 					}
 				}
+				// ── ③ RIEN DE SÉLECTIONNÉ : LES PROPRIÉTÉS DU CANVAS (07/09) ──
+				// ⚠️ AVANT TOUT LE RESTE, et avant le filtre par type : le filtre
+				//    trie des sections SELON UN NŒUD ; ici il n'y en a pas. Deux
+				//    questions distinctes, deux étapes — mélanger les deux aurait
+				//    donné une règle de type qui parle du vide.
 				{
 					auto *self = static_cast<InspectorPanel *>(user);
+					if (self->mSt && !self->mSt->doc.IsValidIndex(self->mSt->selected)
+						&& self->mSt->sel.Count() == 0u)
+						return SectionsCanvas(count);
+				}
+				{
+					auto *self = static_cast<InspectorPanel *>(user);
+					// ① (07/09) LE FILTRE PAR TYPE S'APPLIQUE ICI, sur les DEUX listes.
+					//    Le mode choisit la liste ; le TYPE du (des) nœud(s) selectionne(s)
+					//    retire ce qui ne peut pas exister. Les deux decisions sont
+					//    orthogonales, et c'est pour ca qu'elles restent deux etapes.
 					if (self->CadreCible()) {
-						return SectionsAvecCible(count);
+						int32 nb = 0;
+						const editorkit::NkInspectorSection *t = SectionsAvecCible(nb);
+						return self->FiltrerParType(t, nb, count);
 					}
 				}
-				return SectionsSansCible(count);
+				{
+					auto *self = static_cast<InspectorPanel *>(user);
+					int32 nb = 0;
+					const editorkit::NkInspectorSection *t = SectionsSansCible(nb);
+					return self->FiltrerParType(t, nb, count);
+				}
+			}
+
+			/// ① (07/09) LA TABLE FILTREE PAR LE TYPE DE LA SELECTION.
+			///
+			/// 🔴 ELLE NE DECIDE RIEN : la regle vit dans `NkSectionSApplique`, et
+			///    l'intersection dans `NkSectionsRetenues` -- deux fonctions LIBRES que
+			///    la sonde atteint sans fenetre. Cette methode ne fait que porter le
+			///    resultat dans la structure que la coquille attend. *Une regle ecrite
+			///    dans une methode de panneau serait hors de portee du banc, et le banc
+			///    en aurait ecrit une copie -- puis mesure sa copie.*
+			///
+			/// ⚠️ LA SELECTION LUE EST CELLE DE L'ECRAN : `sel` quand elle porte
+			///    plusieurs nœuds, sinon le nœud courant. Lire seulement `selected`
+			///    aurait montre les sections du PRINCIPAL pendant qu'on en a dix.
+			const editorkit::NkInspectorSection *FiltrerParType(
+				const editorkit::NkInspectorSection *src, int32 nSrc, int32 &count) {
+				static editorkit::NkInspectorSection kFiltre[32];
+				int32 sel[64];
+				uint32 nSel = 0u;
+				if (mSt->sel.Count() > 1u) {
+					for (uint32 i = 0; i < (uint32)mSt->sel.items.Size() && nSel < 64u; ++i)
+						sel[nSel++] = mSt->sel.items[i];
+				} else if (mSt->doc.IsValidIndex(mSt->selected))
+					sel[nSel++] = mSt->selected;
+				int32 k = 0;
+				for (int32 i = 0; i < nSrc && k < 32; ++i) {
+					const char *titres[1] = {src[i].titre};
+					const char *garde[1] = {nullptr};
+					if (NkSectionsRetenues(mSt->doc, sel, nSel, titres, 1u, garde, 1u) == 1u)
+						kFiltre[k++] = src[i];
+				}
+				count = k;
+				return kFiltre;
 			}
 
 			/// L'INDEX du cadre-page qui contient la selection (ou la selection
@@ -13394,7 +14633,7 @@ namespace nkuidesign {
 					const char *titre;
 					bool ouvert;
 			};
-			static constexpr uint32 kNbSections = 15; // ⑥ « ALIGNER LA SÉLECTION » s'ajoute
+			static constexpr uint32 kNbSections = 16; // ⑥ « ALIGNER LA SÉLECTION », puis ③ « CANVAS »
 			/// Un champ de sommet a change et la boite attend son recadrage.
 			/// ⚠️ UN DRAPEAU, ET IL EST JUSTIFIE : on ne peut pas recadrer dans la
 			///    branche qui ecrit (le champ est un GLISSER, il ecrit a chaque
@@ -13414,6 +14653,9 @@ namespace nkuidesign {
 				{"REMPLISSAGES", true},
 				{"BORDURES", true},	{"APPARENCE", true},	{"TYPOGRAPHIE", true},
 				{"ÉTATS", false},	{"EFFETS", true},	{"POINTS DE RUPTURE", false},
+				// ③ LES PROPRIÉTÉS DU CANVAS -- la seule section du cas « rien de
+				//   sélectionné » ; ouverte, sinon le panneau vide resterait vide.
+				{"CANVAS", true},
 			};
 			EtatSection *TrouverSection(const char *titre) {
 				for (uint32 i = 0; i < kNbSections; ++i)
@@ -13635,8 +14877,10 @@ namespace nkuidesign {
 				// un champ DANS un popover repond aussi (il etait mort sous `popupDepth == 0`)
 				const bool dans = (ctx.popupDepth == 0 || ctx.curPopupLevel >= 0)
 								  && NkGuiRectContains(r, ctx.input.mousePos);
-				if (dans)
+				if (dans) {
 					ctx.wantCursor = nkgui::NkGuiCursor::ResizeEW;
+				NkTraceCurseur("ChampNombre (popover)", ctx.wantCursor, false);
+				}
 				if (dans && ctx.input.mouseClicked[0]) {
 					mDragChamp = gid;
 					mDragDernierX = ctx.input.mousePos.x;
@@ -13694,6 +14938,9 @@ namespace nkuidesign {
 			}
 			static void CorpsCalqueC(void *u, NkGuiContext &ctx) {
 				static_cast<InspectorPanel *>(u)->CorpsCalque(ctx);
+			}
+			static void CorpsCanvasC(void *u, NkGuiContext &ctx) {
+				static_cast<InspectorPanel *>(u)->CorpsCanvas(ctx);
 			}
 			static void CorpsApparenceC(void *u, NkGuiContext &ctx) {
 				static_cast<InspectorPanel *>(u)->CorpsApparence(ctx);
@@ -14193,6 +15440,123 @@ namespace nkuidesign {
 						}
 					}
 			}
+			// ── ① L'INCLINAISON : DEUX ANGLES, SOUS `Rotation` ──────────────────
+			//
+			// 🔴 PLACEMENT TRANCHE PAR LE COORDINATEUR, et c'est une question de
+			//    cohérence : DISPOSITION porte déjà un angle en degrés avec son
+			//    champ. *Poser ces deux-là ailleurs obligerait à expliquer pourquoi
+			//    trois angles du même objet vivent dans deux endroits.* Même unité,
+			//    même gabarit, même geste.
+			//
+			// ⚠️ BORNES ±80°, ET CE N'EST PAS UNE PRUDENCE DE STYLE : à 90° le cosinus
+			//    s'annule, la matrice devient singulière et l'objet se réduit à un
+			//    TRAIT -- `NkMatInverse` rendrait alors l'identité, donc le pointage
+			//    désignerait la boîte droite d'une forme invisible. *Un réglage qui
+			//    permet de faire disparaître une forme sans le dire est un piège.*
+			//    Aller plus loin se demande ; l'inverse ne se rattrape pas.
+			//
+			// ⚠️ ET LA RANGÉE SE CACHE, ELLE NE REFUSE PAS : un nœud qui refuse la
+			//    rotation refuse la même chose par le même axe -- incliner n'y veut
+			//    RIEN DIRE. *On cache ce qui ne peut pas exister ; on explique ce qui
+			//    n'agit pas encore.* La rangée `Rotation`, elle, garde son champ grisé
+			//    avec sa raison écrite : elle, elle veut dire quelque chose.
+			void LigneInclinaison(NkGuiContext &ctx) {
+				NkUINode *n = NoeudMutable();
+				if (!n || !NkPeutTourner(*n))
+					return; // rien à montrer : la rangée n'existe pas pour ce nœud
+				auto &F = costume::Fontes();
+				auto &dl = ctx.DL();
+				auto rangee = [&](const char *libelle, const char *id,
+								  float32 (*lire)(const NkUINode &),
+								  void (*ecrire)(NkUINode &, float32)) {
+					const NkRect r = ctx.NextItemRect(-1.f, 26.f);
+					const float32 x0 = r.x + 12.f;
+					costume::Texte(dl, F.px10, x0, costume::CentrerBande(F.px10, r.y), libelle,
+								   ctx.theme.textMuted);
+					const NkRect rr = {x0 + ColChampsCalc(r.w - 24.f), costume::BandeY(r.y), 48.f,
+									   costume::HControle};
+					// La borne vient de la GEOMETRIE, pas d'ici : `NkInclinaisonMax`.
+					ChampNombreMulti(ctx, id, rr, 1.f, -NkInclinaisonMax(), NkInclinaisonMax(),
+									 lire, ecrire);
+					costume::Texte(dl, F.px9, rr.x + rr.w + 4.f, costume::CentrerBande(F.px9, r.y),
+								   "°", ctx.theme.textMuted);
+					// ⚠️ CE QUE L'INCLINAISON NE FERA PAS, DIT AU SURVOL plutôt que
+					//    découvert sur un vrai document : le sommet du dessinateur n'a
+					//    pas de profondeur, donc l'image reste AFFINE -- pas de trapèze
+					//    de perspective, et une texture fortement inclinée se plie le
+					//    long de sa diagonale.
+					if (ctx.popupDepth == 0 && NkGuiRectContains(r, ctx.input.mousePos))
+						mSt->status = NkString(
+							"Inclinaison : affine — écrasement par axe, et cisaillement "
+							"seulement si les DEUX angles sont posés. Pas de perspective : "
+							"le sommet n'a pas de profondeur (une texture très inclinée se "
+							"plie le long de sa diagonale).");
+				};
+				rangee(
+					"Inclinaison X", "insp.app.inclinaison.x",
+					[](const NkUINode &q) { return q.inclinaisonX; },
+					[](NkUINode &q, float32 v) { q.inclinaisonX = v; });
+				rangee(
+					"Inclinaison Y", "insp.app.inclinaison.y",
+					[](const NkUINode &q) { return q.inclinaisonY; },
+					[](NkUINode &q, float32 v) { q.inclinaisonY = v; });
+				// ── ② LA PROJECTION (11/09) : orthogonale ou perspective ─────────────
+				//
+				// 🔑 Rodolf : « ca ne tient pas compte de la perspective, uniquement de
+				//    l'orthogonalite -- pourtant on doit pouvoir choisir ». Le choix est
+				//    ici, a cote des angles qu'il projette.
+				//
+				// ⚠️ CACHEE TANT QU'AUCUN ANGLE N'EST POSE : sans inclinaison, un plan vu
+				//    de face reste un rectangle -- la focale ne changerait RIEN. *On cache
+				//    ce qui ne peut pas agir ; on explique ce qui n'agit pas encore.*
+				if (n->inclinaisonX == 0.f && n->inclinaisonY == 0.f)
+					return;
+				{
+					const NkRect r = ctx.NextItemRect(-1.f, 26.f);
+					const float32 x0 = r.x + 12.f;
+					costume::Texte(dl, F.px10, x0, costume::CentrerBande(F.px10, r.y), "Projection",
+								   ctx.theme.textMuted);
+				}
+				{
+					static const char *const kProj[2] = {"Orthogonale", "Perspective"};
+					const int32 choix = designkit::Segmented(ctx, kProj, 2, n->perspective ? 1 : 0,
+															 "insp.app.projection");
+					if (choix >= 0 && (choix == 1) != n->perspective) {
+						n->perspective = (choix == 1);
+						mSt->doc.MarkHumanEdit(mSt->selected);
+						mSt->host.SyncTo(mSt->doc);
+					}
+				}
+				if (n->perspective) {
+					const NkRect r = ctx.NextItemRect(-1.f, 26.f);
+					const float32 x0 = r.x + 12.f;
+					costume::Texte(dl, F.px10, x0, costume::CentrerBande(F.px10, r.y), "Focale",
+								   ctx.theme.textMuted);
+					const NkRect rf = {x0 + ColChampsCalc(r.w - 24.f), costume::BandeY(r.y), 56.f,
+									   costume::HControle};
+					float32 v = n->focale;
+					// Les bornes viennent de la GEOMETRIE (`NkFocaleMin` / `NkFocaleMax`) :
+					// trop courte, les coins d'un nœud un peu grand passeraient DERRIERE
+					// l'oeil -- et un point derriere l'oeil n'a pas de projection.
+					if (ChampNombre(ctx, "insp.app.focale", rf, v, 5.f, NkFocaleMin(), NkFocaleMax())) {
+						n->focale = v;
+						mSt->doc.MarkHumanEdit(mSt->selected);
+						mSt->host.SyncTo(mSt->doc);
+					}
+					costume::Texte(dl, F.px9, rf.x + rf.w + 4.f, costume::CentrerBande(F.px9, r.y), "px",
+								   ctx.theme.textMuted);
+					if (ctx.popupDepth == 0 && NkGuiRectContains(r, ctx.input.mousePos))
+						mSt->status = NkString("Focale : la distance de l'œil au plan du nœud. Plus elle "
+											   "est courte, plus les bords fuient.");
+					// 🔴 LA NOTE DU PALIER A EST PARTIE AVEC LE PALIER B (11/09), ET C'EST LA
+					//    REGLE : *une phrase honnete qui devient fausse est un mensonge qu'on a
+					//    ecrit soi-meme.* Elle disait « le texte penche, il ne fuit pas
+					//    encore » ; il fuit, glyphe par glyphe. Ce qui reste affine est
+					//    l'INTERIEUR d'un glyphe et d'une image -- tres en dessous du pixel
+					//    pour un glyphe, dit au survol de l'inclinaison pour une image.
+				}
+			}
+
 			/// L'ARRONDI, dans le bloc géométrie (Lunacy ; Q86, 04/09), avec ses quatre
 			/// coins déliables. Déplacé tel quel.
 			void LigneArrondi(NkGuiContext &ctx) {
@@ -14379,8 +15743,8 @@ namespace nkuidesign {
 					costume::Texte(dl, F.px10, x0, costume::CentrerBande(F.px10, r.y),
 								   "Position", ctx.theme.textMuted);
 					const float32 champs0 = x0 + ColChampsCalc(r.w - 24.f);
-					const float32 wBtns = 2.f * 20.f + 4.f;
-					const float32 colW = (x1 - champs0 - wBtns - 12.f) * 0.5f;
+					// (12/09) plus de boutons a droite : les champs X/Y reprennent toute la largeur
+					const float32 colW = (x1 - champs0) * 0.5f;
 					const NkRect rx = {champs0, costume::BandeY(r.y), colW - 3.f, costume::HControle};
 					const NkRect ry = {champs0 + colW + 3.f, costume::BandeY(r.y), colW - 3.f, costume::HControle};
 					const NkColor rouge = nkentseu::editorkit::NkThemeUnpack(
@@ -14415,25 +15779,22 @@ namespace nkuidesign {
 					}
 					if (bouge)
 						mSt->doc.MarkHumanEdit(mSt->selected);
-					// les deux boutons carrés de la référence — inertes, et ils
-					// le DISENT au clic (règle des menus : jamais un no-op muet).
-					for (int32 i = 0; i < 2; ++i) {
-						const NkRect rb = {x1 - wBtns + (float32)i * 24.f, costume::BandeY(r.y), 20.f, costume::HControle};
-						dl.AddRectFilled(rb, CouleurInput(), 4.f);
-						dl.AddRect(rb, ctx.theme.border, 1.f, 4.f);
-						if (i == 0) {
-							dl.AddLine({rb.x + 10.f, rb.y + 6.f}, {rb.x + 10.f, rb.y + 14.f},
-									   ctx.theme.textMuted, 1.2f);
-							dl.AddLine({rb.x + 6.f, rb.y + 10.f}, {rb.x + 14.f, rb.y + 10.f},
-									   ctx.theme.textMuted, 1.2f);
-						} else
-							dl.AddCircleFilled({rb.x + 10.f, rb.y + 10.f}, 2.f,
-											   ctx.theme.textMuted);
-						if (ctx.popupDepth == 0 && ctx.input.mouseClicked[0]
-							&& NkGuiRectContains(rb, ctx.input.mousePos))
-							mSt->status = NkString(
-								"Contraintes de position : à brancher (référence Banani).");
-					}
+										// ── LES DEUX BOUTONS « CONTRAINTES DE POSITION » SONT PARTIS (12/09) ──
+					// 🔴 ILS ETAIENT DESSINES ICI DEPUIS LONGTEMPS, INERTES, et leur clic disait
+					//    « a brancher (reference Banani) ». Mesure avant de trancher :
+					//    - la MAQUETTE de reference (InspectorPanelV2, tout l'export) dessine sous
+					//      « Position » deux champs X/Y puis la section Taille -- ZERO bouton, dans
+					//      les deux sections « Position » qu'elle contient ;
+					//    - la fonction qu'on leur pretait -- contraindre la position aux bords du
+					//      parent -- est DEJA livree par la section ANCRAGE (`anchorEdges`, les
+					//      quatre bords, le widget graphique de la reference), qui dit elle-meme
+					//      quand elle ne s'applique pas (parent hors `Anchor`) ; la reference 13
+					//      l'ecrit : « livre autrement, c'est notre ancrage, plus expressif » ;
+					//    - ils n'avaient ni identifiant, ni releve d'introspection, ni temoin :
+					//      RIEN ne les gardait, et le recensement des portes ne les voyait pas.
+					//    Les brancher aurait ouvert une SECONDE porte vers l'ancrage -- une porte,
+					//    pas deux. Les faire renvoyer visait une section juste en dessous. Ils
+					//    partent donc, et l'essai 161 lit la maquette lui-meme pour le garder.
 					if (n && !libre)
 						nkgui::TextWrapped(ctx, "calculée — jamais écrite dans le document");
 				}
@@ -14444,6 +15805,7 @@ namespace nkuidesign {
 				// comme Lunacy : rotation et arrondi dans le bloc géométrie (Q86) --
 				// deux rangées ici, une chez Lunacy : la fusion attend son œil
 				LigneRotation(ctx);
+				LigneInclinaison(ctx); // ① les deux angles, juste dessous
 				LigneArrondi(ctx);
 			}
 
@@ -14561,7 +15923,29 @@ namespace nkuidesign {
 					if (d.mode == NkSizeMode::Fixed && d.value <= 0.f)
 						d.value = 100.f; // un fixed sans valeur serait invisible
 					mSt->doc.MarkHumanEdit(mSt->selected);
-				} else if (porteValeur && !metrique) {
+				} else if (metrique) {
+					// ── ⑦ (07/09) LE REFUS SE DIT (inventaire Q118, mesure 2,
+					//    famille 4) ─────────────────────────────────────────────
+					// 🔴 La boîte a exactement l'aspect des autres, et le glisser n'y
+					//    faisait RIEN : le `else if (porteValeur && !metrique)` sautait
+					//    l'édition sans un mot. L'utilisateur tire, la valeur ne bouge
+					//    pas, et rien ne lui dit pourquoi — c'est le cas où il croit
+					//    avoir agi.
+					// ⚠️ ET C'EST UN REFUS LÉGITIME : la valeur vient de la table de
+					//    métriques du document, pas du nœud. La tirer ici écrirait
+					//    par-dessus un nom, c'est-à-dire perdrait le lien. On le dit,
+					//    et on nomme la porte — la section ESPACEMENT règle la valeur
+					//    de la métrique.
+					if (ctx.popupDepth == 0 && NkGuiRectContains(rb, ctx.input.mousePos)) {
+						char b[200];
+						snprintf(b, sizeof(b),
+								 "« %s » : cette taille suit une MÉTRIQUE du document, "
+								 "elle ne se tire pas ici. Sa valeur se règle dans "
+								 "ESPACEMENT ; le chevron change le mode.",
+								 d.valueMetric);
+						mSt->status = NkString(b);
+					}
+				} else if (porteValeur) {
 					const float32 vitesse = d.mode == NkSizeMode::Fixed ? 1.f
 											: d.mode == NkSizeMode::Fraction ? 0.01f : 0.05f;
 					const float32 vmax = d.mode == NkSizeMode::Fraction ? 1.f : 4096.f;
@@ -14733,11 +16117,19 @@ namespace nkuidesign {
 					mEtatsNode = mSt->selected;
 					mEtatsGen = mSt->editionGeneration;
 					for (uint32 i = 0; i < kMaxEtatsUI; ++i)
-						mEtatsBuf[i][0] = ' ';
-					for (uint32 e = 0; e < nbEtats && e < kMaxEtatsUI; ++e)
-						if (const NkApparenceEtat *a0 = NkBlocEtatSi(*n, etats[e]))
+						mEtatsBuf[i][0] = '\0';
+					for (uint32 e = 0; e < nbEtats && e < kMaxEtatsUI; ++e) {
+						mEtatsTexteBuf[e][0] = '\0';
+						if (const NkApparenceEtat *a0 = NkBlocEtatSi(*n, etats[e])) {
 							snprintf(mEtatsBuf[e], sizeof(mEtatsBuf[e]), "%s",
 									 a0->fond.Data());
+							snprintf(mEtatsTexteBuf[e], sizeof(mEtatsTexteBuf[e]), "%s",
+									 a0->couleurTexte.Data());
+							snprintf(mEtatsBordBuf[e], sizeof(mEtatsBordBuf[e]), "%s",
+									 a0->bordureCouleur.Data());
+						} else
+							mEtatsBordBuf[e][0] = '\0';
+					}
 				}
 				// ⚠️ LA COLONNE SUIT LE PLUS LONG NOM, elle n'est pas fixee :
 				//    la capture montrait « FocusVisible » PASSANT SOUS la pastille
@@ -14751,6 +16143,40 @@ namespace nkuidesign {
 						wNom = w;
 				}
 				const float32 colEtat = wNom + (float32)costume::EspLarge;
+				// ── « AFFICHER » : QUEL ETAT LA TOILE MONTRE (08/09) ─────────────────
+				// 🔴 Inventaire Q141 : les états s'écrivaient et ne se peignaient jamais.
+				//    Ici on choisit l'état que le peintre MONTRE -- un mode de vue, pas
+				//    une donnée : rien n'est écrit dans le document, et « Normal » rend
+				//    la toile exactement comme avant.
+				// ⚠️ LE SELECTEUR PLUTOT QUE LE VRAI SURVOL, et c'est un arbitrage écrit :
+				//    il se prouve sans fenêtre, et il sert au DESIGN -- on veut VOIR
+				//    l'état appui sans tenir la souris. Le vrai survol viendra avec les
+				//    comportements, par la même porte.
+				{
+					const NkRect r = ctx.NextItemRect(-1.f, costume::HRangee);
+					costume::Texte(dl, F.px10, r.x + 12.f, costume::CentrerBande(F.px10, r.y),
+								   "Afficher", ctx.theme.textMuted);
+				}
+				{
+					int32 courant = -1;
+					for (uint32 e = 0; e < nbEtats; ++e)
+						if (NkComponentDecl::StrEq(mSt->host.etatAffiche, etats[e]))
+							courant = (int32)e;
+					// « Normal » = l'état de base : rien d'affiché en surcharge
+					if (courant < 0)
+						for (uint32 e = 0; e < nbEtats; ++e)
+							if (NkComponentDecl::StrEq(etats[e], "Normal"))
+								courant = (int32)e;
+					const int32 choix = designkit::Segmented(ctx, etats, (int32)nbEtats, courant,
+															 "insp.etats.afficher");
+					if (choix >= 0) {
+						if (NkComponentDecl::StrEq(etats[choix], "Normal"))
+							mSt->host.etatAffiche[0] = '\0';
+						else
+							snprintf(mSt->host.etatAffiche, sizeof(mSt->host.etatAffiche), "%s",
+									 etats[choix]);
+					}
+				}
 				for (uint32 e = 0; e < nbEtats; ++e) {
 					const NkRect r = ctx.NextItemRect(-1.f, costume::HRangee);
 					const float32 x0 = r.x + 12.f, x1 = r.x + r.w - 12.f;
@@ -14767,7 +16193,22 @@ namespace nkuidesign {
 					char idPast[40];
 					snprintf(idPast, sizeof(idPast), "##insp.etat.pastille%u", e);
 					const bool pickerEtat =
-						NkPastilleCouleur(ctx, *mSt, idPast, sw, mEtatsBuf[e], (uint32)sizeof(mEtatsBuf[e]));
+						NkPastilleCouleur(ctx, *mSt, idPast, sw, mEtatsBuf[e], (uint32)sizeof(mEtatsBuf[e]),
+										  mSt->selected); // decrit un nœud
+					// ① L'ENVELOPPE, PAS LE NOYAU NU (Rodolf, 11/09 soir) : la demande recoit
+					//   le bloc d'etat qu'elle edite ; `genre == 0` = la porte vient de
+					//   l'ouvrir, on charge le remplissage transitoire avec la couleur posee.
+					if (mSt->picker.ouvert && mSt->picker.id == ctx.GetId(idPast)) {
+						if (mSt->picker.genre == 0u) {
+							mSt->couleurFill = NkRemplissage();
+							mSt->couleurFill.couleur = NkString(mEtatsBuf[e]);
+						}
+						mSt->picker.genre = 1u; // l'enveloppe complete
+						mSt->picker.noeud = mSt->selected;
+						mSt->picker.index = -1;
+						snprintf(mSt->picker.etat, sizeof(mSt->picker.etat), "%s", etats[e]);
+						mSt->picker.champEtat = 0u; // le fond
+					}
 					// LE CHAMP HEXA DU FOND -- la moitié qui rend le geste VRAI :
 					// une section qui liste sans poser n'est pas utilisable.
 					// ⚠️ VIDER LE CHAMP RETIRE LA SURCHARGE (retour à l'hérité) et
@@ -14794,13 +16235,223 @@ namespace nkuidesign {
 									   "(trop d'états pour l'éditeur)", ctx.theme.textMuted);
 					}
 				}
+				// ── ② TEXTE, OMBRE, BORDURE PAR ETAT (11/09), POSES PAR LA REGLE ────────
+				// ⚠️ CHAQUE BLOC INTERROGE `NkProprieteAUnSensParEtat` : c'est ce qui rend le
+				//    masquage STRUCTUREL -- un bloc ajoute demain pour une section « non par
+				//    nature » ne se dessinerait pas, par construction. Et chaque bloc suit la
+				//    regle du TYPE : pas de couleur de texte sur un rect, pas d'ombre sans ombre,
+				//    pas de bordure sans bordure qui se peint (par la porte, cle historique
+				//    comprise).
+				// ⚠️ UN BLOC PAR PROPRIETE, UNE RANGEE PAR ETAT : trois proprietes cote a cote
+				//    ne tiennent pas dans la largeur du panneau -- mesure, pas suppose.
+				const bool texteParEtat = NkProprieteAUnSensParEtat("TYPOGRAPHIE")
+										   && NkSectionSApplique("TYPOGRAPHIE", *n);
+				const bool ombreParEtat = NkProprieteAUnSensParEtat("EFFETS") && n->effets.Size() > 0;
+				// la teinte a un sens des qu'il y a quelque chose a peindre -- elle traverse
+				// aplats, degrades, images et piles sans avoir a les connaitre
+				const bool teinteParEtat = NkProprieteAUnSensParEtat("REMPLISSAGES");
+				const NkBordure *bordsPeints[NkUINode::kMaxBorduresPeintes];
+				NkBordure bordHisto;
+				const uint32 nbBordsPeints = n->BorduresEffectives(bordsPeints, NkUINode::kMaxBorduresPeintes, bordHisto);
+				const bool bordureParEtat = NkProprieteAUnSensParEtat("BORDURES") && nbBordsPeints > 0u;
+				auto enTete = [&](const char *titre) {
+					const NkRect rt = ctx.NextItemRect(-1.f, costume::HRangee);
+					costume::Texte(dl, F.px9, rt.x + 12.f, costume::CentrerBande(F.px9, rt.y), titre,
+								   ctx.theme.textMuted);
+				};
+				auto nomEtat = [&](const NkRect &r, uint32 e) -> float32 {
+					costume::Texte(dl, F.px10, r.x + 12.f, costume::CentrerBande(F.px10, r.y), etats[e],
+								   ctx.theme.textMuted);
+					return r.x + 12.f + colEtat;
+				};
+				auto poser = [&](uint32 e) -> NkApparenceEtat & {
+					return NkBlocEtat(*n, etats[e]);
+				};
+				auto fini = [&](uint32 e) {
+					if (NkBlocEtat(*n, etats[e]).Vide())
+						NkRetirerBlocEtat(*n, etats[e]);
+					mSt->doc.MarkHumanEdit(mSt->selected);
+					mSt->host.SyncTo(mSt->doc);
+				};
+				// un champ « — » (herite) qui, clique, pose la valeur de BASE ; sinon un ChampNombre
+				auto champHerite = [&](const char *id, const NkRect &rc, float32 valeur, float32 base,
+									   float32 vmax, float32 &nouvelle) -> bool {
+					if (valeur < 0.f) {
+						const bool sv = ctx.popupDepth == 0 && NkGuiRectContains(rc, ctx.input.mousePos);
+						dl.AddRectFilled(rc, sv ? ctx.theme.rowHover : CouleurInput(), 4.f);
+						costume::Texte(dl, F.px10, rc.x + costume::PadChamp, costume::CentrerY(F.px10, rc.y, rc.h),
+									   "\xE2\x80\x94", ctx.theme.textMuted);
+						if (sv && ctx.input.mouseClicked[0]) {
+							nouvelle = base;
+							return true;
+						}
+						return false;
+					}
+					float32 v = valeur;
+					if (ChampNombre(ctx, id, rc, v, 0.5f, 0.f, vmax)) {
+						nouvelle = v;
+						return true;
+					}
+					return false;
+				};
+				// une pastille + un hexa qui posent une COULEUR d'etat dans `champ`
+				auto couleurEtat = [&](const char *prefixe, uint32 e, float32 x, const NkRect &r, char *buf,
+									   uint32 cap, NkString &champ, uint8 champEtat) -> float32 {
+					const NkRect sw = {x, r.y + (costume::HRangee - 16.f) * 0.5f, 16.f, 16.f};
+					char idP[48], idH[48];
+					snprintf(idP, sizeof(idP), "##insp.etat.%s%u", prefixe, e);
+					snprintf(idH, sizeof(idH), "##insp.etat.%shex%u", prefixe, e);
+					const bool viaP = NkPastilleCouleur(ctx, *mSt, idP, sw, buf, cap, mSt->selected);
+					// ① L'ENVELOPPE, PAS LE NOYAU NU : la demande recoit le bloc d'etat qu'elle
+					//   edite ; `genre == 0` = la porte vient de l'ouvrir, on charge le
+					//   remplissage transitoire avec la couleur posee.
+					if (mSt->picker.ouvert && mSt->picker.id == ctx.GetId(idP)) {
+						if (mSt->picker.genre == 0u) {
+							mSt->couleurFill = NkRemplissage();
+							mSt->couleurFill.couleur = NkString(buf);
+						}
+						mSt->picker.genre = 1u; // l'enveloppe complete
+						mSt->picker.noeud = mSt->selected;
+						mSt->picker.index = -1;
+						snprintf(mSt->picker.etat, sizeof(mSt->picker.etat), "%s", etats[e]);
+						mSt->picker.champEtat = champEtat;
+					}
+					const float32 xh = sw.x + 16.f + (float32)costume::EspSerre;
+					ctx.SetNextItemRect({xh, costume::BandeY(r.y), 64.f, costume::HControle});
+					if ((nkgui::InputText(ctx, idH, buf, 10) && NkPorteHex(buf, cap)) || viaP) {
+						champ = NkString(buf);
+						fini(e);
+					}
+					return xh + 64.f + (float32)costume::EspLarge;
+				};
+				if (texteParEtat) {
+					enTete("Couleur du texte, par état");
+					for (uint32 e = 0; e < nbEtats && e < kMaxEtatsUI; ++e) {
+						if (NkComponentDecl::StrEq(etats[e], "Normal"))
+							continue; // Normal EST la base
+						const NkRect r = ctx.NextItemRect(-1.f, costume::HRangee);
+						const float32 x = nomEtat(r, e);
+						const NkApparenceEtat *bloc = NkBlocEtatSi(*n, etats[e]);
+						const NkString avantT = bloc ? bloc->couleurTexte : NkString();
+						NkString tampon = avantT;
+						couleurEtat("texte", e, x, r, mEtatsTexteBuf[e], (uint32)sizeof(mEtatsTexteBuf[e]), tampon, 1u);
+						if (!NkComponentDecl::StrEq(avantT.Data(), tampon.Data())) {
+							poser(e).couleurTexte = tampon;
+							fini(e);
+						}
+					}
+				}
+				if (ombreParEtat) {
+					enTete("Ombre, par état : flou · opacité");
+					float32 flouBase = 4.f, opaciteBase = 25.f;
+					for (uint32 i = 0; i < (uint32)n->effets.Size(); ++i)
+						if (n->effets[i].visible) {
+							flouBase = n->effets[i].flou;
+							opaciteBase = n->effets[i].opacite;
+							break;
+						}
+					for (uint32 e = 0; e < nbEtats && e < kMaxEtatsUI; ++e) {
+						if (NkComponentDecl::StrEq(etats[e], "Normal"))
+							continue;
+						const NkRect r = ctx.NextItemRect(-1.f, costume::HRangee);
+						float32 x = nomEtat(r, e);
+						const NkApparenceEtat *a = NkBlocEtatSi(*n, etats[e]);
+						const float32 vals[2] = {a ? a->ombreFlou : -1.f, a ? a->ombreOpacite : -1.f};
+						const float32 bases[2] = {flouBase, opaciteBase};
+						const float32 maxs[2] = {256.f, 100.f};
+						for (uint32 k = 0; k < 2u; ++k) {
+							const NkRect rc = {x, costume::BandeY(r.y), 40.f, costume::HControle};
+							char idO[48];
+							snprintf(idO, sizeof(idO), "insp.etat.ombre%u.%u", e, k);
+							float32 nv = 0.f;
+							if (champHerite(idO, rc, vals[k], bases[k], maxs[k], nv)) {
+								(k == 0 ? poser(e).ombreFlou : poser(e).ombreOpacite) = nv;
+								fini(e);
+							}
+							x += 40.f + (float32)costume::EspSerre;
+						}
+					}
+				}
+				if (bordureParEtat) {
+					enTete("Bordure, par état : couleur · épaisseur (0 = retirée)");
+					const float32 epBase = bordsPeints[0]->epaisseur;
+					for (uint32 e = 0; e < nbEtats && e < kMaxEtatsUI; ++e) {
+						if (NkComponentDecl::StrEq(etats[e], "Normal"))
+							continue;
+						const NkRect r = ctx.NextItemRect(-1.f, costume::HRangee);
+						float32 x = nomEtat(r, e);
+						const NkApparenceEtat *a = NkBlocEtatSi(*n, etats[e]);
+						const NkString avantB = a ? a->bordureCouleur : NkString();
+						NkString tampon = avantB;
+						x = couleurEtat("bord", e, x, r, mEtatsBordBuf[e], (uint32)sizeof(mEtatsBordBuf[e]), tampon, 2u);
+						if (!NkComponentDecl::StrEq(avantB.Data(), tampon.Data())) {
+							poser(e).bordureCouleur = tampon;
+							fini(e);
+							a = NkBlocEtatSi(*n, etats[e]);
+						}
+						const NkRect rc = {x, costume::BandeY(r.y), 40.f, costume::HControle};
+						char idE[48];
+						snprintf(idE, sizeof(idE), "insp.etat.bordep%u", e);
+						float32 nv = 0.f;
+						if (champHerite(idE, rc, a ? a->bordureEpaisseur : -1.f, epBase, 64.f, nv)) {
+							poser(e).bordureEpaisseur = nv;
+							fini(e);
+						}
+					}
+				}
+				// ── LA TEINTE PAR ETAT (12/09) : LE MULTIPLICATEUR ─────────────────
+				// 🔴 CE QUE LA MESURE A MONTRE : un etat qui pose un `fond` sur un nœud
+				//    dont le remplissage est un DEGRADE ne change RIEN (0 commande sur
+				//    30), et rien ne le dit. La teinte, elle, multiplie a l'emission :
+				//    le degrade GARDE ses deux couleurs, seule la luminance bouge.
+				// ⚠️ L'ORDRE : on REMPLACE d'abord (`fond`), on MULTIPLIE ensuite.
+				if (teinteParEtat) {
+					enTete("Teinte, par état : multiplie le fond (blanc = aucune)");
+					for (uint32 e = 0; e < nbEtats && e < kMaxEtatsUI; ++e) {
+						if (NkComponentDecl::StrEq(etats[e], "Normal"))
+							continue; // Normal EST la base
+						const NkRect r = ctx.NextItemRect(-1.f, costume::HRangee);
+						const float32 x = nomEtat(r, e);
+						const NkApparenceEtat *bloc = NkBlocEtatSi(*n, etats[e]);
+						const NkString avantTe = bloc ? bloc->teinte : NkString();
+						NkString tampon = avantTe;
+						couleurEtat("teinte", e, x, r, mEtatsTeinteBuf[e],
+								(uint32)sizeof(mEtatsTeinteBuf[e]), tampon, 3u);
+						if (!NkComponentDecl::StrEq(avantTe.Data(), tampon.Data())) {
+							poser(e).teinte = tampon;
+							fini(e);
+						}
+					}
+				}
+				if (NkProprieteAUnSensParEtat("CALQUE")) {
+					// ③ L'OPACITE DU NŒUD par etat (11/09) : texte et enfants compris -- le sens
+					//   tranche par Rodolf. Base = l'opacite de CALQUE du nœud.
+					enTete("Opacité du nœud, par état (texte et enfants compris)");
+					for (uint32 e = 0; e < nbEtats && e < kMaxEtatsUI; ++e) {
+						if (NkComponentDecl::StrEq(etats[e], "Normal"))
+							continue;
+						const NkRect r = ctx.NextItemRect(-1.f, costume::HRangee);
+						const float32 x = nomEtat(r, e);
+						const NkApparenceEtat *a = NkBlocEtatSi(*n, etats[e]);
+						const NkRect rc = {x, costume::BandeY(r.y), 40.f, costume::HControle};
+						char idO[48];
+						snprintf(idO, sizeof(idO), "insp.etat.opacite%u", e);
+						float32 nv = 0.f;
+						if (champHerite(idO, rc, a ? a->opacite : -1.f, n->opacite, 100.f, nv)) {
+							poser(e).opacite = nv;
+							fini(e);
+						}
+						costume::Texte(dl, F.px9, rc.x + rc.w + 3.f, costume::CentrerY(F.px9, rc.y, rc.h), "%",
+									   ctx.theme.textMuted);
+					}
+				}
 // ⚠️ CE QUI S'ÉDITE ICI, ET CE QUI NE S'ÉDITE PAS ENCORE : le FOND
-				//    se pose (c'est la propriété la plus visible, donc celle qui
-				//    rend le geste vérifiable à l'œil) ; le rayon et l'opacité
-				//    par état sont dans le MODÈLE et dans le FICHIER, pas encore
-				//    dans le panneau. Mieux vaut un champ vrai que trois
-				//    demi-champs -- et la section le DIT plutôt que de le taire.
-				designkit::KeyValue(ctx, "rayon / opacité", "au lot suivant");
+				//    se pose, et depuis le 11/09 la COULEUR DU TEXTE, l'OMBRE (flou,
+				//    opacité), la BORDURE (couleur, épaisseur) et l'OPACITÉ DU NŒUD ;
+				//    le rayon par état est dans le MODÈLE et dans le FICHIER, pas encore
+				//    dans le panneau. Mieux vaut un champ vrai qu'un demi-champ -- et la
+				//    section le DIT.
+				designkit::KeyValue(ctx, "rayon", "au lot suivant");
 			}
 
 			void CorpsEffets(NkGuiContext &ctx) {
@@ -14925,7 +16576,23 @@ namespace nkuidesign {
 							char idPast[40];
 						snprintf(idPast, sizeof(idPast), "##insp.effet.pastille%u", i);
 						const bool pickerEffe =
-							NkPastilleCouleur(ctx, *mSt, idPast, sw, mEffetsBuf[i], (uint32)sizeof(mEffetsBuf[i]));
+							NkPastilleCouleur(ctx, *mSt, idPast, sw, mEffetsBuf[i], (uint32)sizeof(mEffetsBuf[i]),
+										  mSt->selected); // decrit un nœud
+						// ① L'ENVELOPPE, PAS LE NOYAU NU (11/09, nuit) : la septieme porte, celle
+						//   que le recensement a trouvee restee au genre 0. La demande recoit la
+						//   couleur ET l'opacite de l'effet ; `touche()` les y reecrit.
+						if (mSt->picker.ouvert && mSt->picker.id == ctx.GetId(idPast)) {
+							if (mSt->picker.genre == 0u) {
+								mSt->couleurFill = NkRemplissage();
+								mSt->couleurFill.couleur = e.couleur;
+								mSt->couleurFill.opacite = e.opacite;
+							}
+							mSt->picker.genre = 1u; // l'enveloppe complete
+							mSt->picker.noeud = mSt->selected;
+							mSt->picker.index = (int32)i;
+							mSt->picker.etat[0] = '\0';
+							mSt->picker.champNoeud = 1u; // la couleur de cet effet
+						}
 						char idHex[32];
 						snprintf(idHex, sizeof(idHex), "##insp.effet.hex%u", i);
 						ctx.SetNextItemRect({col.hexX, costume::BandeY(r.y), col.hexW,
@@ -15159,13 +16826,26 @@ namespace nkuidesign {
 					mSt->menuRole.filtreFocus = true;
 				}
 				if (!n->role.Empty()) {
+					// ① (12/09) DIRE CE QUI EST, PAS LE CORRIGER : un role hors du catalogue du
+					//   kit n'a ni evenements exiges ni masque d'etats -- RIEN ne le consomme, et
+					//   jusqu'ici rien ne le disait. Le geste « promouvoir » ecrit le libelle du
+					//   menu ; le kit attend ses propres cles. Choisir lequel fait foi touche les
+					//   documents enregistres : c'est a Rodolf, pas a ce panneau.
+					const bool hors = NkRoleHorsCatalogue(n->role.Data());
 					const NkRect r2 = ctx.NextItemRect(-1.f, 22.f);
 					ctx.BeginDisabled();
 					costume::Texte(dl, F.px10, r2.x + 12.f,
 								   costume::CentrerY(F.px10, r2.y, 22.f),
-								   "Les paramètres du rôle arrivent avec la taxonomie.",
+								   hors ? "Hors catalogue du kit : aucun événement ni état n'y répond."
+									  : "Les paramètres du rôle arrivent avec la taxonomie.",
 								   ctx.theme.textMuted);
 					ctx.EndDisabled();
+					// le releve dit LAQUELLE des deux phrases est posee (banc sans fenetre)
+					if (nkgui::NkGuiIntrospectActif(ctx)) {
+						nkgui::NkGuiNoter(ctx, nkgui::NkGuiNature::Region, ctx.GetId("insp.role.etat"),
+									  hors ? "role hors catalogue" : "role au catalogue", r2, 0u);
+						nkgui::NkGuiIntrospectCler(ctx, "insp.role.etat");
+					}
 				}
 			}
 			static void CorpsTypographieC(void *u, NkGuiContext &ctx) {
@@ -15180,9 +16860,17 @@ namespace nkuidesign {
 				if (!SectionOuverte("TYPOGRAPHIE"))
 					return;
 				NkUINode *n = NoeudMutable();
-				if (!n || !StrEq(n->shape.Data(), "text")) {
+				// ① (07/09) LA CONDITION VIENT DE `NkSectionSApplique`, PAS D'ICI. La
+				//    liste des sections et ce corps posaient la MEME question ; ecrite
+				//    deux fois, elle aurait diverge au premier type ajoute -- et le
+				//    panneau aurait cache une section dont le corps acceptait, ou
+				//    l'inverse. La phrase reste pour le cas ou le corps est atteint
+				//    autrement (aucune selection).
+				if (!n || !NkSectionSApplique("TYPOGRAPHIE", *n)) {
 					ctx.BeginDisabled();
-					nkgui::TextWrapped(ctx, "L'élément sélectionné ne porte pas de texte.");
+					// ② LA PHRASE DISTINGUE LES DEUX CAS : sans nœud, elle ne parle pas
+					//    d'un « element selectionne » qui n'existe pas.
+					nkgui::TextWrapped(ctx, NkPhraseSectionVide("TYPOGRAPHIE", n));
 					ctx.EndDisabled();
 					return;
 				}
@@ -15539,8 +17227,10 @@ namespace nkuidesign {
 				bool change = false;
 				const bool dans = ctx.popupDepth == 0
 								  && NkGuiRectContains(r, ctx.input.mousePos);
-				if (dans)
+				if (dans) {
 					ctx.wantCursor = nkgui::NkGuiCursor::ResizeEW;
+				NkTraceCurseur("ChampNombre (panneau)", ctx.wantCursor, false);
+				}
 				if (dans && ctx.input.mouseClicked[0]) {
 					mDragChamp = gid;
 					mDragDernierX = ctx.input.mousePos.x;
@@ -15574,40 +17264,77 @@ namespace nkuidesign {
 			void CorpsEspacement(NkGuiContext &ctx) {
 				if (!SectionOuverte("ESPACEMENT"))
 					return;
-				const NkUINode *n = NoeudCourant();
+				NkUINode *n = NoeudMutable();
 				if (!n)
 					return;
 				auto &F = costume::Fontes();
 				auto &dl = ctx.DL();
+				// ⑥ (07/09) LA SECTION DIT QUAND ELLE N'AGIT PAS. Le solveur ne lit
+				//    `spacingName` / `padName` que sur un nœud QUI A DES ENFANTS et dont
+				//    l'agencement n'est pas `None` (`Layout.h` : la fonction rend la main
+				//    avant de les lire). Nommer une métrique sur une feuille écrirait un
+				//    réglage sans effet -- et offrir la porte serait pire que ne pas
+				//    l'offrir : on le DIT, comme la section ANCRAGE.
+				const bool agence = !n->children.Empty()
+									&& n->layout.kind != editorkit::NkLayoutKind::None;
+				if (!agence) {
+					ctx.BeginDisabled();
+					nkgui::TextWrapped(ctx, "Ce nœud n'agence pas d'enfants : la gouttière et la "
+											"marge ne seraient lues par personne.");
+					ctx.EndDisabled();
+					return;
+				}
 				struct L {
 						const char *libelle;
-						const NkString *nom;
+						NkString *nom;
 				};
 				const L lignes[2] = {{"Gouttière", &n->spacingName}, {"Marge", &n->padName}};
 				for (int32 li = 0; li < 2; ++li) {
 					const NkRect r = ctx.NextItemRect(-1.f, 26.f);
 					const float32 x0 = r.x + 12.f, x1 = r.x + r.w - 12.f;
-					if (lignes[li].nom->Empty()) {
-						ctx.BeginDisabled();
-						costume::Texte(dl, F.px10, x0,
-									   costume::CentrerBande(F.px10, r.y),
-									   lignes[li].libelle, ctx.theme.textMuted);
-						costume::Texte(dl, F.px10, x0 + ColChampsCalc(r.w - 24.f),
-									   costume::CentrerBande(F.px10, r.y),
-									   "\xE2\x80\x94 (ce conteneur ne nomme rien)",
-									   ctx.theme.textMuted);
-						ctx.EndDisabled();
-						continue;
-					}
 					costume::Texte(dl, F.px10, x0, costume::CentrerBande(F.px10, r.y),
 								   lignes[li].libelle, ctx.theme.textMuted);
-					// le NOM de la métrique (la valeur est UNE pour tout le
-					// document — c'est le principe), puis sa valeur, éditable.
-					char nm[64];
-					snprintf(nm, sizeof(nm), "« %s »", lignes[li].nom->Data());
-					costume::Texte(dl, F.px9, x0 + ColChampsCalc(r.w - 24.f),
-								   costume::CentrerBande(F.px9, r.y), nm,
-								   ctx.theme.textMuted);
+					// ⑥ (07/09) LE NOM SE POSE ICI -- il ne se posait NULLE PART. La
+					//    rangée affichait « — (ce conteneur ne nomme rien) » et aucune
+					//    porte n'existait pour en nommer un : un champ du modèle sans
+					//    entrée dans l'interface (inventaire Q118, ∅ n°2).
+					// ⚠️ LA LISTE VIENT DU DOCUMENT, PAS D'UNE TABLE ÉCRITE ICI : on
+					//    cycle sur les métriques que le document porte déjà, plus
+					//    « aucune ». Une liste en dur aurait inventé des noms que la table
+					//    de métriques ne connait pas -- et `Metric()` aurait rendu zéro
+					//    sans le dire.
+					// ⚠️ ON CYCLE, comme le chevron du mode de taille : deux gestes
+					//    différents pour choisir dans une liste, dans le même panneau,
+					//    s'apprendraient deux fois.
+					{
+						const float32 xn = x0 + ColChampsCalc(r.w - 24.f);
+						const NkRect rn = {xn, costume::BandeY(r.y), (x1 - 56.f) - xn,
+										   costume::HControle};
+						char nm[80];
+						if (lignes[li].nom->Empty())
+							snprintf(nm, sizeof(nm), "\xE2\x80\x94 nommer\xE2\x80\xA6");
+						else
+							snprintf(nm, sizeof(nm), "\xC2\xAB %s \xC2\xBB", lignes[li].nom->Data());
+						const bool svn = ctx.popupDepth == 0
+										 && NkGuiRectContains(rn, ctx.input.mousePos);
+						if (svn)
+							dl.AddRectFilled(rn, ctx.theme.rowHover, 4.f);
+						costume::TexteTronque(dl, F.px9, rn.x + 2.f,
+											  costume::CentrerBande(F.px9, r.y), nm, rn.w - 4.f,
+											  lignes[li].nom->Empty() ? ctx.theme.textDisabled
+																	 : ctx.theme.textMuted);
+						if (svn && ctx.input.mouseClicked[0]) {
+							ctx.input.mouseClicked[0] = false;
+							*lignes[li].nom =
+								NkString(NkMetriqueSuivante(mSt->doc, lignes[li].nom->Data()));
+							mSt->doc.MarkHumanEdit(mSt->selected);
+						}
+						if (svn)
+							mSt->status = NkString("Cliquer pour choisir la métrique du document "
+												   "que suit cette rangée (ou aucune).");
+					}
+					if (lignes[li].nom->Empty())
+						continue; // rien de nommé : aucune valeur à régler
 					const NkRect rv = {x1 - 48.f, costume::BandeY(r.y), 48.f, costume::HControle};
 					float32 v = mSt->doc.Metric(lignes[li].nom->Data(), 0.f);
 					char id[48];
@@ -15616,7 +17343,48 @@ namespace nkuidesign {
 						mSt->doc.SetMetric(lignes[li].nom->Data(), v);
 						mSt->doc.MarkHumanEdit(mSt->selected);
 					}
+					// ── ⑦ (07/09) LA PORTÉE SE DIT, ET ELLE SE COMPTE ────────────
+					// 🔴 Inventaire Q118, mesure 2, famille 3 : ce champ est dans un
+					//    panneau de NŒUD et la valeur appartient au DOCUMENT. La
+					//    changer ici la change pour tous les nœuds qui nomment la
+					//    même métrique — c'est le principe des métriques nommées, et
+					//    il n'était écrit que dans un commentaire du code.
+					// ⚠️ UN NOMBRE MESURÉ, PAS UN AVERTISSEMENT. « attention, c'est
+					//    global » se lit et s'oublie ; « 14 nœuds » se lit et fait
+					//    hésiter. Et le compte est vrai à chaque image, sans table à
+					//    tenir : on parcourt le document, qui est la seule source.
+					const uint32 combien = NoeudsNommant(lignes[li].nom->Data());
+					if (combien > 1u) {
+						char b[160];
+						snprintf(b, sizeof(b),
+								 "valeur du DOCUMENT : %u nœuds nomment « %s » et "
+								 "suivront ce réglage.",
+								 combien, lignes[li].nom->Data());
+						const NkRect rp = ctx.NextItemRect(-1.f, 18.f);
+						costume::Texte(dl, F.px9, x0 + ColChampsCalc(r.w - 24.f),
+									   costume::CentrerY(F.px9, rp.y, 18.f), b,
+									   ctx.theme.textMuted);
+					}
 				}
+			}
+
+			/// Combien de nœuds du document NOMMENT cette métrique (gouttière ou
+			/// marge) ? Sert à dire la portée d'un réglage d'ESPACEMENT.
+			/// ⚠️ COMPTE À CHAQUE IMAGE PLUTÔT QU'UNE TABLE TENUE À JOUR : le
+			///    document est la seule source, et une table entretenue à côté
+			///    aurait dérivé au premier collage. Le coût est un parcours de la
+			///    liste de nœuds, sur un panneau qui en dessine déjà autant.
+			uint32 NoeudsNommant(const char *metrique) const {
+				if (!metrique || !*metrique)
+					return 0u;
+				uint32 k = 0u;
+				for (uint32 i = 0; i < (uint32)mSt->doc.nodes.Size(); ++i) {
+					const NkUINode &q = mSt->doc.nodes[i];
+					if (StrEq(q.spacingName.Data(), metrique)
+						|| StrEq(q.padName.Data(), metrique))
+						++k;
+				}
+				return k;
 			}
 
 			/// BORDS : « R / Brd » (le modèle porte rayon et bordure depuis le
@@ -15873,6 +17641,39 @@ namespace nkuidesign {
 					alignV = (editorkit::NkAlign)c;
 					mSt->doc.MarkHumanEdit(mSt->selected);
 				}
+				// ── ⑦ (07/09) L'AGENCEMENT QUI NE LIT PAS L'ALIGNEMENT LE DIT ─────
+				// 🔴 Trouvé par l'inventaire (Q118, mesure 2, famille 1), pas par un
+				//    symptôme. `mainAlign`/`crossAlign` ne sont lus que dans la branche
+				//    ROW/COLUMN du solveur ; `Grid`, `Anchor` et `Free` rendent la main
+				//    avant. Les huit boutons restaient actifs, écrivaient, se
+				//    persistaient — et ne changeaient rien. *Un champ qui refuse en
+				//    silence coûte plus cher qu'un champ absent : l'utilisateur croit
+				//    avoir agi.*
+				//
+				// ⚠️ ON DIT, ON NE GRISE PAS, ET C'EST UNE DÉCISION. Griser fermerait la
+				//    question au lieu de la poser : personne n'a tranché si une grille
+				//    doit un jour honorer l'alignement de ses cellules. La valeur reste
+				//    donc écrite et persistée — un solveur futur la trouvera — et la
+				//    phrase dit exactement où elle en est aujourd'hui.
+				//
+				// ⚠️ LA LISTE DES AGENCEMENTS QUI LISENT N'EST PAS ÉCRITE ICI : le
+				//    prédicat vit à côté du SOLVEUR (`Layout.h`,
+				//    `NkAlignementLuParLeSolveur`), parce que le fait lui appartient --
+				//    l'inspecteur ne fait que le rapporter. Une seconde liste ici aurait
+				//    divergé au premier agencement ajouté, et la phrase serait devenue le
+				//    mensonge qu'elle répare.
+				const bool luParLeSolveur = NkAlignementLuParLeSolveur(n->layout.kind);
+				if (!luParLeSolveur) {
+					char b[220];
+					snprintf(b, sizeof(b),
+							 "Enregistré, pas appliqué : un agencement « %s » place ses "
+							 "enfants autrement et ne lit pas l'alignement. La valeur est "
+							 "gardée dans le document.",
+							 editorkit::NkLayoutKindName(n->layout.kind));
+					ctx.BeginDisabled();
+					nkgui::TextWrapped(ctx, b);
+					ctx.EndDisabled();
+				}
 			}
 
 			/// La rangée d'alignement de la RÉFÉRENCE : libellé (« H »/« V ») à
@@ -15979,7 +17780,7 @@ namespace nkuidesign {
 			/// contrôle AGIT — recadrage de Rodolf) : vider = revenir au thème.
 			/// Rend true si la clé a été écrite.
 			bool RangeeCouleurEdit(NkGuiContext &ctx, const char *label, const char *id,
-								   char *buf, NkString &cle) {
+								   char *buf, uint32 cap, NkString &cle, uint8 champNoeud) {
 				auto &F = costume::Fontes();
 				auto &dl = ctx.DL();
 				const NkRect r = ctx.NextItemRect(-1.f, 26.f);
@@ -15988,17 +17789,27 @@ namespace nkuidesign {
 							   ctx.theme.textMuted);
 				const NkRect sw = {x0 + ColChampsCalc(r.w - 24.f),
 								   r.y + (costume::HRangee - 16.f) * 0.5f, 16.f, 16.f};
-				if (buf[0]) {
-					dl.AddRectFilled(sw, CouleurHex(buf, ctx.theme.textMuted), 3.f);
-					dl.AddRect(sw, ctx.theme.border, 1.f, 3.f);
-				} else {
-					// aucune couleur posée : la case « thème » (barrée)
-					dl.AddRect(sw, ctx.theme.border, 1.f, 3.f);
-					dl.AddLine({sw.x + 3.f, sw.y + 13.f}, {sw.x + 13.f, sw.y + 3.f},
-							   ctx.theme.textMuted, 1.f);
+				// 🔴 (11/09, nuit) CETTE PASTILLE ETAIT DESSINEE ET NE S'OUVRAIT SUR RIEN :
+				//    un carre de couleur a l'air cliquable, et le clic ne faisait rien -- une
+				//    huitieme porte, muette, que le recensement a trouvee. Elle passe par LA
+				//    porte (`NkPastilleCouleur`, qui dessine le meme carre, barre quand la
+				//    couleur est vide = le theme) et demande l'enveloppe.
+				char idP[64];
+				snprintf(idP, sizeof(idP), "%s.pastille", id);
+				const bool viaP = NkPastilleCouleur(ctx, *mSt, idP, sw, buf, cap, mSt->selected);
+				if (mSt->picker.ouvert && mSt->picker.id == ctx.GetId(idP)) {
+					if (mSt->picker.genre == 0u) {
+						mSt->couleurFill = NkRemplissage();
+						mSt->couleurFill.couleur = NkString(buf);
+					}
+					mSt->picker.genre = 1u; // l'enveloppe complete
+					mSt->picker.noeud = mSt->selected;
+					mSt->picker.index = -1;
+					mSt->picker.etat[0] = '\0';
+					mSt->picker.champNoeud = champNoeud;
 				}
 				ctx.SetNextItemRect({sw.x + 24.f, costume::BandeY(r.y), x1 - (sw.x + 24.f), costume::HControle});
-				if (nkgui::InputText(ctx, id, buf, 10) && NkPorteHex(buf, 10u)) {
+				if ((nkgui::InputText(ctx, id, buf, 10) && NkPorteHex(buf, 10u)) || viaP) {
 					cle = NkString(buf);
 					mSt->doc.MarkHumanEdit(mSt->selected);
 					return true;
@@ -16254,7 +18065,8 @@ namespace nkuidesign {
 					char idPast[40];
 					snprintf(idPast, sizeof(idPast), "##insp.fill.pastille%u", i);
 					const bool pickerFill =
-						NkPastilleCouleur(ctx, *mSt, idPast, sw, mFillsBuf[i], (uint32)sizeof(mFillsBuf[i]));
+						NkPastilleCouleur(ctx, *mSt, idPast, sw, mFillsBuf[i], (uint32)sizeof(mFillsBuf[i]),
+										  mSt->selected); // decrit un nœud
 					// 2. l'HEXA — la seule écriture qui NE matérialise PAS : tant
 					//    qu'on ne change qu'une couleur, un document d'avant garde
 					//    sa clé simple et son octet près.
@@ -16511,18 +18323,30 @@ namespace nkuidesign {
 							char idPast[40];
 						snprintf(idPast, sizeof(idPast), "##insp.bord.pastille%u", i);
 						const bool pickerBord =
-							NkPastilleCouleur(ctx, *mSt, idPast, sw, mBordsBuf[i], (uint32)sizeof(mBordsBuf[i]));
+							NkPastilleCouleur(ctx, *mSt, idPast, sw, mBordsBuf[i], (uint32)sizeof(mBordsBuf[i]),
+										  mSt->selected); // decrit un nœud
 						// ── LA LIGNE, COMME CHEZ LUNACY : pastille · nom · opacité · œil · poubelle
-						// Le détail (hexa, épaisseur, position, côtés, jointure, extrémités) vit
-						// dans le POPOVER de bordure (DessinerPopoverBordure, via l'overlay).
+						// ① (11/09, nuit) LE DETAIL VIT DANS L'ENVELOPPE, PLUS DANS UNE FENETRE A
+						// ELLE : hexa, opacite, modele, variable et pipette viennent de
+						// l'enveloppe ; epaisseur, position, cotes, jointure et extremites sont
+						// le bloc qu'elle RECOIT (`BlocChampsBordure`). Neuvieme variante de
+						// selecteur fermee.
 						if (mSt->picker.ouvert && mSt->picker.id == ctx.GetId(idPast)) {
 							if (simple) {
 								n->MaterialiserBorders();
 								mBordsGen = -1;
 							}
-							mSt->picker.genre = 2u;
+							const uint32 ib = simple ? 0u : i;
+							if (mSt->picker.genre == 0u && ib < (uint32)n->borders.Size()) {
+								mSt->couleurFill = NkRemplissage();
+								mSt->couleurFill.couleur = n->borders[ib].couleur;
+								mSt->couleurFill.opacite = n->borders[ib].opacite;
+							}
+							mSt->picker.genre = 1u; // l'enveloppe complete
 							mSt->picker.noeud = mSt->selected;
-							mSt->picker.index = (int32)(simple ? 0u : i);
+							mSt->picker.index = (int32)ib;
+							mSt->picker.etat[0] = '\0';
+							mSt->picker.champNoeud = 3u; // la couleur de CETTE bordure
 						}
 						(void)pickerBord;
 						{
@@ -16669,6 +18493,141 @@ namespace nkuidesign {
 			// ⚠️ « Fond » A QUITTÉ CETTE SECTION pour REMPLISSAGES : le laisser
 			//    ici en plus aurait donné deux endroits pour écrire la même clé,
 			//    et le second aurait ignoré la liste.
+			// ══════════════════════════════════════════════════════════════════
+			//  ③ LA SECTION CANVAS — ce qu'on règle quand RIEN n'est sélectionné
+			// ══════════════════════════════════════════════════════════════════
+			//
+			// 🔴 MANDAT DE RODOLF (07/09) : *« modifier sa couleur ou changer son
+			//    fond, soit avec des grilles soit laisser comme c'est actuellement »*.
+			//    Trois choix, et le TROISIÈME est une option pleine et entière :
+			//    ne rien poser laisse le thème décider, comme aujourd'hui.
+			//
+			// ⚠️ CE QUE CETTE SECTION RÈGLE, ET CE QU'ELLE NE RÈGLE PAS. C'est le
+			//    DÉCOR DE L'ÉDITEUR, pas le document : `RenderDocument` n'émet
+			//    aucune de ces commandes, le fichier `.nkuidoc` n'en sait rien, et
+			//    l'export n'en peint pas un pixel. Deux personnes qui ouvrent le
+			//    même fichier peuvent donc avoir deux fonds — c'est voulu, c'est ce
+			//    que « décor » veut dire, et la section le DIT plutôt que de le
+			//    laisser découvrir.
+			//
+			// ⚠️ ET ELLE NE DOUBLE RIEN. La grille bascule `grilleVisible`, LA
+			//    MÊME variable que le clic droit dans le vide, honorée au seul
+			//    endroit qui peint la grille. Le fond se pose PAR-DESSUS le rôle
+			//    `canvas_bg` du thème, il ne le réécrit pas : les thèmes sont
+			//    partagés avec les autres applications de la maison.
+			void CorpsCanvas(NkGuiContext &ctx) {
+				if (!SectionOuverte("CANVAS"))
+					return;
+				using namespace nkentseu;
+				auto &F = costume::Fontes();
+				auto &dl = ctx.DL();
+				mSt->LireDecorUneFois();
+
+				// ── 1. LE FOND : le thème, ou une couleur ─────────────────────
+				// ⚠️ LE MODE N'EST PAS UNE SECONDE VARIABLE : il se DÉDUIT du champ
+				//    (vide = thème). Un booléen « mode » à côté aurait pu dire
+				//    « couleur » pendant que le champ est vide -- deux vérités pour
+				//    un seul fait, et c'est toujours la seconde qu'on voit à l'écran.
+				const bool fondPose = !mSt->canvasFill.couleur.Empty();
+				{
+					const NkRect r = ctx.NextItemRect(-1.f, 26.f);
+					const float32 x0 = r.x + 12.f;
+					costume::Texte(dl, F.px10, x0, costume::CentrerBande(F.px10, r.y), "Fond",
+								   ctx.theme.textMuted);
+				}
+				static const char *const kModes[2] = {"Thème", "Couleur"};
+				const int32 choix = designkit::Segmented(ctx, kModes, 2, fondPose ? 1 : 0,
+														 "insp.canvas.fond");
+				if (choix == 0 && fondPose) {
+					mSt->canvasFill = NkRemplissage(); // le theme reprend : rien de pose
+					mSt->EnregistrerDecor();
+					mSt->status = NkString("Fond de la toile : le thème décide à nouveau.");
+				} else if (choix == 1 && !fondPose) {
+					// ⚠️ ON PART DE CE QUI EST À L'ÉCRAN, pas du noir. Passer en
+					//    « Couleur » sur une valeur arbitraire ferait sauter la toile
+					//    à un fond que personne n'a demandé : le premier état du
+					//    champ est la couleur que le thème peint en ce moment.
+					const uint32 c = (uint32)mSt->theme.Get(NkDesignResolveRole("canvas_bg"));
+					snprintf(mCanvasHex, sizeof(mCanvasHex), "#%02x%02x%02x",
+							 (unsigned)((c >> 24) & 0xFFu), (unsigned)((c >> 16) & 0xFFu),
+							 (unsigned)((c >> 8) & 0xFFu));
+					mSt->canvasFill.couleur = NkString(mCanvasHex);
+					mSt->EnregistrerDecor();
+				}
+				if (!mSt->canvasFill.couleur.Empty()
+					&& !NkComponentDecl::StrEq(mCanvasHex, mSt->canvasFill.couleur.Data()))
+					snprintf(mCanvasHex, sizeof(mCanvasHex), "%s", mSt->canvasFill.couleur.Data());
+
+				if (!mSt->canvasFill.couleur.Empty()) {
+					const NkRect r = ctx.NextItemRect(-1.f, 26.f);
+					const float32 x0 = r.x + 12.f;
+					const float32 x1 = r.x + r.w - 12.f;
+					const NkRect sw = {x0, r.y + (costume::HRangee - 16.f) * 0.5f, 16.f, 16.f};
+					// ② LE MEME SÉLECTEUR QUE PARTOUT AILLEURS, et **-1** : cette
+					//    pastille ne décrit AUCUN nœud. C'est toute la déclaration.
+					// 🔴 RODOLF (07/09) : « retire le color picker pour mettre le bon ».
+					//    Ce qu'il y avait ici était un **genre à moi (3)** posé pour
+					//    contourner une garde -- une seconde porte pour un seul geste.
+					//    Elle est partie ; la garde a été déplacée chez les quatre
+					//    sections qui décrivent un nœud, et cette pastille prend le
+					//    chemin commun. *Une porte, pas deux.*
+					const bool viaPastille =
+						NkPastilleCouleur(ctx, *mSt, "##insp.canvas.pastille", sw, mCanvasHex,
+										  (uint32)sizeof(mCanvasHex), -1); // aucun nœud décrit
+					// ③ (07/09) ET ELLE OUVRE LA MEME FENETRE QU'UN REMPLISSAGE.
+					// 🔴 Rodolf, sur deux captures cote a cote : le remplissage ouvrait une
+					//    FENETRE (fond opaque, onglets, hexa, opacite, croix), le canvas
+					//    ouvrait le CŒUR DU SELECTEUR POSE NU. Le noyau etait bien commun --
+					//    c'est l'ENVELOPPE qui manquait, et ma mesure d'hier ne la comptait
+					//    pas. *Le meme genre que les remplissages, avec `noeud = -1` : la
+					//    fenetre edite le remplissage du DECOR.*
+					if (mSt->picker.ouvert
+						&& mSt->picker.id == ctx.GetId("##insp.canvas.pastille")) {
+						mSt->picker.genre = 1u; // l'enveloppe complete
+						mSt->picker.noeud = -1; // ... sur aucun nœud
+						mSt->picker.index = -1;
+					}
+					const float32 xChamp = sw.x + 16.f + (float32)costume::EspSerre;
+					ctx.SetNextItemRect(
+						{xChamp, costume::BandeY(r.y), x1 - xChamp, costume::HControle});
+					const bool tape = nkgui::InputText(ctx, "##insp.canvas.hex", mCanvasHex, 8);
+					if (tape || viaPastille) {
+						uint32 rgbaSaisi = 0u;
+						// ⚠️ ON N'ENREGISTRE QUE CE QUI SE PEINT. Pendant la frappe,
+						//    « #10 » n'est pas une couleur : l'écrire dans le fichier
+						//    poserait un fond que la toile refusera de lire au
+						//    prochain lancement -- un réglage fantôme.
+						if (NkFondCanvasExplicite(mCanvasHex, rgbaSaisi)) {
+							mSt->canvasFill.couleur = NkString(mCanvasHex);
+							mSt->EnregistrerDecor();
+						}
+					}
+				}
+
+				// ── 2. LA GRILLE DE POINTS ───────────────────────────────────
+				{
+					const NkRect r = ctx.NextItemRect(-1.f, 26.f);
+					const float32 x0 = r.x + 12.f;
+					costume::Texte(dl, F.px10, x0, costume::CentrerBande(F.px10, r.y),
+								   "Grille de points", ctx.theme.textMuted);
+				}
+				if (designkit::Button(ctx,
+									  mSt->grilleVisible ? "Masquer la grille"
+														 : "Afficher la grille",
+									  "insp.canvas.grille")) {
+					mSt->grilleVisible = !mSt->grilleVisible;
+					mSt->EnregistrerDecor(); // la MÊME écriture que le clic droit
+					mSt->status = NkString(mSt->grilleVisible ? "Grille de points affichée."
+															  : "Grille de points masquée.");
+				}
+
+				// ── 3. CE QUE ÇA NE FAIT PAS, ÉCRIT PLUTÔT QUE DÉCOUVERT ─────
+				nkgui::TextWrapped(ctx,
+								   "Décor de l'éditeur, enregistré dans nkuidesign.cfg : il "
+								   "suit la machine, pas le document. Le fichier .nkuidoc n'en "
+								   "sait rien et l'export n'en peint aucun pixel.");
+			}
+
 			/// LA SECTION CALQUE -- « LAYER » chez Lunacy : opacité + mode de fusion.
 			/// Les deux sont NOMMÉS et grisés : le modèle ne porte ni l'opacité du
 			/// calque ni la fusion (18 modes relevés sur la capture du 04/09). Une
@@ -16684,28 +18643,38 @@ namespace nkuidesign {
 				auto &F = costume::Fontes();
 				auto &dl = ctx.DL();
 				{
-					// Opacité : LE MODÈLE NE LA PORTE PAS — grisée, avec la raison.
+					// ⑤ (07/09) L'OPACITÉ DU NŒUD -- LE MODÈLE LA PORTE MAINTENANT.
+					//    Elle était affichée EN DUR à « 100 », grisée, avec sa raison :
+					//    *« le modèle ne la porte pas encore »*. Cétait le seul vrai
+					//    chantier de modèle des huit sections (inventaire Q118).
+					// ⚠️ CE QU'ELLE EST, ET CE QU'ELLE N'EST PAS : elle se transmet aux
+					//    descendants, mais le peintre multiplie l'alpha de CHAQUE
+					//    élément -- ce n'est pas un calque composité une seule fois. Deux
+					//    enfants qui se recouvrent se voient donc l'un l'autre à travers.
+					//    La rangée le dit au survol plutôt que de laisser découvrir
+					//    l'écart avec Lunacy sur un vrai document.
 					{
 						const NkRect r = ctx.NextItemRect(-1.f, 26.f);
 						const float32 x0 = r.x + 12.f;
-						ctx.BeginDisabled();
 						costume::Texte(dl, F.px10, x0,
 									   costume::CentrerBande(F.px10, r.y), "Opacité",
 									   ctx.theme.textMuted);
 						const NkRect ro = {x0 + ColChampsCalc(r.w - 24.f), costume::BandeY(r.y), 48.f, costume::HControle};
-						dl.AddRectFilled(ro, CouleurInput(), 4.f);
-						dl.AddRect(ro, ctx.theme.border, 1.f, 4.f);
-						costume::Texte(dl, F.px11, ro.x + costume::PadChamp,
-									   costume::CentrerY(F.px11, ro.y, 20.f), "100",
-									   ctx.theme.textMuted);
+						// MULTI-SÉLECTION COMPRISE, comme la rotation et l'arrondi : « — »
+						// si les opacités diffèrent, et l'édition part sur toutes.
+						ChampNombreMulti(
+							ctx, "insp.calque.opacite", ro, 1.f, 0.f, 100.f,
+							[](const NkUINode &q) { return q.opacite; },
+							[](NkUINode &q, float32 v) { q.opacite = v; });
 						costume::Texte(dl, F.px9, ro.x + ro.w + 4.f,
 									   costume::CentrerBande(F.px9, r.y), "%",
 									   ctx.theme.textMuted);
-						ctx.EndDisabled();
-						if (ctx.popupDepth == 0 && ctx.input.mouseClicked[0]
-							&& NkGuiRectContains(ro, ctx.input.mousePos))
-							mSt->status = NkString("Opacité : le modèle ne la porte pas encore "
-												   "(vocabulaire d'apparence, chantier nommé).");
+						if (ctx.popupDepth == 0 && NkGuiRectContains(r, ctx.input.mousePos))
+							mSt->status = NkString(
+								"Opacité : s'applique au nœud ET à ses enfants, élément par "
+								"élément -- deux enfants qui se recouvrent se voient l'un "
+								"l'autre à travers (un vrai calque se composite une seule "
+								"fois : chantier de rendu).");
 					}
 				}
 				// Fusion : Normal -- 18 modes nommés (Darken, Multiply, Plus Darker, Color
@@ -16713,20 +18682,60 @@ namespace nkuidesign {
 				// Hard Light, Difference, Exclusion, Hue, Saturation, Color, Luminosity),
 				// aucun rendu : un chantier à soi, dit ici.
 				{
+					// ⑥ (07/09) LE MODE DE FUSION DU NŒUD -- version PARTIELLE, chiffrée
+					//    avant d'être écrite (Q121). La rangée affichait « Normal » en dur
+					//    et grisé. Elle cycle désormais sur les 18 modes, et surtout elle
+					//    DIT, mode par mode, s'il est peint ou seulement enregistré.
+					// ⚠️ CINQ SUR DIX-HUIT SONT EXACTS AU GPU ; les treize autres lisent la
+					//    DESTINATION et ne sont PAS approchés. *Un repli qui reste plausible
+					//    est pire qu'un refus* : une image fausse mais crédible ne se
+					//    découvre que sur un document réel, c'est-à-dire trop tard.
+					// ⚠️ LA LISTE DES EXACTS N'EST PAS RECOPIÉE ICI : elle se lit par
+					//    `NkFusionExacte`, la fonction que LE PEINTRE appelle. Une seconde
+					//    liste aurait divergé au premier mode ajouté -- et la phrase serait
+					//    devenue le mensonge qu'elle répare (leçon du 07/09).
 					const NkRect r = ctx.NextItemRect(-1.f, 26.f);
 					const float32 x0 = r.x + 12.f;
-					ctx.BeginDisabled();
 					costume::Texte(dl, F.px10, x0, costume::CentrerBande(F.px10, r.y), "Fusion",
 								   ctx.theme.textMuted);
-					const NkRect rf = {x0 + ColChampsCalc(r.w - 24.f), costume::BandeY(r.y), 70.f, costume::HControle};
-					dl.AddRectFilled(rf, CouleurInput(), 4.f);
-					dl.AddRect(rf, ctx.theme.border, 1.f, 4.f);
-					costume::Texte(dl, F.px10, rf.x + costume::PadChamp, costume::CentrerY(F.px10, rf.y, 20.f),
-								   "Normal", ctx.theme.textMuted);
-					ctx.EndDisabled();
-					if (ctx.popupDepth == 0 && NkGuiRectContains(r, ctx.input.mousePos))
-						mSt->status = NkString("Mode de fusion : Normal seulement -- les 18 modes de Lunacy sont "
-											   "nommés (doc 13), aucun n'est rendu.");
+					const NkRect rf = {x0 + ColChampsCalc(r.w - 24.f), costume::BandeY(r.y), 96.f, costume::HControle};
+					const int32 kf = NkIndiceFusion(n->fusion.Data());
+					const bool exact =
+						renderdetail::NkFusionExacte(n->fusion)
+						!= editorkit::NkComponentPaint::NkPaintBlend::Alpha;
+					const bool svf = ctx.popupDepth == 0 && NkGuiRectContains(rf, ctx.input.mousePos);
+					dl.AddRectFilled(rf, svf ? ctx.theme.rowHover : CouleurInput(), 4.f);
+					dl.AddRect(rf, svf ? ctx.theme.accent : ctx.theme.border, 1.f, 4.f);
+					costume::TexteTronque(dl, F.px10, rf.x + costume::PadChamp,
+										  costume::CentrerY(F.px10, rf.y, 20.f),
+										  kf >= 0 ? kNkFusionLib[kf] : n->fusion.Data(),
+										  rf.w - 2.f * costume::PadChamp,
+										  n->fusion.Empty() ? ctx.theme.textMuted
+															: (exact ? ctx.theme.text : ctx.theme.textDisabled));
+					// LE POINT : peint (accent) ou seulement enregistré (éteint). Un
+					// mode qui n'agit pas doit se voir SANS survoler la rangée.
+					if (!n->fusion.Empty())
+						dl.AddCircleFilled({rf.x + rf.w + 8.f, rf.y + rf.h * 0.5f}, 3.f,
+										   exact ? ctx.theme.accent : ctx.theme.textDisabled);
+					if (svf && ctx.input.mouseClicked[0]) {
+						ctx.input.mouseClicked[0] = false;
+						const int32 suiv = (kf < 0 ? 0 : (kf + 1) % 18);
+						n->fusion = NkString(kNkFusionCle[suiv]);
+						mSt->doc.MarkHumanEdit(mSt->selected);
+						mSt->host.SyncTo(mSt->doc);
+					}
+					if (svf)
+						mSt->status = NkString(
+							n->fusion.Empty()
+								? "Fusion : Normal. Cliquer pour parcourir les 18 modes -- cinq "
+								  "sont peints exactement, les treize autres sont enregistrés et "
+								  "dits, jamais approximés."
+								: (exact ? "Fusion PEINTE exactement (au GPU) : elle s'applique au "
+										   "nœud ET à ses enfants, contre ce qui est déjà sur la "
+										   "toile -- pas « le groupe composité puis fondu »."
+										 : "Fusion ENREGISTRÉE, PAS PEINTE : ce mode lit la "
+										   "destination. Il est gardé dans le document et rendu tel "
+										   "quel à l'export, jamais approximé à l'écran."));
 				}
 			}
 			void CorpsApparence(NkGuiContext &ctx) {
@@ -16759,7 +18768,7 @@ namespace nkuidesign {
 					// (« Fond » vit desormais dans REMPLISSAGES — cf. son commentaire.)
 					if (StrEq(n->shape.Data(), "text"))
 						RangeeCouleurEdit(ctx, "Texte", "##insp.app.texte", mTexteColBuf,
-										  n->textColor);
+										  (uint32)sizeof(mTexteColBuf), n->textColor, 2u);
 					// (« Bordure » vit desormais dans BORDURES — meme raison que
 					//  « Fond » : deux endroits pour ecrire une meme cle, et le
 					//  second aurait ignore la liste.)
@@ -17022,6 +19031,9 @@ namespace nkuidesign {
 			///    refuse -- il ne se contente pas de ne rien faire.
 			static constexpr uint32 kMaxFillsUI = 8;
 			char mFillsBuf[kMaxFillsUI][12] = {};
+			/// ③ LE TAMPON DE SAISIE DU FOND DE LA TOILE. Il n'a PAS d'état de
+			/// mode à côté : il se déduit de `st.canvasFill.couleur` (vide = thème).
+			char mCanvasHex[12] = {};
 			int32 mFillsNode = -1;
 			uint32 mFillsGen = 0;
 			/// Les tampons hexa de la section ETATS -- un par etat de la table.
@@ -17033,6 +19045,12 @@ namespace nkuidesign {
 			///    section le DIT (voir CorpsEtats).
 			static constexpr uint32 kMaxEtatsUI = 12;
 			char mEtatsBuf[kMaxEtatsUI][12] = {};
+			/// ② les tampons hexa de la COULEUR DU TEXTE par état (11/09)
+			char mEtatsTexteBuf[kMaxEtatsUI][12] = {};
+			/// ② b les tampons hexa de la COULEUR DE BORDURE par état (11/09)
+			char mEtatsBordBuf[kMaxEtatsUI][12] = {};
+			/// ① (12/09) les tampons hexa de la TEINTE par état -- le multiplicateur
+			char mEtatsTeinteBuf[kMaxEtatsUI][12] = {};
 			/// Les tampons hexa des ARRETS : [remplissage][arret].
 			enum { kMaxArretsUI = 12 }; ///< au-dela, la liste le dit et n'edite pas
 			char mArretsBuf[kMaxFillsUI][kMaxArretsUI][12] = {};

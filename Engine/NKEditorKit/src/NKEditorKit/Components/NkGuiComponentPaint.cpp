@@ -82,8 +82,13 @@ namespace nkentseu {
 			if (const NkPaintTransform *m = TransformeActive()) {
 				// Sous transformee : pas de calage au pixel (il tordrait les glyphes),
 				// et LA meme matrice que les formes -- le texte tourne avec sa boite.
-				mCtx.DL().AddTextTransforme(face, mCtx.font->TexId(), {x, baseY}, draw, C(role), m->a,
-											m->b, m->c, m->d, m->e, m->f);
+				// ⚠️ SOUS PERSPECTIVE, CHAQUE GLYPHE PAR SES QUATRE COINS (palier B) :
+				//    `AddTextTransforme` ne prend que six coefficients, donc l'affine ne
+				//    peut pas faire converger une ligne. LA DECISION N'EST PAS ICI :
+				//    `NkTexteTransforme` est LA porte, commune aux trois peintres --
+				//    l'ecran, l'export et celui-ci. Trois copies d'une decision, ce
+				//    seraient deux copies qu'aucun temoin ne traverse.
+				NkTexteTransforme(mCtx.DL(), face, mCtx.font->TexId(), {x, baseY}, draw, C(role), *m);
 				return;
 			}
 			mCtx.DL().AddText(face, mCtx.font->TexId(), {Px(x), Px(baseY)}, draw, C(role));

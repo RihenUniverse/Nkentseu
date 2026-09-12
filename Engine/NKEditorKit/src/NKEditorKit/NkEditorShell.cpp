@@ -16,6 +16,7 @@
 //    un arbitrage : (1) aucune ligne de code de ce fichier n'utilise le symbole ;
 //    (2) cet en-tete tire NKCanvas (l.16-18), absent des includes du kit, et le
 //    compilateur le refuse : fatal error 'NKCanvas/Core/NkContextDesc.h' not found.
+#include "NKEditorKit/NkEditorSurface.h" // ④ LA porte unique pour peindre au-dessus
 #include "NKEditorKit/NkEditorTooltip.h"		// NkTooltip : infobulle des voyants du footer
 #include <cstdio>								// snprintf (indicateur de zoom barre d'etat)
 
@@ -850,10 +851,39 @@ namespace nkentseu {
 			const float32 railB = mRailCount[2] > 0 ? railW : 0.f;
 
 			// Barre de titre custom UNE ligne : logo + menus | infos | min/max/close.
+			// ══ ② TRACE — QUELLE PHASE POSE LE CURSEUR (`NK_TRACE_PIPETTE=1`) ═════
+			//
+			// 🔴 La trace precedente ne nommait QUE mes ecritures : les 18 autres sites
+			//    (NKGui) ecrivent sans se nommer, et je ne peux pas les instrumenter --
+			//    ils vivent dans le noyau. **On instrumente donc les PHASES de l'image**,
+			//    ici, ou elles se suivent toutes : la phase qui a change la valeur est
+			//    nommee, meme quand l'ecrivain, lui, se tait.
+			//
+			// ⚠️ On n'imprime QUE les changements, et seulement quand la valeur devient
+			//    un curseur de redimensionnement -- le symptome qu'on cherche. Le reste
+			//    serait du bruit qui cacherait la ligne utile.
+			const bool tracePhase = []() {
+				const char *v = getenv("NK_TRACE_PIPETTE");
+				return v && v[0] && v[0] != '0';
+			}();
+			nkgui::NkGuiCursor curseurPrec = mUI.wantCursor;
+			auto phase = [&](const char *nom) {
+				if (!tracePhase || mUI.wantCursor == curseurPrec)
+					return;
+				static const char *const kN[] = {"fleche", "texte", "main", "REDIM <->",
+											 "redim haut-bas"};
+				const int32 a = (int32)curseurPrec, b = (int32)mUI.wantCursor;
+				printf("[pipette] phase %-22s : %s -> %s\n", nom,
+						a >= 0 && a < 5 ? kN[a] : "?", b >= 0 && b < 5 ? kN[b] : "?");
+				curseurPrec = mUI.wantCursor;
+			};
+			phase("depart de l'image");
 			DrawTitleBar(ec, {logoW, 0.f, W - logoW, titleH});
+			phase("barre de titre");
 			// Barre d'outils Visual Studio (config/plateforme cible + Build/Run + emulateur).
 			if (mToolbarFn && !fullScreen)
 				DrawToolbar(ec, {logoW, titleH, W - logoW, toolbarH});
+			phase("barre d'outils");
 			// ⚠️ LE BLOC LOGO EST DESSINE APRES LES DEUX BANDES, et c est la seule
 			//    facon de le faire CHEVAUCHER : il est plus haut que la premiere
 			//    bande, donc il ne peut pas vivre dedans.
@@ -941,7 +971,22 @@ namespace nkentseu {
 				if (railB > 0.f)
 					DrawRail(2, {actWL, bodyTop + bodyH - railW, W - actWL - actWR, railW},
 							 false);
+				// ⚠️ QUI RECOIT LE CLIC ? `activeId` avant / apres : si le DockSpace l'a
+				//    pris, un separateur s'est SAISI du geste -- et ce n'est plus une
+				//    question de curseur. On ne l'imprime que sur un clic.
+				const nkgui::NkGuiId actifAvantDock = mUI.activeId;
 				DockSpace(mUI, "##EditorDock", corps);
+			phase("DockSpace (separateurs)");
+				{
+					static const bool traceDock = []() {
+						const char *v = getenv("NK_TRACE_PIPETTE");
+						return v && v[0] && v[0] != '0';
+					}();
+					if (traceDock && mUI.input.mouseClicked[0] && mUI.activeId != actifAvantDock)
+						printf("[pipette] >>> LE CLIC EST PRIS PAR LE DOCKSPACE (separateur) : "
+							   "actif %u -> %u\n",
+							   (unsigned)actifAvantDock, (unsigned)mUI.activeId);
+				}
 				// Seul le panneau CENTRAL masque la barre d'onglets de sa feuille quand il
 				// est seul (il affiche ses propres onglets de fichiers) ; Terminal/Sortie/
 				// sidebars gardent TOUJOURS leurs onglets, même seuls (façon VSCode).
@@ -955,10 +1000,12 @@ namespace nkentseu {
 													|| mPanels[i]->DefaultSide() == NkEditorDockSide::NK_CENTER);
 				BootstrapDocking();
 				DrawPanels(ec);
+			phase("PANNEAUX");
 				// ⚠️ APRES LES PANNEAUX : le tiroir passe PAR-DESSUS le dock. Pose
 				//    avant, il finirait derriere, et on croirait qu il ne s ouvre
 				//    pas.
 				DrawRailDrawers(ec, corps);
+			phase("tiroirs de rail");
 				if (mStatusBarFn) {
 					// Barre d'etat « a sa maniere » (SetStatusBarFn, patron SetMenuBar) :
 					// l'app dessine TOUTE la bande — fond, voyants, textes, zoom compris.
@@ -977,17 +1024,22 @@ namespace nkentseu {
 				}
 			}
 			HandleEdgeResize(W, H); // bords de redimensionnement (fenetre sans bordure)
+			phase("bords de fenetre");
 
 			if (modal)
 				mUI.input = savedInput; // restaure pour le popup
 			mPopupMasked = false;
 			DrawContextMenu(); // menu contextuel shell-level (au-dessus des panneaux)
+			phase("menu contextuel");
 			// (DrawFilePicker retiré : add-folder réutilise LE picker de l'app, Dialogs.h.
 			//  Le picker fichier/dossier UNIFIÉ sera extrait dans NKEditorKit — phase 2.)
 			DrawCommandPalette(ec);
+			phase("palette de commandes");
 			DrawPreferences(ec); // fenetre Preferences (menu dedie)
+			phase("preferences");
 			if (mOverlayFn)
 				mOverlayFn(ec, mOverlayUser); // dialogues modaux de l'app (creation/proprietes)
+			phase("OVERLAY (pipette)");
 
 			// Bordure de NOTRE fenetre (l'OS n'en dessine plus) — sauf si maximisee.
 			if (!mWindow.IsMaximized())
@@ -995,6 +1047,25 @@ namespace nkentseu {
 
 			mUI.EndFrame();
 
+			// ══ TRACE — `NK_TRACE_PIPETTE=1` : LE DERNIER MOT SUR LE CURSEUR ═════
+			// ⚠️ C'est ICI que l'OS apprend quel curseur afficher : tout ce qui a ete
+			//    ecrit avant, par n'importe quel site, aboutit a cette ligne. Une trace
+			//    posee plus haut dirait ce qu'on a VOULU ; celle-ci dit ce qui EST.
+			//    On n'imprime que les CHANGEMENTS -- sinon soixante lignes par seconde.
+			{
+				static const bool traceCurseur = []() {
+					const char *v = getenv("NK_TRACE_PIPETTE");
+					return v && v[0] && v[0] != '0';
+				}();
+				static int32 dernier = -1;
+				if (traceCurseur && (int32)mUI.wantCursor != dernier) {
+					dernier = (int32)mUI.wantCursor;
+					static const char *const kNoms[] = {"fleche", "texte", "main", "REDIM <->",
+													   "redim haut-bas"};
+					printf("[pipette] >>> L'OS RECOIT : %s\n",
+						   dernier >= 0 && dernier < 5 ? kNoms[dernier] : "?");
+				}
+			}
 			mWindow.SetCursor(MapCursor(mUI.wantCursor));
 
 			mRenderer->BeginFrame();
@@ -1190,6 +1261,14 @@ namespace nkentseu {
 				//    normale, il finirait derriere le dock et on croirait qu il ne
 				//    s ouvre pas.
 				PushOverlay(mUI);
+				// ④ (06/09) LE TIROIR PEINT UN VOILE ET NE RECLAMAIT RIEN. Le voile
+				//    disait « ce qui est dessous attend » ; l'entree, elle, passait
+				//    quand meme. On declare `corps` -- la zone que le voile couvre --
+				//    et non le seul rectangle du tiroir : c'est TOUT le corps qui
+				//    attend.
+				// ⚠️ PAS DE CLAVIER : le tiroir accueille un PANNEAU de l'hote, qui a
+				//    ses propres champs ; lui prendre le clavier ici les couperait.
+				NkSurfaceFlottante _tiroir(mUI, corps, NkCouche::Menu, NkPriseClavier::Non);
 				// Le voile : il dit « ce qui est dessous attend ». Sans lui, le
 				// tiroir se lit comme un panneau de plus, pas comme un tiroir.
 				mUI.dlOverlay.AddRectFilled(corps, mUI.theme.scrim);
@@ -1838,8 +1917,57 @@ namespace nkentseu {
 				return;
 			const float32 b = mUI.S(7.f);
 			const NkVec2 m = mUI.input.mousePos; // coords CLIENT (NCHITTEST=HTCLIENT)
-			const bool L = m.x <= b, R = m.x >= W - b, T = m.y <= b, Bm = m.y >= H - b;
-			const int32 edge = (L ? 1 : 0) | (R ? 2 : 0) | (T ? 4 : 0) | (Bm ? 8 : 0);
+			// ① (07/09) LE BORD NE SE SAISIT PAS A TRAVERS UNE FLOTTANTE. Voir
+			//   `NkBordSaisissable` : le selecteur de couleur, rabattu a 2 px du bord
+			//   droit, tombait dans cette bande -- curseur ↔ mensonger, et un clic y
+			//   aurait demarre un redimensionnement au lieu de choisir une couleur.
+			// ⚠️ UN SEUL VERDICT, POUR LE CURSEUR **ET** POUR LE CLIC. La garde d'hier
+			//    ne regardait que les flottantes ; celle-ci commence par la question qui
+			//    manquait -- **le pointeur est-il seulement DANS la fenetre ?** Quand il
+			//    est sur une flottante, la coquille masque l'entree a
+			//    (-100000, -100000) et cette fonction s'execute AVANT la restauration :
+			//    la position masquee etait lue comme le coin haut-gauche.
+			const int32 masqueBords =
+				NkBordsSousLePointeur(m, W, H, b, mUI.popupRects, mUI.popupDepth);
+			const bool saisissable = masqueBords != 0;
+			// ══ TRACE (`NK_TRACE_PIPETTE=1`) — POURQUOI LA GARDE MORD OU NE MORD PAS
+			//
+			// 🔴 La trace de Rodolf montre << phase bords de fenetre : fleche -> REDIM >>
+			//    ALORS QUE CETTE GARDE EXISTE. **Une garde qui existe et ne mord pas est
+			//    plus dangereuse qu'une garde absente : on la croit posee.** On ne la
+			//    reecrit donc pas -- on lui fait DIRE ce qu'elle voit : la souris, la
+			//    bande, le nombre de flottantes ouvertes et le rectangle de la premiere.
+			//    Le trou est soit << aucune flottante enregistree a cet instant >>, soit
+			//    << la souris n'est pas DEDANS >> -- et ces deux-la n'ont pas le meme
+			//    remede.
+			{
+				static const bool traceBord = []() {
+					const char *v = getenv("NK_TRACE_PIPETTE");
+					return v && v[0] && v[0] != '0';
+				}();
+				static int32 dernierEtat = -1;
+				const int32 etat = (saisissable ? 1 : 0) | (mUI.popupDepth > 0 ? 2 : 0);
+				if (traceBord && etat != dernierEtat) {
+					dernierEtat = etat;
+					const NkRect &p0 = mUI.popupRects[0];
+					printf("[pipette] BORDS : souris (%.0f, %.0f), bande %.0f px, "
+						   "flottantes=%d, popup0 = (%.0f, %.0f) %.0fx%.0f -> saisissable=%d\n",
+						   (double)m.x, (double)m.y, (double)b, mUI.popupDepth, (double)p0.x,
+						   (double)p0.y, (double)p0.w, (double)p0.h, saisissable ? 1 : 0);
+				}
+				// ⚠️ ET LE DESTINATAIRE DU CLIC, PAS SEULEMENT L'AFFICHAGE : c'est lui qui
+				//    compte. Un curseur laid se supporte ; un clic detourne fait
+				//    redimensionner la fenetre au lieu de choisir une couleur.
+				if (traceBord && saisissable && mUI.input.mouseClicked[0])
+					printf("[pipette] >>> LE CLIC PART EN REDIMENSIONNEMENT DE FENETRE "
+						   "(souris %.0f, %.0f)\n",
+						   (double)m.x, (double)m.y);
+			}
+			if (!saisissable)
+				return;
+			// ⚠️ LES BORDS VIENNENT DE LA PORTE, PLUS D'ICI : c'est elle qui a repondu
+			//    << aucun >> pour une position hors fenetre ou sous une flottante.
+			const int32 edge = masqueBords;
 			if (!edge)
 				return;
 
@@ -1853,7 +1981,11 @@ namespace nkentseu {
 
 			// Clic sur un bord -> HAND-OFF NATIF a l'OS (resize fluide + aero-snap), sans
 			// contournement : chaque backend implemente NkWindow::BeginResize nativement.
-			if (mUI.input.mouseClicked[0]) {
+			// ⚠️ ET LE CLIC PASSE PAR LE MEME VERDICT (`NkBordPrendLeClic`) : un bord
+			//    qui ne s'affiche pas ne doit pas se saisir non plus. *Deux
+			//    consequences, une decision* -- c'est ce qui empeche d'en corriger une
+			//    et de croire l'autre faite.
+			if (NkBordPrendLeClic(masqueBords, mUI.input.mouseClicked[0])) {
 				NkWindow::NkResizeEdge e = NkWindow::NkResizeEdge::Left;
 				switch (edge) {
 					case 1:
@@ -2509,6 +2641,13 @@ namespace nkentseu {
 			if (y < 2.f)
 				y = 2.f;
 			const NkRect box = {x, y, w, h};
+			// ④ (06/09) CE MENU-CI NE RECLAMAIT RIEN. Il s'en remettait a `mCtxOpen`,
+			//    teste dans la condition `modal` de la boucle d'image, qui neutralise
+			//    l'entree des PANNEAUX -- mais ne declare rien au routeur d'occlusion.
+			//    Un widget natif dessine dans la couche overlay restait donc atteignable
+			//    sous le menu. Et surtout : le kit avait DEUX menus contextuels dont un
+			//    seul reclamait, ce que le recensement du 06/09 a mis au jour.
+			NkSurfaceFlottante _menu(mUI, box, NkCouche::Menu, NkPriseClavier::Oui);
 			dl.AddRectFilled({box.x + 2.f, box.y + 3.f, box.w, box.h}, NkColor{0, 0, 0, 60}, 6.f); // ombre
 			dl.AddRectFilled(box, mUI.theme.panel, 6.f);
 			dl.AddRect(box, mUI.theme.border, 1.f);
@@ -2817,8 +2956,11 @@ void NkEditorShell::MaximizeWindow() noexcept {
 			// Mesure du 2026-08-17 (Nogee, --occlusion-test), temoin a l'appui :
 			// panneau ancre -> ItemHoverable = 1 palette FERMEE **et** 1 palette
 			// OUVERTE, donc le clic traversait.
-			mUI.PushOcclusion({0.f, 0.f, W, H}, 50);
-			NkGuiContext::NkInputLayerScope _paletteLayer(mUI, 50);
+			// ④ (06/09) ET LE TROISIEME GESTE MANQUAIT : le clavier. La palette a un
+			//    champ de recherche et se pilote aux fleches -- sans reserve, la toile
+			//    de l'hote voyait les MEMES touches. Les trois passent par une porte.
+			NkSurfaceFlottante _palette(mUI, {0.f, 0.f, W, H}, NkCouche::Menu,
+									   NkPriseClavier::Oui);
 
 			const float32 pw = 480.f, rowH = mUI.ItemHeight() + 4.f, headH = mUI.ItemHeight() + 12.f;
 			const int32 count = mNumCommands;
@@ -3097,6 +3239,13 @@ void NkEditorShell::MaximizeWindow() noexcept {
 			auto hit = [&](const NkRect &r) { return NkGuiRectContains(r, mp); };
 
 			const float32 pw = 620.f, ph = 505.f, px = (W - pw) * 0.5f, py = (H - ph) * 0.5f;
+			// ④ (06/09) LES PREFERENCES SONT UNE MODALE, et elles ne se declaraient
+			//    pas. Elles tenaient par `mShowPrefs` dans la condition `modal` de la
+			//    boucle -- meme demi-protection que le menu contextuel ci-dessus, meme
+			//    trou : rien au routeur d'occlusion. Le voile plein ecran est declare,
+			//    et non la seule fenetre : rien derriere ne doit repondre.
+			NkSurfaceFlottante _prefs(mUI, {0.f, 0.f, W, H}, NkCouche::Modale,
+									  NkPriseClavier::Oui);
 			dl.AddRectFilled({0.f, 0.f, W, H}, kBackdrop);
 			// Clic hors fenetre -> ferme (sauf la frame d'ouverture : le clic du menu
 			// est lui-meme hors du popup centre, il fermerait aussitot).

@@ -97,7 +97,38 @@ namespace nkuidesign {
 		using nkentseu::int32;
 		using nkentseu::uint32;
 
-		/// Le parent place-t-il ses enfants LIBREMENT (`free` / `anchor`) ?
+		/// Le parent LIT-IL `posX`/`posY` de ses enfants ? **`free` et `anchor`.**
+		///
+		/// 🔴 `anchor` EST REVENU LE 07/09, ET LA PHRASE D'HIER EST RETIREE AVEC.
+		///    Hier, ce fichier refusait `anchor` parce que le solveur ignorait
+		///    `posX`/`posY` sous ancrage -- le geste comptait alors un deplacement qui
+		///    n'avait pas lieu, et l'arbitrage etait juste : *quand deux endroits se
+		///    contredisent, celui qui S'EXECUTE a raison.* J'avais ecrit ici que
+		///    rouvrir la question serait « un chantier de solveur, pas un branchement
+		///    de champ ». **Rodolf a tranche : ce sera fait maintenant** -- et cette
+		///    phrase serait devenue a son tour le mensonge qu'elle reparait, donc elle
+		///    part dans le meme commit que le correctif du solveur.
+		///
+		/// ⚠️ CE QUI A CHANGE, ET C'EST LE SOLVEUR, PAS CE FICHIER : la branche
+		///    `Anchor` de `Layout.h` AJOUTE desormais `posX`/`posY` a la position
+		///    calculee depuis les bords. Nomme correctement, ce decalage est une
+		///    MARGE. Le geste d'alignement fonctionne donc sous ancrage exactement
+		///    comme sous toile, sans une ligne de plus ici : il fait `posX += dx` sur
+		///    des boites calculees, et la relation reste a pente 1.
+		///
+		/// ⚠️ LE TEMOIN 93b N'A PAS BOUGE D'UNE LIGNE, et c'est le point : il porte
+		///    une RELATION -- « autant de boites deplacees que de nœuds annonces
+		///    bouges » -- et non un compte de refus. Il etait vert hier avec 0 et 0 ;
+		///    il est vert aujourd'hui avec 1 et 1. *Un temoin ecrit comme une relation
+		///    survit au renversement de ce qu'il mesure.*
+		///
+		/// ⚠️ RESTE VRAI, ET CE N'EST PAS LA MEME CHOSE : un axe ETIRE entre deux
+		///    bords opposes n'a plus de liberte, donc l'aligner n'a pas de sens. Le
+		///    solveur n'y applique aucun decalage ; le geste, lui, ne le sait pas et
+		///    comptera un « bouge » sans effet sur cet axe-la. **Limite connue, dite
+		///    ici, non corrigee** : la corriger demanderait au geste de lire les bords
+		///    d'ancrage, c'est-a-dire de savoir ce que le solveur sait -- et personne
+		///    n'a encore rencontre le cas.
 		inline bool ParentPlaceLibrement(const NkUIDocument &doc, int32 i) {
 			if (!doc.IsValidIndex(i))
 				return false;

@@ -60,6 +60,11 @@ namespace nkuidesign {
 			NkExportFormat format = NkExportFormat::PNG;
 			nkentseu::float32 echelle = 1.f; ///< 1, 2, 3 (bornee a 0,25..8)
 			bool selection = false;			 ///< faux = la page ; vrai = les noeuds selectionnes
+			/// ② (07/09) TOUT LE CANVAS : les elements exportables de la racine, dans
+			/// leur boite englobante. Prime sur `selection` quand elle est fausse ; sans
+			/// lui, un export sans selection retombait sur LA PREMIERE page, ce qui est
+			/// arbitraire des que le document en porte plusieurs.
+			bool tout = false;
 			nkentseu::int32 page = -1;		 ///< -1 = la page de la selection, sinon la premiere
 			bool embarquer = false;			 ///< SVG : les images en data: base64 au lieu d'un chemin relatif
 			bool policeExacte = true;		 ///< faux = l'atlas du costume etire (la mutation de la sonde)
@@ -68,6 +73,17 @@ namespace nkuidesign {
 			/// ⚠️ Sans effet a un seul objet : les deux donnent le meme fichier, et le dialogue
 			///    grise donc le choix plutot que de laisser croire a une difference.
 			bool unFichierParObjet = false;
+			/// ③ (11/09, palier C) SVG ET LA PERSPECTIVE -- les DEUX modes, tranches par
+			/// Rodolf (« les deux, au choix dans le dialogue ») :
+			///   faux (defaut) = GARDER ORTHOGONAL : formes et textes restent editables,
+			///     `data-projection` et la focale sont poses sur le groupe, et le rapport
+			///     le dit. Ce mode ne ment sur rien.
+			///   vrai = APLATIR EN POLYGONE : le contour exact, au prix de la nature du
+			///     nœud (un `rect` devient un `polygon`). ⚠️ LE TEXTE N'A PAS DE FORME
+			///     PROJETABLE sans contours de glyphes : il s'ecrit DROIT, et chaque texte
+			///     concerne est NOMME dans le rapport. *Un SVG qui parait juste sans
+			///     l'etre est ce qu'on refuse -- alors on le dit.*
+			bool aplatirPerspective = false;
 	};
 
 	struct NkExportResultat {
@@ -172,16 +188,15 @@ namespace nkuidesign {
 						mCtx.DL().AddText(f->Face(), f->TexId(), {tx + (p ? eGras : 0.f), yBase}, s, col);
 					return;
 				}
-				// la matrice sans son echelle (le glyphe est deja a la bonne taille) ; la
-				// translation amene la ligne de base la ou la matrice complete l'aurait mise
-				const float32 ta = m->a / k, tb = m->b / k, tc = m->c / k, td = m->d / k;
-				for (nkentseu::int32 p = 0; p < passes; ++p) {
-					const float32 ox = tx + (p ? eGras / k : 0.f);
-					const float32 mox = m->a * ox + m->c * yBase + m->e;
-					const float32 moy = m->b * ox + m->d * yBase + m->f;
-					mCtx.DL().AddTextTransforme(f->Face(), f->TexId(), {ox, yBase}, s, col, ta, tb, tc, td,
-												mox - (ta * ox + tc * yBase), moy - (tb * ox + td * yBase));
-				}
+				// LA PORTE DU KIT DECIDE (palier B) : perspective -> chaque glyphe par ses
+				// quatre coins, donc le PNG exporte la MEME silhouette que l'ecran, texte
+				// compris ; affine -> la matrice sans son echelle (le glyphe est deja a la
+				// bonne taille), la translation amenant la ligne de base la ou la matrice
+				// complete l'aurait mise. Une seule decision, pour les trois peintres.
+				for (nkentseu::int32 p = 0; p < passes; ++p)
+					nkentseu::editorkit::NkTexteTransforme(mCtx.DL(), f->Face(), f->TexId(),
+														   {tx + (p ? eGras / k : 0.f), yBase}, s, col, *m,
+														   1.f / k);
 			}
 
 		private:
@@ -267,6 +282,54 @@ namespace nkuidesign {
 		return n;
 	}
 	/// La page par defaut : celle de la selection, sinon la premiere sous la racine.
+	// ── ② (07/09) CE QUE LE CANVAS CONTIENT D'EXPORTABLE ────────────────────
+	//
+	// Rodolf : « rien n'est selectionne mais le panneau d'export s'ouvre. Ce n'est
+	// pas normal -- sauf si ca liste tous les elements exportables du canvas
+	// infini. »
+	//
+	// 🔴 CE QUI COMPTE COMME EXPORTABLE, ET LA DEFINITION EST MESURABLE, PAS
+	//    ESTHETIQUE. Un element du canvas est exportable s'il remplit LES TROIS :
+	//      1. c'est un ENFANT DIRECT DE LA RACINE -- une page, ou une forme posee
+	//         sur le canvas. Descendre plus bas listerait les enfants de chaque
+	//         page, c'est-a-dire le document entier : l'utilisateur veut choisir
+	//         entre ses PAGES, pas entre ses deux cents boutons ;
+	//      2. la disposition lui donne une BOITE NON VIDE -- exporter un objet de
+	//         zero pixel produit un fichier vide, et un fichier vide est un echec
+	//         qui a l'air d'une reussite ;
+	//      3. il n'est PAS MASQUE -- le peintre s'arrete avant lui (`NkDrawDocument`
+	//         rend la main sur `masque`), donc son image serait vide elle aussi.
+	//
+	// ⚠️ ELLE EST ICI, PAS DANS LE DIALOGUE. Le dialogue AFFICHE un compte ; c'est
+	//    l'export qui sait ce qu'il sait exporter. Ecrite la-bas, elle aurait
+	//    diverge de ce que `NkZoneExport` accepte reellement -- et le panneau
+	//    aurait annonce des elements que l'export aurait refuses.
+	inline nkentseu::uint32 NkElementsExportables(const DesignState &st, const NkLayoutResult &lay,
+												  NkVector<nkentseu::int32> *out) {
+		using nkentseu::int32;
+		using nkentseu::uint32;
+		if (out)
+			out->Clear();
+		if (st.doc.nodes.Empty())
+			return 0u;
+		const NkVector<int32> &racines = st.doc.nodes[0].children;
+		uint32 n = 0u;
+		for (uint32 i = 0; i < (uint32)racines.Size(); ++i) {
+			const int32 k = racines[i];
+			if (!st.doc.IsValidIndex(k) || k <= 0 || !lay.Has(k))
+				continue;
+			if (st.doc.nodes[(uint32)k].masque)
+				continue;
+			const NkPaintRect b = lay.At(k);
+			if (b.w <= 0.f || b.h <= 0.f)
+				continue;
+			if (out)
+				out->PushBack(k);
+			++n;
+		}
+		return n;
+	}
+
 	inline nkentseu::int32 NkPageParDefaut(const DesignState &st) {
 		const nkentseu::int32 p = NkPageDe(st.doc, st.selected);
 		if (p > 0)
@@ -308,6 +371,38 @@ namespace nkuidesign {
 							 nkentseu::usize cap) {
 		using nkentseu::float32;
 		noeuds.Clear();
+		// ② (07/09) TOUT LE CANVAS -- teste AVANT `selection`, parce qu'il n'est pose
+		//    que lorsqu'il n'y a rien de selectionne. La zone est l'union des boites,
+		//    marge des effets comprise, comme pour une selection multiple.
+		// ⚠️ LA LISTE VIENT DE `NkElementsExportables`, la MEME que le panneau
+		//    compte : deux definitions de « exportable » auraient laisse le panneau
+		//    annoncer des elements que l'export aurait refuses.
+		if (o.tout) {
+			NkElementsExportables(st, lay, &noeuds);
+			if (noeuds.Empty()) {
+				if (pourquoi && cap)
+					snprintf(pourquoi, cap, "le canvas ne contient aucun Ã©lÃ©ment exportable");
+				return false;
+			}
+			bool premier = true;
+			for (nkentseu::uint32 i = 0; i < (nkentseu::uint32)noeuds.Size(); ++i) {
+				const nkentseu::int32 k = noeuds[i];
+				const NkPaintRect b = lay.At(k);
+				const float32 m = NkMargeAutour(st.doc.nodes[(nkentseu::uint32)k]);
+				const float32 x0 = b.x - m, y0 = b.y - m, x1 = b.x + b.w + m, y1 = b.y + b.h + m;
+				if (premier) {
+					zone.x = x0; zone.y = y0; zone.w = x1 - x0; zone.h = y1 - y0;
+					premier = false;
+				} else {
+					const float32 zx1 = zone.x + zone.w, zy1 = zone.y + zone.h;
+					if (x0 < zone.x) zone.x = x0;
+					if (y0 < zone.y) zone.y = y0;
+					zone.w = (x1 > zx1 ? x1 : zx1) - zone.x;
+					zone.h = (y1 > zy1 ? y1 : zy1) - zone.y;
+				}
+			}
+			return true;
+		}
 		if (o.selection) {
 			NkVector<nkentseu::int32> brut;
 			if (!st.sel.Empty()) {
@@ -523,6 +618,18 @@ namespace nkuidesign {
 				return n.component.Data();
 			return "objet";
 		};
+		// ① (07/09) LE NOM SUIT L'ETENDUE. Il ne la suivait pas : sur « tout le
+		//    canvas » il proposait le nom de LA PREMIERE PAGE (« Connexion » sur la
+		//    capture de Rodolf), donc un fichier nomme d'apres une page pour un
+		//    export de trois artboards.
+		// 🔴 C'EST LE DEFAUT D'HIER DEPLACE D'UN CRAN : l'etendue est devenue juste,
+		//    ce qui la DECRIT ne l'etait pas. Quand on change ce qu'une chose fait,
+		//    tout ce qui la nomme doit bouger dans le meme lot -- sinon le mensonge
+		//    change simplement de place.
+		if (o.tout) {
+			NkNomFichierAssaini("canvas", out, cap);
+			return;
+		}
 		if (!o.selection) {
 			const int32 page = o.page > 0 && st.doc.IsValidIndex(o.page) ? o.page : NkPageParDefaut(st);
 			NkNomFichierAssaini(page > 0 ? nomDe(page) : "document", out, cap);

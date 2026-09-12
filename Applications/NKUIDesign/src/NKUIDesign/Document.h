@@ -442,11 +442,88 @@ namespace nkuidesign {
 			NkString etat;			///< « Hover », « Pressed »... (table fermee)
 			NkString fond;			///< hexa, vide = HERITE de l'etat Normal
 			float32 radius = -1.f;	///< < 0 = HERITE
-			float32 opacite = -1.f; ///< < 0 = HERITE
+			/// L'OPACITE DU NŒUD (0..100), < 0 = HERITE. 🔴 SENS TRANCHE PAR RODOLF LE
+			///   11/09 : c'est celle de CALQUE, qui s'applique aux enfants -- un bouton
+			///   Disabled a 50 % s'estompe EN ENTIER. Le lot 652632e6e l'avait branchee
+			///   sur l'opacite du FOND ; aucun document n'en portait, la cle
+			///   `apparence_<Etat>` garde sa forme (troisieme jeton), son sens est dit.
+			float32 opacite = -1.f;
+			// ── LE FORMAT D'ETAT EST UNE TABLE FERMEE, ET TROIS DOUTEUX EN SONT EXCLUS ──
+			//    PAR DECISION (Rodolf, 11/09 ; applique et mesure le 12/09, essai 162).
+			//
+			// 🔴 LE RECENSEMENT Q143 A LAISSE TROIS PROPRIETES « DOUTEUSES » -- ni oui, ni
+			//    non par nature -- pour que Rodolf tranche :
+			//      1. la TYPOGRAPHIE ENTIERE par etat (police, corps, graisse -- pas la
+			//         couleur du texte, qui, elle, a un sens et est ici) ;
+			//      2. la PILE DE REMPLISSAGES par etat (la liste entiere -- pas le fond ni
+			//         la teinte, qui sont ici) ;
+			//      3. les EFFETS AUTRES QUE L'OMBRE par etat (l'ombre, elle, est ici).
+			//    Rodolf a tranche : **caches**. Ils n'ont donc AUCUN champ dans ce bloc,
+			//    AUCUN jeton au fichier, AUCUNE rangee dans ETATS.
+			//
+			// ⚠️ CACHES PAR CONSTRUCTION, PAS PAR VIGILANCE. Jusqu'ici ils l'etaient par
+			//    ABSENCE -- personne n'avait ecrit de rangee -- et la regle du panneau
+			//    raisonne par SECTION (`NkProprieteAUnSensParEtat`) : TYPOGRAPHIE,
+			//    REMPLISSAGES et EFFETS y sont autorisees, donc une rangee « police par
+			//    etat » ajoutee demain n'aurait ete arretee par RIEN. L'essai 162 garde
+			//    desormais la fermeture elle-meme : l'ecrivain n'emet que les jetons de
+			//    ce bloc, le lecteur n'en pose pas d'autre, le panneau n'ouvre pas de
+			//    rangee au-dela -- et l'essai 153 garde les pastilles (neuf familles,
+			//    aucune inconnue). *Ajouter un douteux ici sans rouvrir la decision fera
+			//    rougir -- et c'est le but.*
+			// ── CE QU'UN ETAT PEUT AUSSI VOULOIR DIRE (11/09, recensement Q143) ──
+			// Sur quinze sections, QUATRE ont un sens par etat : la bordure, l'ombre,
+			// la couleur du texte, l'opacite du nœud. Les quatre sont ici desormais :
+			// l'ombre et la couleur du texte (lot ①), la bordure (lot ② b, par sa
+			// porte `BorduresEffectives`), l'opacite du nœud (lot ③, ci-dessus).
+			// ⚠️ PAR CHAMP, PAS PAR BLOC : un etat qui ne pose que l'ombre laisse tout
+			//    le reste a la base. C'est ce qui rend « Hover = un peu plus d'ombre »
+			//    exprimable sans recopier le nœud entier.
+			NkString couleurTexte;		///< hexa, vide = HERITE
+			float32 ombreFlou = -1.f;	///< px, < 0 = HERITE (le flou de CHAQUE ombre)
+			float32 ombreOpacite = -1.f; ///< 0..100, < 0 = HERITE
+			bool OmbrePosee() const {
+				return ombreFlou >= 0.f || ombreOpacite >= 0.f;
+			}
+			/// LA BORDURE PAR ETAT (11/09, lot ② b) -- par champ, comme l'ombre : la
+			/// couleur et l'epaisseur de l'etat remplacent celles de CHAQUE bordure
+			/// qui se peint (par la porte `BorduresEffectives`) ; position, jointure,
+			/// cotes restent ceux du noeud. Epaisseur 0 posee = AUCUNE bordure dans
+			/// cet etat (un bouton Pressed qui perd son trait). < 0 / vide = herite.
+			NkString bordureCouleur;		 ///< hexa, vide = HERITE
+			float32 bordureEpaisseur = -1.f; ///< px, < 0 = HERITE, 0 = retiree
+			bool BordurePosee() const {
+				return !bordureCouleur.Empty() || bordureEpaisseur >= 0.f;
+			}
 
 			/// Vrai si ce bloc ne pose RIEN — il n'a alors pas a etre ecrit.
+			/// ── LA TEINTE DE L'ETAT (12/09) : UN MULTIPLICATEUR, PAS UN REMPLACEMENT ──
+			///
+			/// 🔴 MESURE QUI A MOTIVE CE CHAMP : un etat qui pose un `fond` sur un nœud dont
+			///    le remplissage est un DEGRADE ne change RIEN -- 0 commande sur 30. Deux
+			///    verrous : `FondEffectif()` ne rend que la premiere couleur UNIE (donc
+			///    `(nul)` pour un degrade nu, et la comparaison `duDessus` est fausse), et la
+			///    branche `peindreDegrade` fait `continue` AVANT tout usage de la couleur
+			///    calculee. L'etat etait perdu **sans un mot**.
+			///
+			/// LA TEINTE NE PASSE PAS PAR LA : elle multiplie A L'EMISSION, donc elle traverse
+			/// ce qu'elle ne comprend pas -- un degrade, une image, une pile -- sans avoir a le
+			/// connaitre. *Elle ne peut pas casser ce qu'elle ne connait pas.* C'est le Color
+			/// Tint d'Unity, et c'est ce que Rodolf a demande : **le degrade SURVIT a tous les
+			/// etats, seule la luminance bouge** (une teinte grise = « le meme bouton, en plus
+			/// sombre », sans rien redefinir).
+			///
+			/// ⚠️ L'ORDRE EST FIXE, ET IL SE DECIDE UNE FOIS : **on remplace d'abord, on
+			///    multiplie ensuite.** L'etat choisit QUEL fond est peint (le degrade d'origine
+			///    ou l'aplat de `fond`), la teinte multiplie CE QUI A ETE CHOISI. Dans l'autre
+			///    sens, un remplacement ecraserait la teinte et les deux reglages se
+			///    contrediraient.
+			///
+			/// Vide = AUCUNE teinte (identite). Hexa littéral ; jeton nomme ` teinte=`.
+			NkString teinte;
 			bool Vide() const {
-				return fond.Empty() && radius < 0.f && opacite < 0.f;
+				return fond.Empty() && radius < 0.f && opacite < 0.f && couleurTexte.Empty()
+					   && !OmbrePosee() && !BordurePosee() && teinte.Empty();
 			}
 	};
 
@@ -947,6 +1024,25 @@ namespace nkuidesign {
 			/// ⚠️ UNE LISTE DONT TOUT EST MASQUÉ REND nullptr, ELLE NE RETOMBE PAS
 			///    SUR `fond` : masquer le dernier œil doit se VOIR. Retomber sur
 			///    la clé simple rendrait l'œil sans effet sur un nœud matérialisé.
+			/// L'INDICE DU REMPLISSAGE DU DESSUS (12/09) -- celui que l'etat surcharge.
+			///
+			/// 🔴 CE QUE CETTE PORTE REFERME. Le peintre decidait par une comparaison de
+			///    POINTEURS : `n.FondEffectif() == f.couleur.Data()`. Or `FondEffectif()` ne
+			///    rend que la premiere couleur UNIE : sur un degrade nu il rend `nullptr`, la
+			///    comparaison est donc FAUSSE pour tous les remplissages, et `NkFondVu` n'etait
+			///    JAMAIS consulte. Mesure : **0 commande changee sur 30** -- le fond d'etat
+			///    etait perdu sans un mot.
+			///
+			/// ⚠️ ELLE SUIT LE MEME PARCOURS QUE `FondEffectif()` juste en dessous -- du
+			///    dessus vers le bas, premier VISIBLE -- mais elle rend un INDICE, pas une
+			///    couleur : c'est ce qui lui permet de designer un degrade, que `FondEffectif()`
+			///    ne sait pas nommer. -1 = aucun remplissage visible.
+			nkentseu::int32 IndexDessusVisible() const {
+				for (uint32 i = (uint32)fills.Size(); i > 0; --i)
+					if (fills[i - 1].visible)
+						return (nkentseu::int32)(i - 1);
+				return -1;
+			}
 			const char *FondEffectif() const {
 				for (uint32 i = (uint32)fills.Size(); i > 0; --i) {
 					const NkRemplissage &f = fills[i - 1];
@@ -957,18 +1053,48 @@ namespace nkuidesign {
 					return nullptr;
 				return fill.Empty() ? nullptr : fill.Data();
 			}
-			/// LA BORDURE QUI SE PEINT — meme contrat que `FondEffectif` : le
-			/// DERNIER visible gagne, une liste toute masquee ne peint RIEN, et
-			/// sans liste c'est la cle simple qui parle.
-			const NkBordure *BordureEffective() const {
-				for (uint32 i = (uint32)borders.Size(); i > 0; --i) {
-					const NkBordure &b = borders[i - 1];
-					if (b.visible && !b.couleur.Empty())
-						return &b;
+			/// LES BORDURES QUI SE PEIGNENT -- LA PORTE UNIQUE (11/09, Q143 -> Q145).
+			///
+			/// 🔴 AVANT ELLE, QUATRE LECTEURS DECIDAIENT CHACUN : les deux boucles du
+			///    rectangle (anneau d'un trace edite, cadre), la ligne, et l'export SVG
+			///    -- trois recopiaient la cle historique `borderColor` en une bordure,
+			///    la ligne l'ignorait. Et `BordureEffective()` (le DERNIER visible)
+			///    existait ici SANS AUCUN APPELANT : une porte declaree que personne
+			///    n'empruntait. Un etat de bordure branche sur l'un des quatre aurait
+			///    fui sur les trois autres. La voici, et les quatre passent par elle.
+			///
+			/// LE CONTRAT : TOUTES les bordures qui se peignent, dans l'ordre de la
+			/// liste (le dernier se peint par-dessus) ; une bordure masquee, sans
+			/// couleur ou d'epaisseur nulle n'y est pas ; une liste toute masquee ne
+			/// rend RIEN (masquer le dernier oeil doit se voir) ; SANS liste, la cle
+			/// simple `borderColor` devient UNE bordure interieure d'epaisseur
+			/// `borderW` (ou 1) -- le geste historique, ecrit une fois.
+			/// ⚠️ DES POINTEURS, PAS DES COPIES : le peintre passe ici a chaque image.
+			///    `legacy` est le logement de la bordure synthetisee, fourni par
+			///    l'appelant -- la porte ne possede rien.
+			/// Rend le nombre ecrit dans `out` (au plus `cap`).
+			static constexpr uint32 kMaxBorduresPeintes = 16u;
+			uint32 BorduresEffectives(const NkBordure **out, uint32 cap, NkBordure &legacy) const {
+				uint32 n = 0u;
+				if (!borders.Empty()) {
+					for (uint32 i = 0; i < (uint32)borders.Size(); ++i) {
+						const NkBordure &b = borders[i];
+						if (!b.visible || b.couleur.Empty() || b.epaisseur <= 0.f)
+							continue;
+						if (n < cap)
+							out[n] = &b;
+						++n;
+					}
+					return n > cap ? cap : n;
 				}
-				if (!borders.Empty())
-					return nullptr;
-				return nullptr; // sans liste : l'appelant lit borderColor/borderW
+				if (borderColor.Empty() || cap == 0u)
+					return 0u;
+				legacy = NkBordure();
+				legacy.couleur = borderColor;
+				legacy.epaisseur = borderW > 0.f ? borderW : 1.f;
+				legacy.position = NkBordurePos::Interieur;
+				out[0] = &legacy;
+				return 1u;
 			}
 			/// MATERIALISER la liste depuis les cles simples. Meme regle que pour
 			/// les remplissages, y compris le « il ne vide pas la cle simple ».
@@ -1070,14 +1196,16 @@ namespace nkuidesign {
 				return rayonsCoins[i < 4u ? i : 0u];
 			}
 
-			/// Vrai si les quatre coins valent la même chose — donc si la clé
-			/// simple suffit à les écrire.
-			bool RayonsUniformes() const {
-				if (!rayonsDelies)
-					return true;
-				return rayonsCoins[0] == rayonsCoins[1] && rayonsCoins[1] == rayonsCoins[2]
-					   && rayonsCoins[2] == rayonsCoins[3];
-			}
+			// ⚠️ `RayonsUniformes()` A ETE RETIRE LE 07/09, ET SON ABSENCE EST LA
+			//    MOITIE DU CORRECTIF. Son commentaire disait « donc si la clé simple
+			//    suffit à les écrire » : c'était faux, et c'est ce mot — *suffit* —
+			//    qui a coûté l'arrondi par coin (cas 50c). Le prédicat n'avait qu'un
+			//    seul appelant, la condition de sérialisation, et il n'y encodait
+			//    qu'une règle fausse.
+			//    *Un prédicat dont l'unique métier était une règle fausse ne doit pas
+			//    survivre à la règle* : laissé là, il aurait été réutilisé de bonne
+			//    foi par la personne suivante, et le piège se serait reconstruit
+			//    ailleurs. Le mode (`rayonsDelies`) décide seul, désormais.
 			/// ── LA ROTATION ET LES DEUX MIROIRS (Lunacy, bandeau du haut) ────
 			/// Retour de Rodolf, 01/09 : *« dans propriétés il n'y a pas miroir,
 			/// rotation etc., ni autour de l'objet sélectionné. »* Les trois
@@ -1110,6 +1238,27 @@ namespace nkuidesign {
 			/// Additive comme les miroirs : absente du fichier tant qu'elle vaut 1.
 			float32 echelleX = 1.f; ///< cle `echelle_x`
 			float32 echelleY = 1.f; ///< cle `echelle_y`
+			/// ── L'INCLINAISON, EN DEGRES (cles `inclinaison_x`, `inclinaison_y`) ──
+			/// Deux angles : l'inclinaison AUTOUR de l'axe X, et autour de l'axe Y.
+			/// ⚠️ AFFINE, ET LA LIMITE EST ECRITE PLUTOT QUE COMPENSEE : le sommet du
+			///    dessinateur est `pos, uv, col` -- **sans composante de profondeur**.
+			///    L'interpolation reste donc affine : une texture ou un degrade sur un
+			///    quadrilatere fortement incline SE PLIERA le long de la diagonale. Aux
+			///    angles moderes sur un aplat, invisible. La vraie perspective exige un
+			///    `w` au sommet ET dans les cinq dorsaux -- chantier de socle, pas ici.
+			float32 inclinaisonX = 0.f;
+			float32 inclinaisonY = 0.f;
+			/// ── LA PROJECTION DE L'INCLINAISON (cles `projection`, `focale`) ──
+			/// 🔑 Rodolf, 11/09 : « ca ne tient pas compte de la perspective, uniquement
+			///    de l'orthogonalite -- pourtant on doit pouvoir choisir ». Le choix est
+			///    ICI, sur le noeud : `false` = orthogonale (ce que le document faisait,
+			///    et ce que tous les documents existants gardent), `true` = perspective,
+			///    avec une DISTANCE FOCALE en pixels -- la distance de l'oeil au plan du
+			///    noeud. Plus elle est courte, plus la fuite est forte.
+			/// ⚠️ ADDITIF : rien ne s'ecrit tant que la perspective n'est pas demandee,
+			///    donc un document d'avant se reenregistre octet pour octet.
+			bool perspective = false;
+			float32 focale = 800.f;
 
 			// ── VERROUILLER / MASQUER (vague 2, source `/layers`) ────────────
 			/// ⚠️ DEUX BOOLÉENS, DEUX EFFETS DIFFÉRENTS, ET LA DIFFÉRENCE EST TOUT
@@ -1220,6 +1369,33 @@ namespace nkuidesign {
 
 			/// Les noms de metrique que ce noeud designe. Ils ne portent aucun nombre :
 			/// ils se resolvent dans la table du DOCUMENT (`NkUIDocument::MetricSource`).
+			/// ⑤ (07/09) L'OPACITÉ DU NŒUD (Lunacy « LAYER »), clé `opacite`, 0..100.
+			/// Le panneau CALQUE l'affichait en dur à « 100 », grisée, avec la raison :
+			/// *« le modèle ne la porte pas encore »*. Il la porte.
+			/// ⚠️ ADDITIVE : rien au fichier tant qu'elle vaut 100, donc un document
+			///    d'avant se réenregistre octet pour octet.
+			/// ⚠️ ELLE SE TRANSMET AUX DESCENDANTS, mais ce n'est PAS un calque
+			///    composité une seule fois : le peintre multiplie l'alpha de chaque
+			///    élément. Deux enfants qui se recouvrent se voient donc l'un l'autre à
+			///    travers, là où Lunacy composite le groupe puis l'atténue. Le vrai
+			///    compositing demande une cible hors écran -- c'est un chantier de
+			///    rendu, nommé ici pour qu'on ne le découvre pas à l'usage.
+			float32 opacite = 100.f;
+			/// ⑥ (07/09) LE MODE DE FUSION DU NŒUD (Lunacy « LAYER »), clé `fusion`.
+			/// La clé CSS (`multiply`, `screen`…) ; vide = normal. Texte libre, un mode
+			/// inconnu est PRÉSERVÉ et montré tel quel -- même règle que la fusion par
+			/// remplissage, dont ce champ est le jumeau à l'échelle du nœud.
+			/// ⚠️ ADDITIVE : rien au fichier tant qu'elle est vide.
+			/// ⚠️ CINQ MODES SUR DIX-HUIT sont peints exactement (au GPU) ; les treize
+			///    autres lisent la DESTINATION et restent « enregistrés, pas peints ».
+			///    Les approcher donnerait une image plausible et fausse, qui ne se
+			///    découvrirait que sur un document réel -- *un repli qui reste plausible
+			///    est pire qu'un refus.*
+			/// ⚠️ ET CE N'EST PAS UN CALQUE COMPOSITÉ UNE SEULE FOIS, exactement comme
+			///    `opacite` : le nœud se fond avec ce qui est DÉJÀ sur la toile, pas
+			///    « le groupe composité PUIS fondu ». Même écart avec Lunacy, même
+			///    phrase : qui a compris la limite de l'opacité comprend celle-ci.
+			NkString fusion;
 			NkString spacingName;
 			NkString padName;
 
@@ -1748,8 +1924,22 @@ namespace nkuidesign {
 					f(n.borders[i].couleur);
 				for (uint32 i = 0; i < (uint32)n.effets.Size(); ++i)
 					f(n.effets[i].couleur);
-				for (uint32 i = 0; i < (uint32)n.apparences.Size(); ++i)
+				// 🔴 (11/09) LES DEUX CHAMPS D'ETAT AJOUTES CE JOUR-LA MANQUAIENT ICI :
+				//    `couleurTexte` (lot ①) et `bordureCouleur` (lot ② b). `NkPorteHex`
+				//    accepte « @cle » : un etat pouvait donc REFERENCER une variable que ce
+				//    visiteur ne voyait pas -- comptee zero, supprimable sous lui, magenta.
+				//    C'est exactement le defaut que l'avertissement ci-dessus annoncait,
+				//    et je l'ai commis en ajoutant les champs AILLEURS qu'ici.
+				for (uint32 i = 0; i < (uint32)n.apparences.Size(); ++i) {
 					f(n.apparences[i].fond);
+					f(n.apparences[i].couleurTexte);
+					f(n.apparences[i].bordureCouleur);
+					// 🔴 (12/09) LA TEINTE EST UNE COULEUR DU DOCUMENT, DONC ELLE EST ICI.
+					//    Le 11/09, `couleurTexte` et `bordureCouleur` ont ete ajoutes AILLEURS
+					//    qu'ici : une variable pouvait y etre referencee sans que ce visiteur
+					//    la voie -- comptee zero, supprimable sous elle. L'essai 152 le garde.
+					f(n.apparences[i].teinte);
+				}
 			}
 			/// ... et de tout le document : les noeuds ET les arbres des declarations
 			/// (un composant dont le fond reference une variable EST un usage).
@@ -2267,6 +2457,8 @@ namespace nkuidesign {
 					//    champ » (recette gestes) l'aurait vu — c'est lui qui
 					//    protège cette ligne, pas ma vigilance.
 					d.rotation = s.rotation;
+					d.inclinaisonX = s.inclinaisonX;
+					d.inclinaisonY = s.inclinaisonY;
 					d.echelleX = s.echelleX;
 					d.echelleY = s.echelleY;
 					d.refusPosition = s.refusPosition;
@@ -2971,6 +3163,8 @@ namespace nkuidesign {
 				if (!n.targetUnit.Empty())
 					Field(out, "unite", n.targetUnit.Data());
 				// `apparence_<Etat> = fond radius opacite`, « - » = HERITE.
+				// ⚠️ `opacite` EST CELLE DU NŒUD (CALQUE, enfants compris), pas celle du
+				//    fond -- sens tranche le 11/09 ; le jeton garde sa place.
 				// ⚠️ Un bloc VIDE ne s'ecrit pas : ouvrir la section d'un etat
 				//    sans rien y poser ne doit pas alourdir le fichier -- sinon
 				//    le simple fait de REGARDER un etat le ferait exister.
@@ -2992,14 +3186,65 @@ namespace nkuidesign {
 						out.Append('-');
 					else
 						WriteNum(out, a.opacite);
+					// LES JETONS SUIVANTS SONT NOMMES ET OPTIONNELS : un bloc qui n'en pose
+					// aucun s'ecrit EXACTEMENT comme avant -- un document d'avant se
+					// reenregistre octet pour octet. Et un lecteur d'avant, qui lit trois
+					// jetons, ne casse pas sur les suivants : il les ignore.
+					if (!a.couleurTexte.Empty()) {
+						out.Append(" texte=");
+						out.Append(a.couleurTexte.Data());
+					}
+					if (a.OmbrePosee()) {
+						out.Append(" ombre=");
+						if (a.ombreFlou < 0.f)
+							out.Append('-');
+						else
+							WriteNum(out, a.ombreFlou);
+						out.Append(',');
+						if (a.ombreOpacite < 0.f)
+							out.Append('-');
+						else
+							WriteNum(out, a.ombreOpacite);
+					}
+					if (a.BordurePosee()) {
+						out.Append(" bordure=");
+						out.Append(a.bordureCouleur.Empty() ? "-" : a.bordureCouleur.Data());
+						out.Append(',');
+						if (a.bordureEpaisseur < 0.f)
+							out.Append('-');
+						else
+							WriteNum(out, a.bordureEpaisseur);
+					}
+					if (!a.teinte.Empty()) {
+						out.Append(" teinte=");
+						out.Append(a.teinte.Data());
+					}
 					out.Append('\n');
 				}
 				if (!n.transposeDe.Empty())
 					Field(out, "transpose_de", n.transposeDe.Data());
-				// ⚠️ LA CLE SIMPLE TANT QU'ELLE SUFFIT : quatre coins egaux
-				//    s'ecrivent `rayon`, pas `rayons`. Un document a rayon unique
-				//    se reenregistre donc OCTET POUR OCTET apres cet ajout.
-				if (n.rayonsDelies && !n.RayonsUniformes()) {
+				// ⚠️ C'EST LE MODE QUI DECIDE, PLUS LA VALEUR (correctif du 07/09).
+				//    L'ancienne condition etait `rayonsDelies && !RayonsUniformes()`
+				//    -- « la cle simple tant qu'elle suffit ». Elle ne suffisait pas :
+				//    l'inspecteur delie ecrit `rayonsCoins` et JAMAIS `radius`, donc
+				//    delier puis poser 12 aux quatre coins donnait quatre valeurs
+				//    UNIFORMES avec un `radius` reste a 0. La condition retombait sur
+				//    `else if (radius != 0.f)`, faux lui aussi : RIEN n'etait ecrit, et
+				//    l'arrondi valait zero au rechargement.
+				//
+				// 🔴 TROIS SITES CONCORDANTS, CHACUN JUSTE ISOLEMENT -- c'est ce qui l'a
+				//    fait tenir : la rangee de l'inspecteur, le predicat d'uniformite, et
+				//    cette condition. Aucun des trois n'a l'air faux tout seul.
+				//
+				// ⚠️ ET AUCUN ALLER-RETOUR NE POUVAIT LE VOIR : le document ampute se
+				//    reenregistre A L'IDENTIQUE. Un invariant de STABILITE ne detecte pas
+				//    une perte STABLE -- le cas 50c exige donc la CONSERVATION en plus.
+				//
+				// ⚠️ RIEN NE CHANGE POUR LES DOCUMENTS EXISTANTS : `rayonsDelies` ne
+				//    pouvait etre vrai, sur un fichier, que via une ligne `rayons` -- que
+				//    l'ancienne regle n'ecrivait que non uniforme. Tout fichier ecrit
+				//    avant ce jour se reenregistre donc octet pour octet.
+				if (n.rayonsDelies) {
 					out.Append("  rayons = ");
 					for (uint32 ci = 0; ci < 4u; ++ci) {
 						if (ci)
@@ -3030,6 +3275,35 @@ namespace nkuidesign {
 					WriteNum(out, n.rotation);
 					out.Append('\n');
 				}
+				// L'INCLINAISON : meme discipline additive -- rien au fichier tant
+				// qu'elle est nulle, donc un document d'avant se reenregistre octet
+				// pour octet.
+				if (n.inclinaisonX != 0.f) {
+					out.Append("  inclinaison_x = ");
+					WriteNum(out, n.inclinaisonX);
+					out.Append('\n');
+				}
+				if (n.perspective) {
+					// `projection = perspective` ; l'orthogonale ne s'ecrit pas (c'est le defaut)
+					Field(out, "projection", "perspective");
+					out.Append("  focale = ");
+					WriteNum(out, n.focale);
+					out.Append('\n');
+				}
+				if (n.inclinaisonY != 0.f) {
+					out.Append("  inclinaison_y = ");
+					WriteNum(out, n.inclinaisonY);
+					out.Append('\n');
+				}
+				// ⑤ L'OPACITÉ DU NŒUD : même discipline additive que la rotation et les
+				//    miroirs -- rien tant qu'elle vaut son défaut.
+				if (n.opacite != 100.f) {
+					out.Append("  opacite = ");
+					WriteNum(out, n.opacite);
+					out.Append('\n');
+				}
+				if (!n.fusion.Empty())
+					Field(out, "fusion", n.fusion.Data());
 				if (n.miroirH)
 					out.Append("  miroir_h = 1\n");
 				if (n.miroirV)
@@ -3877,7 +4151,8 @@ namespace nkuidesign {
 						}
 						else if (StrEq(key, "unite"))
 							n.targetUnit = NkString(val);
-						// `apparence_<Etat> = fond radius opacite` ; « - » = herite.
+						// `apparence_<Etat> = fond radius opacite` ; « - » = herite ;
+						// `opacite` = celle du NŒUD (CALQUE), sens tranche le 11/09.
 						// ⚠️ ON N'EXIGE PAS QUE L'ETAT SOIT CONNU A LA LECTURE :
 						//    un document ecrit par une version qui aurait un
 						//    SEPTIEME etat doit se relire sans perdre sa ligne.
@@ -3904,6 +4179,47 @@ namespace nkuidesign {
 								while (*q == ' ')
 									++q;
 							}
+							// LES JETONS NOMMES, dans n'importe quel ordre, inconnus ignores :
+							// `texte=#rrggbb`, `ombre=<flou>,<opacite>` (« - » = herite).
+							while (*q) {
+								uint32 k = 0;
+								while (*q && *q != ' ' && k + 1 < (uint32)sizeof(champ))
+									champ[k++] = *q++;
+								champ[k] = '\0';
+								while (*q == ' ')
+									++q;
+								if (NkString(champ).StartsWith("texte="))
+									a.couleurTexte = NkString(champ + 6);
+								else if (NkString(champ).StartsWith("ombre=")) {
+									const char *v = champ + 6;
+									char part[32];
+									uint32 m = 0;
+									while (*v && *v != ',' && m + 1 < (uint32)sizeof(part))
+										part[m++] = *v++;
+									part[m] = '\0';
+									if (!(m == 0 || (m == 1 && part[0] == '-')))
+										a.ombreFlou = ParseNum(part);
+									if (*v == ',')
+										++v;
+									if (*v && !(*v == '-' && v[1] == '\0'))
+										a.ombreOpacite = ParseNum(v);
+								} else if (NkString(champ).StartsWith("bordure=")) {
+									// `bordure=<hex|->,<epaisseur|->`
+									const char *v = champ + 8;
+									char part[32];
+									uint32 m = 0;
+									while (*v && *v != ',' && m + 1 < (uint32)sizeof(part))
+										part[m++] = *v++;
+									part[m] = '\0';
+									if (!(m == 0 || (m == 1 && part[0] == '-')))
+										a.bordureCouleur = NkString(part);
+									if (*v == ',')
+										++v;
+									if (*v && !(*v == '-' && v[1] == '\0'))
+										a.bordureEpaisseur = ParseNum(v);
+								} else if (NkString(champ).StartsWith("teinte="))
+									a.teinte = NkString(champ + 7);
+							}
 							if (!a.etat.Empty())
 								n.apparences.PushBack(a);
 						}
@@ -3928,10 +4244,25 @@ namespace nkuidesign {
 							n.radius = ParseNum(val);
 						else if (StrEq(key, "rotation"))
 							n.rotation = ParseNum(val);
+						else if (StrEq(key, "fusion"))
+							n.fusion = NkString(val);
+						else if (StrEq(key, "opacite"))
+							n.opacite = ParseNum(val);
 						else if (StrEq(key, "miroir_h"))
 							n.miroirH = (val[0] == '1');
 						else if (StrEq(key, "miroir_v"))
 							n.miroirV = (val[0] == '1');
+						else if (StrEq(key, "inclinaison_x"))
+							n.inclinaisonX = ParseNum(val);
+						else if (StrEq(key, "inclinaison_y"))
+							n.inclinaisonY = ParseNum(val);
+						// ⚠️ UNE VALEUR INCONNUE N'ALLUME PAS LA PERSPECTIVE : seule
+						//    « perspective » la pose. Un document ecrit par une version qui
+						//    aurait une troisieme projection se relit sans la mal comprendre.
+						else if (StrEq(key, "projection"))
+							n.perspective = StrEq(val, "perspective");
+						else if (StrEq(key, "focale"))
+							n.focale = ParseNum(val);
 						else if (StrEq(key, "echelle_x"))
 							n.echelleX = NkEchelleSaine(ParseNum(val));
 						else if (StrEq(key, "echelle_y"))
@@ -4059,6 +4390,8 @@ namespace nkuidesign {
 						//    seulement, une flèche retournée serait revenue à
 						//    l'endroit dans la version mobile — sans un mot.
 						d.rotation = s.rotation;
+					d.inclinaisonX = s.inclinaisonX;
+					d.inclinaisonY = s.inclinaisonY;
 					d.echelleX = s.echelleX;
 					d.echelleY = s.echelleY;
 					d.refusPosition = s.refusPosition;
@@ -4700,4 +5033,35 @@ namespace nkuidesign {
 		}
 		return nb;
 	}
+	// ── ⑥ (07/09) LE CYCLE DES MÉTRIQUES NOMMÉES ────────────────────────
+	/// La métrique SUIVANTE dans le cycle « aucune → m0 → m1 → … → aucune ».
+	///
+	/// 🔴 ELLE VIT ICI, A COTE DE LA TABLE QU'ELLE PARCOURT, et pas dans
+	///    l'inspecteur -- pour la même raison que `NkAlignementLuParLeSolveur` vit a
+	///    coté du solveur : le fait appartient au document. Et pour une raison de
+	///    plus, payee le jour meme : ecrite dans le panneau, elle etait hors de
+	///    portee du banc, qui en avait donc REIMPLANTE une copie -- et mesurait sa
+	///    copie. *Une sonde qui reproduit la strategie du code mesure autre chose
+	///    que ce code.* Un seul site, appele par le dessin ET par la sonde.
+	///
+	/// ⚠️ LA LISTE EST CELLE DU DOCUMENT, jamais une table ecrite ailleurs : une
+	///    liste en dur aurait propose des noms que `metrics` ne connait pas, et
+	///    `Metric()` aurait rendu zero **sans le dire**.
+	/// ⚠️ « AUCUNE » EST DANS LE CYCLE, et ce n'est pas une commodite : sans elle,
+	///    poser un nom serait irreversible depuis la rangee. Un geste qui ne se
+	///    defait pas par le meme chemin n'est pas un reglage.
+	inline const char *NkMetriqueSuivante(const NkUIDocument &doc, const char *courant) {
+		const uint32 n = (uint32)doc.metrics.Size();
+		if (n == 0u)
+			return ""; // aucun nom disponible : le cycle ne peut que rester vide
+		if (!courant || !*courant)
+			return doc.metrics[0].name.Data();
+		for (uint32 i = 0; i < n; ++i)
+			if (NkComponentDecl::StrEq(doc.metrics[i].name.Data(), courant))
+				return (i + 1u < n) ? doc.metrics[i + 1u].name.Data() : "";
+		// Un nom que la table ne porte plus (metrique retiree) : on repart du premier
+		// plutot que de rester coince sur un nom mort.
+		return doc.metrics[0].name.Data();
+	}
+
 } // namespace nkuidesign

@@ -189,11 +189,56 @@ namespace nkentseu {
 		///    qui ne la connaissent pas gardent les defauts VIDES ci-dessous et
 		///    dessinent droit -- exactement comme avant.
 		struct NkPaintTransform {
-				float32 a = 1.f, b = 0.f, c = 0.f, d = 1.f, e = 0.f, f = 0.f;
+					float32 a = 1.f, b = 0.f, c = 0.f, d = 1.f, e = 0.f, f = 0.f;
+				/// ⚠️ LA RANGEE DE PERSPECTIVE (11/09) : w = g x + h y + 1, le point rendu
+				///    est (a x + c y + e) / w. A g = h = 0 -- tout ce qui existait avant --
+				///    le peintre prend le meme chemin qu'hier, sans une operation de plus.
+				float32 g = 0.f, h = 0.f;
 				bool Identite() const {
-					return a == 1.f && b == 0.f && c == 0.f && d == 1.f && e == 0.f && f == 0.f;
+					return a == 1.f && b == 0.f && c == 0.f && d == 1.f && e == 0.f && f == 0.f
+						   && g == 0.f && h == 0.f;
+				}
+				bool Affine() const {
+					return g == 0.f && h == 0.f;
 				}
 		};
+
+		/// LE PLANCHER DE `w` : un point dont le w tombe dessous est derriere l'oeil.
+		/// On le pince plutot que de le retourner. (Le meme nombre que `NkWMin` cote
+		/// document : ecrit deux fois parce que le kit ne depend pas de l'application,
+		/// et c'est la SEULE valeur partagee de ce lot.)
+		inline float32 NkPaintWMin() {
+			return 0.05f;
+		}
+
+		/// LA TANGENTE AFFINE d'une transformee EN UN POINT : la meilleure affine qui
+		/// coincide avec l'homographie en `(px, py)` (sa valeur ET sa derivee).
+		///
+		/// 🔴 ELLE EXISTE POUR LE TEXTE, ET C'EST UNE LIMITE ASSUMEE DU PALIER A : les
+		///    glyphes partent chez NKGui avec SIX coefficients (`AddTextTransforme`).
+		///    Leur donner la partie affine brute de l'homographie poserait le texte AU
+		///    MAUVAIS ENDROIT ; la tangente le pose au bon, a la bonne taille et a la
+		///    bonne pente -- il PENCHE mais il ne FUIT pas (ses lignes ne convergent
+		///    pas). Le palier B projettera chaque glyphe par ses quatre coins.
+		/// ⚠️ A g = h = 0 elle rend la matrice TELLE QUELLE (pas une recomposition qui
+		///    differerait d'un ulp) : l'orthogonal ne bouge pas.
+		inline NkPaintTransform NkPaintTangente(const NkPaintTransform &m, float32 px, float32 py) {
+			if (m.Affine())
+				return m;
+			NkPaintTransform o;
+			float32 w = m.g * px + m.h * py + 1.f;
+			if (w < NkPaintWMin())
+				w = NkPaintWMin();
+			const float32 X = (m.a * px + m.c * py + m.e) / w;
+			const float32 Y = (m.b * px + m.d * py + m.f) / w;
+			o.a = (m.a - X * m.g) / w;
+			o.b = (m.b - Y * m.g) / w;
+			o.c = (m.c - X * m.h) / w;
+			o.d = (m.d - Y * m.h) / w;
+			o.e = X - (o.a * px + o.c * py);
+			o.f = Y - (o.b * px + o.d * py);
+			return o;
+		}
 
 		// ── L'INTERFACE ─────────────────────────────────────────────────────────
 		class NkComponentPaint {
@@ -364,6 +409,39 @@ namespace nkentseu {
 					(void)image;
 					(void)opacite;
 					return false;
+				}
+				// ── LA TEINTE DU NŒUD (2026-09-12) ──────────────────────────────
+				/// UN MULTIPLICATEUR APPLIQUE A L'EMISSION. Il traverse ce qu'il ne
+				/// comprend pas -- un degrade, une image, une pile -- sans avoir a le
+				/// connaitre : *il ne peut pas casser ce qu'il ne connait pas.* C'est
+				/// le Color Tint d'Unity : le degrade SURVIT a tous les etats, seule
+				/// la luminance bouge.
+				///
+				/// 🔴 CE N'EST PAS UN ETAT ARME, ET LA DISTINCTION EST ENTIERE. Une
+				///    garde `PushTint`/`PopTint` obligerait chaque APPELANT a poser ET
+				///    a depiler ; le premier qui oublie fait fuir la teinte sur le nœud
+				///    suivant. *Un etat qu'il faut ARMER se fait oublier par la porte
+				///    que les appelants empruntent.* Ici `tint` est REECRIT au debut du
+				///    dessin de CHAQUE nœud (identite quand aucun etat n'en pose) et
+				///    restaure par un objet de PORTEE, dans la MEME fonction --
+				///    `DrawShape`, qui compte treize `return`. Aucun appelant n'a rien
+				///    a faire : **personne ne peut oublier ce que personne n'a a faire.**
+				///
+				/// Un peintre futur en herite sans le savoir, pourvu qu'il teinte a son
+				/// point de couleur -- les deux peintres du kit le font en UN site chacun.
+				uint32 tint = 0xFFFFFFFFu;
+
+				/// Multiplie une couleur 0xRRGGBBAA par la teinte courante. IDENTITE
+				/// quand la teinte est blanche opaque -- le cas de tout nœud sans etat,
+				/// donc le controle negatif est exact a l'octet.
+				uint32 Teinter(uint32 c) const noexcept {
+					if (tint == 0xFFFFFFFFu)
+						return c;
+					const uint32 r = (((c >> 24) & 0xFFu) * ((tint >> 24) & 0xFFu) + 127u) / 255u;
+					const uint32 g = (((c >> 16) & 0xFFu) * ((tint >> 16) & 0xFFu) + 127u) / 255u;
+					const uint32 b = (((c >> 8) & 0xFFu) * ((tint >> 8) & 0xFFu) + 127u) / 255u;
+					const uint32 a = ((c & 0xFFu) * (tint & 0xFFu) + 127u) / 255u;
+					return (r << 24) | (g << 16) | (b << 8) | a;
 				}
 		};
 

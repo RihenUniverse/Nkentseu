@@ -62,6 +62,45 @@ namespace nkentseu {
 
 		namespace {
 
+			/// ⑦ DEUX CHEMINS DESIGNENT-ILS LA MEME CHOSE ? Les deux separateurs sont
+			/// equivalents, la casse ASCII est ignoree (Windows), une barre finale ne
+			/// compte pas.
+			/// ⚠️ CE N'EST PAS UN DOUBLON DE `NkFilePickerState::PathSame` : ce fichier
+			///    compile sans NKFileSystem et sans NKGui (condition C3), il ne peut donc
+			///    pas l'appeler. Elle repond ICI a une seule question -- « ce dossier
+			///    est-il celui que je traine ? » -- et le refus PROFOND (deposer un
+			///    dossier dans son propre sous-dossier) appartient a l'hote, qui seul
+			///    touche au disque et l'a deja (essai 6i du banc du selecteur).
+			bool NkBrowserMemeChemin(const NkString &a, const NkString &b) {
+				const char *x = a.Data() ? a.Data() : "";
+				const char *y = b.Data() ? b.Data() : "";
+				usize la = 0, lb = 0;
+				while (x[la])
+					++la;
+				while (y[lb])
+					++lb;
+				while (la > 0 && (x[la - 1] == '/' || x[la - 1] == '\\'))
+					--la;
+				while (lb > 0 && (y[lb - 1] == '/' || y[lb - 1] == '\\'))
+					--lb;
+				if (la != lb || la == 0)
+					return la == lb && la == 0;
+				for (usize i = 0; i < la; ++i) {
+					char ca = x[i], cb = y[i];
+					if (ca == '\\')
+						ca = '/';
+					if (cb == '\\')
+						cb = '/';
+					if (ca >= 'A' && ca <= 'Z')
+						ca = (char)(ca - 'A' + 'a');
+					if (cb >= 'A' && cb <= 'Z')
+						cb = (char)(cb - 'A' + 'a');
+					if (ca != cb)
+						return false;
+				}
+				return true;
+			}
+
 			bool PassesFilter(const NkAssetEntry &e, const char *filter) {
 				if (!filter || !filter[0])
 					return true;
@@ -198,7 +237,12 @@ namespace nkentseu {
 			/// arbre de DOSSIERS ouvre, il ne renomme pas — la meme mesure que
 			/// NKCode/NkExplorer). Construite UNE fois : c'est un reglage du
 			/// composant, pas un etat.
-			const NkComponentInstance &EmbeddedTreeValues() {
+			/// ① (06/09) `defautOuvert` est le SEUL reglage variable : il vient du
+			/// parametre `tree_default_open` du navigateur, donc de son hote. Sans lui,
+			/// le rail prenait le defaut de la declaration de l'arbre (« tout deplie »)
+			/// pendant qu'un hote a chargement paresseux comptait l'inverse — deux
+			/// reponses opposees a « ce nœud est-il ouvert ? ».
+			const NkComponentInstance &EmbeddedTreeValues(bool defautOuvert) {
 				static NkComponentInstance inst(NkTreeViewDecl());
 				static bool init = false;
 				if (!init) {
@@ -210,6 +254,7 @@ namespace nkentseu {
 					inst.SetParam("activate_on_double_click", 1.f);
 					init = true;
 				}
+				inst.SetParam("default_open", defautOuvert ? 1.f : 0.f);
 				return inst;
 			}
 
@@ -403,6 +448,7 @@ namespace nkentseu {
 			struct TreeBridge {
 					NkContentBrowserResult *res = nullptr;
 					const NkContentBrowserHooks *hooks = nullptr;
+					const NkTreeViewModel *folders = nullptr;
 			};
 			void TreeOnSelect(void *user, int32 index, const char *id) {
 				TreeBridge *b = (TreeBridge *)user;
@@ -410,6 +456,22 @@ namespace nkentseu {
 				if (b->hooks->onNavigate)
 					b->hooks->onNavigate(b->hooks->user, id ? id : "");
 				(void)index;
+			}
+			/// ② (06/09) LE CLIC DROIT DU RAIL, RELAYE. Il ne l'etait pas du tout : le pont
+			/// ne branchait que `onSelect`, donc un clic droit sur un dossier du rail
+			/// n'arrivait nulle part. Rodolf : « dans le panneau de gauche COMME dans celui
+			/// de droite, le clic droit doit ouvrir un menu ».
+			/// ⚠️ IL PORTE LE CHEMIN, pas l'index : l'index est celui de l'ARBRE, que l'hote
+			///    ne reconstruit pas forcement au meme moment. Un chemin reste vrai.
+			void TreeOnMenu(void *user, int32 index, float32 x, float32 y) {
+				TreeBridge *b = (TreeBridge *)user;
+				b->res->menuX = x;
+				b->res->menuY = y;
+				if (b->folders && index >= 0 && index < (int32)b->folders->nodes.Size())
+					b->res->menuCheminRail = b->folders->nodes[(uint32)index].path;
+				// index < 0 : le clic droit est tombe dans le VIDE du rail. On le rapporte
+				// quand meme (chemin vide) -- un menu « creer ici » y a du sens.
+				b->res->menuIndex = -1;
 			}
 
 		} // namespace
@@ -539,6 +601,15 @@ namespace nkentseu {
 				// qu'il est pose (contournement nomme en tete de fichier).
 				if (in.mousePressed)
 					m.searchFocused = searchBox.Contains(in.mouseX, in.mouseY);
+				// ② (06/09) ET ON RAPPORTE SA GEOMETRIE. Sans elle, « l'hote ecrit
+				//    dans filter » etait une phrase, pas un chemin : aucun hote ne
+				//    savait ou poser son champ de saisie. Le rectangle rapporte est
+				//    EXACTEMENT celui qui vient d'etre peint -- la meme variable, pas
+				//    un second calcul qui pourrait deriver.
+				res.rechercheX = searchBox.x;
+				res.rechercheY = searchBox.y;
+				res.rechercheW = searchBox.w;
+				res.rechercheH = searchBox.h;
 
 				// LE FIL D'ARIANE, entre les boutons et la recherche, cliquable —
 				// clippe a sa zone : un chemin profond ne doit pas traverser la
@@ -796,9 +867,39 @@ namespace nkentseu {
 				p.HLine(rect.x, contentTop, rect.w, s.border);
 			}
 
+			// ── ⑦ (06/09) LE GLISSER : ARME -> ACTIF, DECIDE **AVANT** LE DESSIN ──
+			// L'ordre n'est pas indifferent : la promotion doit avoir lieu avant que
+			// les deux volets ne peignent, sinon le surlignage de la cible arriverait
+			// une image en retard -- c'est-a-dire que le geste serait invisible pendant
+			// tout le temps ou il compte. *La decision monte avant le consommateur ; le
+			// dessin peut rester ou il est.*
+			{
+				const float32 seuil = M("drag_threshold");
+				if (!m.armeChemin.Empty() && in.mouseDown && m.glisserChemin.Empty()) {
+					const float32 dx = in.mouseX - m.armeX, dy = in.mouseY - m.armeY;
+					if (dx * dx + dy * dy > seuil * seuil) {
+						m.glisserChemin = m.armeChemin;
+						m.glisserLibelle = m.armeLibelle;
+						m.glisserRail = m.armeRail;
+					}
+				}
+				// Bouton relache et seuil jamais franchi : c'etait un clic, il ne
+				// laisse rien derriere lui.
+				if (!in.mouseDown && !in.mousePressed && m.glisserChemin.Empty())
+					m.armeChemin = NkString();
+			}
+
 			// ── LE CORPS : colonne de dossiers + vue d'assets ───────────────────
 			const float32 statusH = showStatus ? M("status_h") : 0.f;
 			const float32 bodyBottom = rect.y + rect.h - statusH;
+			// ① (06/09) LE BORD SUPERIEUR DES DEUX VOLETS, RAPPORTE A L'HOTE.
+			//    `contentTop` a ete descendu par CHAQUE rangee pleine largeur
+			//    REELLEMENT dessinee -- barre d'outils, fil d'Ariane minimal, puces de
+			//    filtre, rangee d'information. C'est donc le seul nombre qui reste juste
+			//    quand une rangee s'ajoute ou disparait, et c'est le MEME que celui du
+			//    trait `VLine` peint plus bas entre les deux volets.
+			res.panneauxY = contentTop;
+			res.panneauxH = bodyBottom - contentTop;
 			float32 gridX = rect.x;
 			float32 gridW = rect.w;
 			if (showTree) {
@@ -824,6 +925,7 @@ namespace nkentseu {
 					TreeBridge bridge;
 					bridge.res = &res;
 					bridge.hooks = &hooks;
+					bridge.folders = &m.folders;
 					NkTreeViewStyle ts;
 					ts.panelBg = s.headerBg;
 					ts.headerBg = s.headerBg;
@@ -839,11 +941,43 @@ namespace nkentseu {
 					ts.iconTint = s.folderTint;
 					ts.dimTint = s.textMuted;
 					ts.icons = s.treeIcons;
-					ts.values = &EmbeddedTreeValues();
+					ts.values = &EmbeddedTreeValues(P("tree_default_open") > 0.5f);
 					NkTreeViewHooks th;
 					th.user = &bridge;
 					th.onSelect = &TreeOnSelect;
-					const NkTreeViewResult tr = NkDrawTreeView(p, in, tree, m.folders, ts, th);
+					th.onContextMenu = &TreeOnMenu;
+					// ⑦ (06/09) L'ARBRE SURLIGNE SA CIBLE PENDANT UN GLISSER. On lui
+					//    passe une charge pour qu'il le sache -- c'est exactement ce que
+					//    `dragType` veut dire, et le surlignage existe deja chez lui. On
+					//    ne lui passe PAS `dragReleased` : le lacher se decide ICI, en un
+					//    seul endroit pour les deux volets. Deux repondeurs pour un meme
+					//    geste, ce serait un depot traite deux fois.
+					NkComponentInput inArbre = in;
+					inArbre.dragType = m.glisserChemin.Empty() ? nullptr : "nkfile";
+					inArbre.dragReleased = false;
+					const NkTreeViewResult tr = NkDrawTreeView(p, inArbre, tree, m.folders, ts, th);
+					// ⑦ ARMER DEPUIS LE RAIL. L'arbre a deja pose `folders.dragSource` sur
+					//    la rangee cliquee -- « source POSSIBLE d'un glisser qui commence ».
+					//    On lui donne enfin un lecteur.
+					if (in.mousePressed && tr.survoleIndex >= 0
+						&& tr.survoleIndex < (int32)m.folders.nodes.Size()) {
+						const NkTreeNode &nd = m.folders.nodes[(uint32)tr.survoleIndex];
+						if (!nd.path.Empty() && !nd.locked) {
+							m.armeChemin = nd.path;
+							m.armeLibelle = nd.label;
+							m.armeRail = true;
+							m.armeX = in.mouseX;
+							m.armeY = in.mouseY;
+						}
+					}
+					// ⑦ ET LE RAIL EST UNE CIBLE : la rangee survolee, si c'est un vrai
+					//    dossier et pas ce qu'on traine.
+					if (!m.glisserChemin.Empty() && tr.survoleIndex >= 0
+						&& tr.survoleIndex < (int32)m.folders.nodes.Size()) {
+						const NkTreeNode &nd = m.folders.nodes[(uint32)tr.survoleIndex];
+						if (!nd.path.Empty() && !NkBrowserMemeChemin(nd.path, m.glisserChemin))
+							res.glisserCible = nd.path;
+					}
 					// ① On RELAIE, on ne peint pas : voir `NkContentBrowserResult::infobulle`.
 					if (!tr.infobulle.Empty()) {
 						res.infobulle = tr.infobulle;
@@ -851,13 +985,38 @@ namespace nkentseu {
 						res.infobulleY = tr.infobulleY;
 						res.infobulleH = tr.infobulleH;
 					}
+					// ① LA GOUTTIERE DU RAIL, RELAYEE TELLE QUELLE. C'est l'arbre qui
+					//    l'a reservee, en coordonnees ecran : la recalculer ici serait un
+					//    second calcul pour une meme geometrie.
+					res.railDefilX = tr.defilX;
+					res.railDefilY = tr.defilY;
+					res.railDefilW = tr.defilW;
+					res.railDefilH = tr.defilH;
+					res.railDefilContenu = tr.defilContenu;
+					res.railDefilVue = tr.defilVue;
+					res.railDefilPas = tr.defilPas;
 				}
 				p.VLine(tree.x + tree.w, tree.y, tree.h, s.border);
 				gridX = tree.x + tree.w + M("stroke_w");
 				gridW = rect.w - treeW - M("stroke_w");
 			}
 
-			NkPaintRect area{gridX, contentTop, gridW, bodyBottom - contentTop};
+			// ① (06/09) LA ZONE ENTIERE DE LA GRILLE, puis SA ZONE DE CONTENU. La
+			//    difference est la gouttiere de defilement, reservee a droite et peinte
+			//    par l'hote. Elle est reservee **TOUJOURS**, meme quand rien ne
+			//    deborde : la largeur reservee change le nombre de colonnes, donc la
+			//    hauteur du contenu, donc la reponse a « est-ce que ca deborde ». La
+			//    reserver sous condition ferait osciller la mise en page a la frontiere.
+			NkPaintRect zoneEntiere{gridX, contentTop, gridW, bodyBottom - contentTop};
+			float32 gouttiere = M("scrollbar_w");
+			if (gouttiere > zoneEntiere.w * 0.5f)
+				gouttiere = zoneEntiere.w * 0.5f;
+			if (gouttiere < 0.f)
+				gouttiere = 0.f;
+			NkPaintRect area = zoneEntiere;
+			area.w -= gouttiere;
+			if (area.w < 0.f)
+				area.w = 0.f;
 			p.PushClip(area);
 
 			// ── LES ENTREES ─────────────────────────────────────────────────────
@@ -1019,8 +1178,17 @@ namespace nkentseu {
 				if (hooks.cardOverlay)
 					hooks.cardOverlay(hooks.user, p, idx, cell.x, cell.y, cell.w, cell.h);
 
-				if (cell.Contains(in.mouseX, in.mouseY))
+				if (cell.Contains(in.mouseX, in.mouseY)) {
 					hitIndex = idx;
+					// ⑦ (06/09) LA CIBLE SE VOIT. Un glisser dont on ne sait pas ou il
+					//    va tomber est un glisser qu'on n'ose pas lacher -- et le rail,
+					//    lui, surligne deja (`dragType` lui est passe). Les deux volets
+					//    doivent le dire de la meme facon, sinon l'un des deux a l'air
+					//    inerte.
+					if (!m.glisserChemin.Empty() && e.isFolder && !e.path.Empty()
+						&& !NkBrowserMemeChemin(e.path, m.glisserChemin))
+						p.OutlineSharp(cell, s.activeMark);
+				}
 			}
 
 			// ── LES EVENEMENTS PARTENT D'ICI, ET DE NULLE PART AILLEURS ─────────
@@ -1031,7 +1199,10 @@ namespace nkentseu {
 				const NkAssetEntry &e = m.entries[(uint32)hitIndex];
 				const char *path = e.path.Data() ? e.path.Data() : "";
 				if (in.mousePressed) {
-					if (in.ctrl) {
+					// ④ (06/09) L'ACCUMULATION EST UNE CAPACITE DECLAREE, pas un acquis du
+					//    geste : un dialogue « choisir UN fichier » doit refuser d'en retenir
+					//    plusieurs A L'INSTANT DU CLIC, et non a la confirmation.
+					if (in.ctrl && P("multi_select") > 0.5f) {
 						if (m.IsChosen(hitIndex)) {
 							for (uint32 k = 0; k < (uint32)m.chosen.Size(); ++k)
 								if (m.chosen[k] == hitIndex) {
@@ -1048,32 +1219,103 @@ namespace nkentseu {
 					res.selectionChanged = true;
 					if (hooks.onSelect)
 						hooks.onSelect(hooks.user, hitIndex, path);
+					// ⑦ (06/09) ET L'APPUI **ARME** UN GLISSER. Il ne le declenche pas :
+					//    seul le seuil le fera, plus haut, a l'image suivante ou a
+					//    celle-ci si la souris bouge assez. C'est ce qui separe
+					//    « choisir » de « deplacer ».
+					if (path[0]) {
+						m.armeChemin = e.path;
+						m.armeLibelle = e.name;
+						m.armeRail = false;
+						m.armeX = in.mouseX;
+						m.armeY = in.mouseY;
+					}
 				}
 				if (in.doubleClick) {
 					res.activatedIndex = hitIndex;
 					if (hooks.onDoubleClick)
 						hooks.onDoubleClick(hooks.user, hitIndex, path);
 				}
-				if (in.rightPressed && hooks.onContextMenu)
-					hooks.onContextMenu(hooks.user, hitIndex, in.mouseX, in.mouseY);
+				if (in.rightPressed) {
+					// ② (06/09) ON LE RAPPORTE **ET** ON LE CRIE. Le crochet part comme
+					//    avant ; le resultat porte en plus l'endroit, pour l'hote qui doit
+					//    poser un menu et n'a pas de crochet a lui.
+					res.menuIndex = hitIndex;
+					res.menuX = in.mouseX;
+					res.menuY = in.mouseY;
+					if (hooks.onContextMenu)
+						hooks.onContextMenu(hooks.user, hitIndex, in.mouseX, in.mouseY);
+				}
 				if (in.dragReleased && e.isFolder && hooks.onDrop)
 					hooks.onDrop(hooks.user, hitIndex, in.dragType ? in.dragType : "");
-			} else if (in.rightPressed && area.Contains(in.mouseX, in.mouseY) && hooks.onContextMenu) {
+				// ⑦ (06/09) LA GRILLE EST UNE CIBLE, elle aussi : un DOSSIER survole
+				//    pendant un glisser, et pas celui qu'on traine.
+				if (!m.glisserChemin.Empty() && e.isFolder && path[0]
+					&& !NkBrowserMemeChemin(e.path, m.glisserChemin))
+					res.glisserCible = e.path;
+			} else if (in.rightPressed && area.Contains(in.mouseX, in.mouseY)) {
 				// Clic droit sur le FOND : `index = -1`, tel que la declaration
 				// l'annonce.
-				hooks.onContextMenu(hooks.user, -1, in.mouseX, in.mouseY);
+				res.menuIndex = -1;
+				res.menuX = in.mouseX;
+				res.menuY = in.mouseY;
+				if (hooks.onContextMenu)
+					hooks.onContextMenu(hooks.user, -1, in.mouseX, in.mouseY);
 			}
 
 			// ── DEFILEMENT ──────────────────────────────────────────────────────
-			if (in.wheel != 0.f && area.Contains(in.mouseX, in.mouseY)) {
+			// La hauteur du contenu est calculee UNE FOIS, ici : la molette s'en sert
+			// pour sa borne, et la gouttiere rapportee pour dire la profondeur. Deux
+			// calculs auraient donne deux verites.
+			const int32 rangsGrille = (visible + perRow - 1) / perRow;
+			const float32 contenuH = (float32)rangsGrille * cellH;
+			const float32 maxScroll = contenuH > area.h ? contenuH - area.h : 0.f;
+			// ⚠️ LA MOLETTE PORTE SUR LA ZONE ENTIERE, GOUTTIERE COMPRISE : rouler
+			//    au-dessus de la barre doit defiler. Le CLIC, lui, reste hors de la
+			//    gouttiere — les cellules s'arretent avant elle.
+			if (in.wheel != 0.f && zoneEntiere.Contains(in.mouseX, in.mouseY)) {
 				m.scroll -= in.wheel * rowH;
-				const int32 rows = (visible + perRow - 1) / perRow;
-				const float32 contentH = (float32)rows * cellH;
-				const float32 maxScroll = contentH > area.h ? contentH - area.h : 0.f;
 				if (m.scroll < 0.f)
 					m.scroll = 0.f;
 				if (m.scroll > maxScroll)
 					m.scroll = maxScroll;
+			} else if (m.scroll > maxScroll) {
+				// Le dossier a change ou la fenetre a grandi : un defilement herite
+				// d'une liste plus longue montrerait du vide sous la derniere rangee.
+				m.scroll = maxScroll;
+			}
+			res.defilX = area.x + area.w;
+			res.defilY = area.y;
+			res.defilW = gouttiere;
+			res.defilH = area.h;
+			res.defilContenu = contenuH;
+			res.defilVue = area.h;
+			res.defilPas = cellH > 0.f ? cellH : rowH;
+
+			// ── ⑦ (06/09) LE LACHER, DECIDE ICI ET NULLE PART AILLEURS ──────────
+			// Les deux volets ont dit ce qu'ils survolent (`res.glisserCible`) ; la
+			// decision, elle, tient a UN endroit. C'est la meme raison que les
+			// evenements de la grille : deux repondeurs pour un meme geste, c'est un
+			// depot traite deux fois.
+			//
+			// ⚠️ ET LE COMPOSANT NE DEPLACE RIEN. Il ne connait ni le disque, ni
+			//    l'annulation, ni ce qu'un « deplacement » veut dire pour cette
+			//    application. Il rend la SOURCE et la CIBLE, une seule image ; l'hote
+			//    agit. Meme partage que le renommage, le menu contextuel et l'infobulle.
+			if (!m.glisserChemin.Empty()) {
+				res.glisserChemin = m.glisserChemin;
+				res.glisserLibelle = m.glisserLibelle;
+				res.glisserX = in.mouseX;
+				res.glisserY = in.mouseY;
+				if (in.mouseReleased) {
+					if (!res.glisserCible.Empty()) {
+						res.deposeSource = m.glisserChemin;
+						res.deposeCible = res.glisserCible;
+					}
+					// Lache dans le vide : rien ne se passe, et rien ne reste arme.
+					m.AnnulerGlisser();
+					res.glisserCible = NkString();
+				}
 			}
 
 			p.PopClip(); // area

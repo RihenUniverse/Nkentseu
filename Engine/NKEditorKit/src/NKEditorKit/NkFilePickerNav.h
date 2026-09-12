@@ -66,6 +66,8 @@
 // -----------------------------------------------------------------------------
 
 #include "NKEditorKit/NkFilePicker.h"
+#include "NKEditorKit/NkEditorSurface.h" // ④ LA porte unique pour peindre au-dessus
+#include "NKEditorKit/NkEditorContextMenu.h" // ② NkCtxMenu / NkCtxMenuDraw — le menu du kit
 #include "NKFileSystem/NkFileSystem.h" // ② NkFileSystem::GetDrives : les volumes MONTES
 #include "NKEditorKit/NkTheme.h"
 #include "NKEditorKit/Components/NkContentBrowserModel.h"
@@ -369,6 +371,146 @@ namespace nkentseu {
 				/// n'arme pas.
 				nk_uint64 empreinteDeplie = 0u;
 
+				// ── ① (06/09) LE DEFAUT DU RAIL : TOUT EST FERME, ET IL N'A QU'UNE VALEUR
+				// Rodolf : « par defaut tout est ferme ; devoiler un dossier montre ses
+				// sous-dossiers dans le panneau de gauche et son contenu dans le panneau de
+				// droite ».
+				//
+				// ⚠️ IL Y AVAIT DEUX REPONSES A « CE NŒUD EST-IL OUVERT ? », ET ELLES ETAIENT
+				//    INVERSES L'UNE DE L'AUTRE. `NkTreeViewModel::toggled` liste les EXCEPTIONS
+				//    au defaut, et le defaut est le parametre `default_open`, qui vaut **1** dans
+				//    la declaration. Le DESSIN lisait donc « tout est ouvert » (d'ou les chevrons
+				//    tous tournes vers le bas sur la capture de 08h54, alors que rien n'etait
+				//    deplie), pendant que `PoserSousDossiers` interrogeait `IsOpen(id, false)` --
+				//    « tout est ferme ». Un nœud jamais touche etait ouvert pour le peintre et
+				//    ferme pour l'hote ; un nœud clique, l'inverse exactement.
+				//
+				// UNE SEULE CONSTANTE, lue par les trois : la construction du rail, la pose des
+				// sous-dossiers, et le parametre passe au composant (`tree_default_open`).
+				// La changer change les trois ensemble -- c'est la seule facon qu'elles ne
+				// puissent plus diverger.
+				static constexpr bool kRailDeplieParDefaut = false;
+
+				/// Les sections deja initialisees (ouvertes une premiere fois). Le titre d'une
+				/// section doit s'ouvrir a sa NAISSANCE, mais rester repliable ensuite : sans
+				/// cette liste, `SetOpen(vrai)` a chaque reconstruction rendrait le repli d'une
+				/// section impossible -- il serait defait par la reconstruction qu'il declenche.
+				NkVector<nk_uint64> sectionsOuvertes;
+
+				/// Le chemin pour lequel le rail a deja ete « revele » (ses ancetres ouverts).
+				/// Il porte la difference entre « on vient d'arriver ici » et « on y est
+				/// depuis un moment » : la premiere ouvre la voie, la seconde laisse
+				/// l'utilisateur replier ce qu'il veut.
+				char cheminRevele[512] = {};
+				bool revelerChemin = false; ///< vrai pendant la SEULE reconstruction qui revele
+				/// Le PARENT DIRECT du dossier affiche, calcule une fois par reconstruction :
+				/// c'est le seul nœud que le rail s'autorise a ouvrir tout seul.
+				NkString parentAffiche;
+
+				// ── ③ (06/09) PRECEDENT / SUIVANT ───────────────────────────────────
+				// Rodolf : « il n'y a que le bouton monter et Aller ; je veux les deux fleches
+				// d'historique. »
+				//
+				// ⚠️ L'HISTOIRE SE NOTE LA OU LE CHANGEMENT SE CONSTATE, PAS LA OU IL S'ORDONNE.
+				//    `pickerPath` a plusieurs ecrivains (`AllerA`, le bouton « Aller »,
+				//    `OpenPickerBase`, le fil d'Ariane, un appelant futur). Armer la note dans
+				//    `AllerA` aurait reproduit mot pour mot le defaut ① du 05/09 : le dialogue
+				//    d'export passe par la porte de la classe de base et n'aurait rien arme.
+				//    Elle est donc notee dans `RelireDossier`, qui est le seul endroit ou l'on
+				//    SAIT que le dossier a change.
+				// ⚠️ ET LE RETOUR NE SE NOTE PAS LUI-MEME : `Reculer` pose `pickerPath` sur
+				//    l'entree ou il arrive, donc `NoterDansHistoire` la retrouve identique et ne
+				//    fait rien. C'est une comparaison, pas un drapeau -- rien a oublier.
+				NkVector<NkString> histoire; ///< les dossiers reellement affiches, dans l'ordre
+				int32 histoirePos = -1;		 ///< ou l'on est dans `histoire` ; -1 = vide
+				static constexpr uint32 kMaxHistoire = 64u;
+
+				void NoterDansHistoire() {
+					if (!pickerPath[0])
+						return;
+					if (histoirePos >= 0 && histoirePos < (int32)histoire.Size()
+						&& PathSame(histoire[(uint32)histoirePos].CStr(), pickerPath))
+						return; // on y est deja : c'est un retour ou une avance, pas une visite
+					// NAVIGUER DEPUIS UN POINT DU PASSE COUPE LE FUTUR : c'est ce que font les
+					// navigateurs, et c'est la seule regle qui garde « suivant » comprehensible.
+					while ((int32)histoire.Size() > histoirePos + 1)
+						histoire.RemoveAt((uint32)histoire.Size() - 1u);
+					histoire.PushBack(NkString(pickerPath));
+					while ((uint32)histoire.Size() > kMaxHistoire)
+						histoire.RemoveAt(0u);
+					histoirePos = (int32)histoire.Size() - 1;
+				}
+
+				// ── ④ (06/09) UN OU PLUSIEURS FICHIERS — L'APPELANT LE DECLARE ──────
+				// Rodolf : « il doit pouvoir choisir plusieurs fichiers d'un coup. C'est
+				// NK3DModeler qui en a besoin en premier (importer plusieurs modeles), mais la
+				// capacite appartient au SELECTEUR, pas a l'application : prevois que
+				// l'appelant declare s'il veut un ou plusieurs fichiers. »
+				//
+				// ⚠️ CE N'EST PAS UN REGLAGE D'APPARENCE, C'EST UN CONTRAT. Le volet savait
+				//    deja accumuler une selection au Ctrl+clic -- SANS CONDITION, y compris
+				//    dans un dialogue « choisir UN fichier », qui n'en retenait ensuite qu'un
+				//    seul. L'utilisateur en choisissait cinq et en obtenait un, sans un mot :
+				//    exactement « une promesse que le code refusera plus tard ».
+				// ⚠️ ET LE DEFAUT EST **FAUX** : un appelant qui n'a rien declare garde le
+				//    comportement d'avant, un seul fichier. La capacite s'ouvre en le disant.
+				bool selectionMultiple = false;
+
+				/// LES CHEMINS CHOISIS, a lire apres `pickerConfirmed`. Renseigne dans TOUS
+				/// les cas -- y compris en selection simple, ou il porte l'unique chemin.
+				/// ⚠️ UN SEUL RESULTAT LU DE DEUX FACONS SERAIT DEUX RESULTATS.
+				///    `pickerResultPath` reste le PREMIER de cette liste, mot pour mot, pour
+				///    que les consommateurs de l'ancien selecteur ne changent pas d'une ligne.
+				NkVector<NkString> resultatsMultiples;
+				NkVector<NkString> nomsMultiples;
+
+				/// Le nombre de FICHIERS retenus a cet instant. Un dossier n'en est pas un.
+				uint32 NombreChoisis() const {
+					uint32 n = 0;
+					for (uint32 i = 0; i < (uint32)vue.entries.Size(); ++i) {
+						if (vue.entries[i].isFolder)
+							continue;
+						if (selectionMultiple ? vue.IsChosen((int32)i) : (vue.active == (int32)i))
+							++n;
+					}
+					return n;
+				}
+
+				/// ④ LE BOUTON DIT COMBIEN. « Selectionner ce fichier » sur cinq fichiers
+				/// choisis serait un libelle qui contredit ce que le bouton va faire.
+				mutable char mLibelleConfirme[96] = {};
+				const char *PickerConfirmLabel() const override {
+					if (pickerFor == PK_File && selectionMultiple) {
+						const uint32 n = NombreChoisis();
+						if (n > 1u) {
+							snprintf(mLibelleConfirme, sizeof(mLibelleConfirme),
+									 "Sélectionner ces %u fichiers", n);
+							return mLibelleConfirme;
+						}
+					}
+					return NkFilePickerState::PickerConfirmLabel();
+				}
+
+				bool PeutReculer() const { return histoirePos > 0; }
+				bool PeutAvancer() const {
+					return histoirePos >= 0 && histoirePos + 1 < (int32)histoire.Size();
+				}
+				/// Rend VRAI si l'on a bouge. Le dessin verra que `listePour` ne correspond plus.
+				bool Reculer() {
+					if (!PeutReculer())
+						return false;
+					--histoirePos;
+					CopyTo(pickerPath, histoire[(uint32)histoirePos].CStr(), (int32)sizeof(pickerPath));
+					return true;
+				}
+				bool Avancer() {
+					if (!PeutAvancer())
+						return false;
+					++histoirePos;
+					CopyTo(pickerPath, histoire[(uint32)histoirePos].CStr(), (int32)sizeof(pickerPath));
+					return true;
+				}
+
 				// ── ② LA LARGEUR DU RAIL, EN PIXELS (05/09, nuit) ───────────────────
 				// Elle etait une FRACTION de la largeur du volet (`tree_width` = 0,18) : 155 px
 				// ici, et moins encore sur une fenetre plus petite. Un rail dont la largeur
@@ -502,7 +644,10 @@ namespace nkentseu {
 							messageCreation = NkString("Un nom de dossier ne peut pas contenir \\ / : * ? \" < > |");
 							return false;
 						}
-					const NkString cible = (NkPath(pickerPath) / nouveauNom).ToString();
+					// ② (06/09) `DossierAction()` VAUT `pickerPath` tant que personne n'a vise
+					//    autre chose : le menu contextuel du rail peut creer dans le dossier
+					//    sur lequel on a clique droit, sans deuxieme fonction de creation.
+					const NkString cible = (NkPath(DossierAction()) / nouveauNom).ToString();
 					if (NkDirectory::Exists(cible.CStr())) {
 						messageCreation = NkString("Ce dossier existe d\u00e9j\u00e0 \u2014 on y entre.");
 						AllerA(cible.CStr());
@@ -516,6 +661,317 @@ namespace nkentseu {
 					AllerA(cible.CStr());
 					nouveauNom[0] = '\0';
 					return true;
+				}
+
+				// ══ ② (2026-09-06) LE MENU CONTEXTUEL ET SES SEPT ACTIONS ═══════════
+				// Rodolf : « dans le panneau de gauche COMME dans celui de droite, le clic
+				// droit doit ouvrir un menu : creer un dossier, CREER UN FICHIER, copier,
+				// couper, coller, renommer, supprimer. »
+				//
+				// ⚠️ CE QUI EST DANS L'ETAT ET CE QUI EST DANS LE DESSIN : tout ce qui suit
+				//    est du COMPORTEMENT (chemins, systeme de fichiers, messages), donc
+				//    lisible par une sonde sans ouvrir de fenetre. Le dessin du menu, lui,
+				//    n'ajoute aucune regle -- il appelle ces fonctions-ci. C'est la lecon
+				//    « une valeur enfermee dans le dessin echappe a sa sonde », appliquee
+				//    avant d'en payer le prix.
+				enum : int32 { SaisieDossier = 1, SaisieFichier = 2, SaisieRenommer = 3 };
+				/// Ce que la rangee de saisie fera. `SaisieDossier` par defaut : la rangee
+				/// existante ne change ni de nom ni de comportement.
+				int32 saisieMode = SaisieDossier;
+				/// Le dossier vise par la creation / le collage. VIDE = le dossier affiche.
+				/// ⚠️ Vide plutot que recopie : recopier `pickerPath` ici en ferait une
+				///    seconde verite, qui se perimerait a la premiere navigation.
+				NkString saisieDossier;
+				/// L'element renomme (mode `SaisieRenommer`).
+				NkString saisieCible;
+				/// Les elements sur lesquels le menu agit — un clic droit sur une entree
+				/// choisie parmi plusieurs agit sur TOUTES ; sinon sur celle-la seule.
+				NkVector<NkString> menuCibles;
+				/// LE PRESSE-PAPIERS DU SELECTEUR. Il ne touche pas celui du systeme : un
+				/// « couper » de fichiers n'a rien a faire dans le presse-papiers de texte,
+				/// et le lire au collage obligerait a deviner ce qu'une chaine designe.
+				NkVector<NkString> pressePapier;
+				bool presseCouper = false;
+				/// L'ETAT DU MENU (position, ouverture, boite). C'est `NkCtxMenu` du kit,
+				/// pas un menu de plus : le selecteur ne redessine rien.
+				NkCtxMenu menuContextuel;
+				/// Le menu vise-t-il le RAIL ? Le rail ne montre que des dossiers ; le volet
+				/// droit montre les deux. Ce qui change n'est pas le menu, c'est ce que
+				/// « créer ici » veut dire.
+				bool menuSurRail = false;
+
+				/// Le dossier ou creer / coller.
+				const char *DossierAction() const {
+					return saisieDossier.Empty() ? pickerPath : saisieDossier.CStr();
+				}
+
+				/// Un nom de fichier ou de dossier acceptable ? Rend la raison, ou nullptr.
+				static const char *RaisonNomInvalide(const char *nom) {
+					if (!nom || !nom[0])
+						return "Donnez un nom.";
+					for (const char *p = nom; *p; ++p)
+						if (*p == '/' || *p == '\\' || *p == ':' || *p == '*' || *p == '?' || *p == '"'
+							|| *p == '<' || *p == '>' || *p == '|')
+							return "Un nom ne peut pas contenir \\ / : * ? \" < > |";
+					return nullptr;
+				}
+
+				/// UN CHEMIN LIBRE DANS `dossier` POUR `nom` : `nom`, puis `nom (2)`, `(3)`...
+				/// ⚠️ ON N'ECRASE JAMAIS EN SILENCE. C'est la meme regle que le ` (2)` de
+				///    l'export, et la meme raison : un collage qui remplace un fichier
+				///    homonyme detruit sans le dire.
+				static NkString CheminLibre(const char *dossier, const char *nom) {
+					NkString base(nom ? nom : "");
+					NkString ext;
+					{ // on insere le suffixe AVANT l'extension : « carte (2).png », pas « carte.png (2) »
+						const char *pt = nullptr;
+						for (const char *p = base.CStr(); p && *p; ++p)
+							if (*p == '.')
+								pt = p;
+						if (pt && pt != base.CStr()) {
+							ext = NkString(pt);
+							base = NkString(base.CStr(), (usize)(pt - base.CStr()));
+						}
+					}
+					NkString c = (NkPath(dossier) / nom).ToString();
+					for (uint32 k = 2u; k < 1000u; ++k) {
+						if (!NkFile::Exists(c.CStr()) && !NkDirectory::Exists(c.CStr()))
+							return c;
+						char suff[16];
+						snprintf(suff, sizeof(suff), " (%u)", k);
+						NkString n2 = base;
+						n2.Append(suff);
+						n2.Append(ext.CStr());
+						c = (NkPath(dossier) / n2.CStr()).ToString();
+					}
+					return c;
+				}
+
+				/// UNE COPIE RECURSIVE. `NkFile::Copy` ne sait copier qu'un fichier ; un
+				/// dossier se recopie entree par entree, et le refus de la premiere entree
+				/// fait echouer l'ensemble (une copie a moitie faite est pire qu'un refus).
+				static bool CopierRecursif(const char *src, const char *dst) {
+					if (NkFile::Exists(src))
+						return NkFile::Copy(src, dst, false);
+					if (!NkDirectory::Exists(src))
+						return false;
+					if (!NkDirectory::CreateRecursive(dst))
+						return false;
+					NkVector<NkDirectoryEntry> e =
+						NkDirectory::GetEntries(NkPath(src), "*", NkSearchOption::NK_TOP_DIRECTORY_ONLY);
+					for (usize i = 0; i < e.Size(); ++i) {
+						const NkString s2 = (NkPath(src) / e[i].Name.CStr()).ToString();
+						const NkString d2 = (NkPath(dst) / e[i].Name.CStr()).ToString();
+						if (!CopierRecursif(s2.CStr(), d2.CStr()))
+							return false;
+					}
+					return true;
+				}
+
+				/// ② CREER UN FICHIER VIDE dans `DossierAction()`. Rend vrai si le fichier
+				/// existe apres l'appel.
+				/// ⚠️ IL NE NAVIGUE PAS, contrairement a la creation de dossier : on cree un
+				///    fichier POUR LE CHOISIR, et partir ailleurs le ferait perdre de vue.
+				bool CreerFichier() {
+					messageCreation = NkString();
+					const char *r = RaisonNomInvalide(nouveauNom);
+					if (r) {
+						messageCreation = NkString(r);
+						return false;
+					}
+					const NkString cible = (NkPath(DossierAction()) / nouveauNom).ToString();
+					if (NkFile::Exists(cible.CStr()) || NkDirectory::Exists(cible.CStr())) {
+						messageCreation = NkString("Ce nom est déjà pris dans ce dossier.");
+						return false;
+					}
+					if (!NkFile::WriteAllText(cible.CStr(), "")) {
+						messageCreation =
+							NkString("Création refusée par le système (droits ? disque plein ?).");
+						return false;
+					}
+					nouveauNom[0] = '\0';
+					relire = true;
+					return true;
+				}
+
+				/// ② RENOMMER `saisieCible` en `nouveauNom`.
+				bool Renommer() {
+					messageCreation = NkString();
+					if (saisieCible.Empty()) {
+						messageCreation = NkString("Rien à renommer.");
+						return false;
+					}
+					const char *r = RaisonNomInvalide(nouveauNom);
+					if (r) {
+						messageCreation = NkString(r);
+						return false;
+					}
+					const NkString parent = NkPath(saisieCible).GetParent().ToString();
+					const NkString dst = (NkPath(parent) / nouveauNom).ToString();
+					if (NkFile::Exists(dst.CStr()) || NkDirectory::Exists(dst.CStr())) {
+						messageCreation = NkString("Ce nom est déjà pris dans ce dossier.");
+						return false;
+					}
+					const bool estDossier = NkDirectory::Exists(saisieCible.CStr());
+					const bool ok = estDossier ? NkDirectory::Move(saisieCible.CStr(), dst.CStr())
+											   : NkFile::Move(saisieCible.CStr(), dst.CStr());
+					if (!ok) {
+						messageCreation = NkString("Renommage refusé par le système "
+												   "(fichier ouvert ailleurs ? droits ?).");
+						return false;
+					}
+					// LE DOSSIER AFFICHE SUIT SON PROPRE RENOMMAGE : sans ca, on resterait sur
+					// un chemin qui n'existe plus, et la liste se viderait sans explication.
+					if (PathSame(pickerPath, saisieCible.CStr()))
+						CopyTo(pickerPath, dst.CStr(), (int32)sizeof(pickerPath));
+					saisieCible = NkString();
+					nouveauNom[0] = '\0';
+					relire = true;
+					return true;
+				}
+
+				/// ② COPIER / COUPER : on retient les chemins, on ne touche a rien.
+				void MettreAuPressePapier(bool couper) {
+					pressePapier.Clear();
+					for (uint32 i = 0; i < (uint32)menuCibles.Size(); ++i)
+						pressePapier.PushBack(menuCibles[i]);
+					presseCouper = couper;
+					messageCreation = NkString();
+					if (pressePapier.Empty())
+						return;
+					char t[96];
+					snprintf(t, sizeof(t), "%u élément(s) %s.", (uint32)pressePapier.Size(),
+							 couper ? "à déplacer" : "à copier");
+					messageCreation = NkString(t);
+				}
+
+				/// ② COLLER dans `DossierAction()`. Rend le nombre d'elements traites.
+				/// ⚠️ COLLER DANS SON PROPRE SOUS-DOSSIER EST REFUSE, et c'est dit : un
+				///    deplacement de `A` dans `A/B` detruirait ce qu'il deplace.
+				uint32 Coller() {
+					messageCreation = NkString();
+					if (pressePapier.Empty()) {
+						messageCreation = NkString("Le presse-papiers est vide.");
+						return 0u;
+					}
+					const NkString dest(DossierAction());
+					uint32 faits = 0u, refuses = 0u;
+					for (uint32 i = 0; i < (uint32)pressePapier.Size(); ++i) {
+						const NkString &src = pressePapier[i];
+						if (PathIsAncestor(src.CStr(), dest.CStr())) {
+							++refuses; // dans soi-meme : jamais
+							continue;
+						}
+						const NkString nom = NkPath(src).GetFileName();
+						const NkString cible = CheminLibre(dest.CStr(), nom.CStr());
+						bool ok = false;
+						if (presseCouper)
+							ok = NkFile::Exists(src.CStr())
+									 ? NkFile::Move(src.CStr(), cible.CStr())
+									 : NkDirectory::Move(src.CStr(), cible.CStr());
+						else
+							ok = CopierRecursif(src.CStr(), cible.CStr());
+						if (ok)
+							++faits;
+						else
+							++refuses;
+					}
+					if (presseCouper && faits > 0u) {
+						pressePapier.Clear(); // un couper ne se colle qu'une fois
+						presseCouper = false;
+					}
+					char t[128];
+					snprintf(t, sizeof(t), "%u traité(s), %u refusé(s).", faits, refuses);
+					messageCreation = NkString(t);
+					relire = true;
+					return faits;
+				}
+
+				/// ② SUPPRIMER : a la CORBEILLE, jamais definitivement. Un selecteur de
+				/// fichiers n'a aucune raison d'etre le seul outil du poste qui ne pardonne
+				/// pas.
+				uint32 Supprimer() {
+					messageCreation = NkString();
+					uint32 faits = 0u, refuses = 0u;
+					for (uint32 i = 0; i < (uint32)menuCibles.Size(); ++i) {
+						const NkString &p = menuCibles[i];
+						if (PathSame(p.CStr(), pickerPath)) {
+							++refuses; // supprimer le dossier qu'on regarde : on remonte d'abord
+							continue;
+						}
+						if (NkFile::Exists(p.CStr()) ? NkFile::MoveToTrash(p.CStr())
+													 : NkDirectory::MoveToTrash(p.CStr()))
+							++faits;
+						else
+							++refuses;
+					}
+					char t[128];
+					snprintf(t, sizeof(t), "%u mis à la corbeille, %u refusé(s).", faits,
+							 refuses);
+					messageCreation = NkString(t);
+					relire = true;
+					return faits;
+				}
+
+				/// ② LA SAISIE EN COURS, APPLIQUEE. **UNE SEULE PORTE** : le bouton
+				/// « Créer », la touche Entree et une sonde passent tous par ici.
+				bool AppliquerSaisie() {
+					switch (saisieMode) {
+						case SaisieFichier:
+							return CreerFichier();
+						case SaisieRenommer:
+							return Renommer();
+						default:
+							return CreerDossier();
+					}
+				}
+
+				/// ② Le libelle du bouton de la rangee de saisie, et son titre.
+				const char *LibelleSaisie() const {
+					switch (saisieMode) {
+						case SaisieFichier:
+							return "Nom du nouveau fichier";
+						case SaisieRenommer:
+							return "Nouveau nom";
+						default:
+							return "Nom du nouveau dossier";
+					}
+				}
+
+				/// ② OUVRIR LA RANGEE DE SAISIE dans un mode donne. Un seul site pose les
+				/// quatre champs qui vont ensemble — sans lui, un mode survivrait a la
+				/// fermeture et le geste suivant s'appliquerait au mauvais sujet (le piege
+				/// que `PickerCancel` documente deja pour le mode du selecteur).
+				void OuvrirSaisie(int32 mode, const char *dossier, const char *cible,
+								  const char *nomPropose) {
+					saisieMode = mode;
+					saisieDossier = NkString(dossier ? dossier : "");
+					saisieCible = NkString(cible ? cible : "");
+					CopyTo(nouveauNom, nomPropose ? nomPropose : "", (int32)sizeof(nouveauNom));
+					messageCreation = NkString();
+					creationOuverte = true;
+					nouveauFocus = true;
+				}
+
+				/// ② LA PORTE DE SORTIE UNIQUE FERME AUSSI CE QUE CE FICHIER A OUVERT.
+				/// La classe de base le dit deja pour le mode du selecteur : « un mode qui
+				/// survit a la fermeture de sa fenetre est un piege a retardement ». Un menu
+				/// contextuel arme et une rangee de renommage ouverte en sont deux de plus,
+				/// et ils reapparaitraient a l'ouverture SUIVANTE, sur un autre sujet.
+				void PickerCancel() override {
+					NkFilePickerState::PickerCancel();
+					menuContextuel.open = false;
+					menuCibles.Clear();
+					FermerSaisie();
+				}
+
+				void FermerSaisie() {
+					creationOuverte = false;
+					saisieMode = SaisieDossier;
+					saisieDossier = NkString();
+					saisieCible = NkString();
+					nouveauNom[0] = '\0';
+					nouveauFocus = false;
 				}
 
 				// ── LE CONTENU DU DOSSIER ───────────────────────────────────────
@@ -654,15 +1110,39 @@ namespace nkentseu {
 				
 				void RelireDossier() {
 					relire = false;
+					// ① (06/09) DEUX GESTES DIFFERENTS PASSAIENT PAR LA MEME PORTE, ET ELLE
+					//    N'EN CONNAISSAIT QU'UN. NAVIGUER (le dossier affiche change) et
+					//    RELIRE (le meme dossier, dont le contenu a bouge : creation,
+					//    collage, suppression, GLISSER-DEPOSER) appellent tous deux cette
+					//    fonction, ecrite pour le premier : elle remettait le defilement a
+					//    zero dans les deux cas. Rodolf : « le cliquer-deposer une fois
+					//    valide fait que le scroll remonte plus haut dans le dossier en
+					//    cours. » Ce n'etait pas un troisieme chemin qui perdait l'ancre :
+					//    c'etait CELUI-CI, qui n'avait jamais eu de raison de la garder.
+					//
+					// ⚠️ LA QUESTION SE POSE AVANT `CopyTo` -- apres, `listePour` vaut deja
+					//    `pickerPath` et la reponse serait toujours « oui ».
+					const bool memeDossier = listePour[0] != '\0'
+											 && PathSame(listePour, pickerPath);
 					// ⚠️ RETENU AVANT DE POUVOIR ECHOUER : un chemin illisible ne doit pas faire
 					//    relire a CHAQUE image (un listage en boucle sur un lecteur absent gele la
 					//    fenetre, et le defaut parait alors venir du dessin).
 					CopyTo(listePour, pickerPath, (int32)sizeof(listePour));
 					vue.entries.Clear();
+					// LA SELECTION PART DANS LES DEUX CAS, et ce n'est pas une inconsequence :
+					// elle est faite d'INDICES dans `entries`, que l'on reconstruit. Les garder
+					// designerait d'autres fichiers -- une selection fausse est pire qu'une
+					// selection perdue. Le defilement, lui, est une position a l'ecran : il
+					// garde son sens tant que c'est le meme dossier.
 					vue.ClearSelection();
-					vue.scroll = 0.f;
+					if (!memeDossier)
+						vue.scroll = 0.f;
 					if (!pickerPath[0] || !NkDirectory::Exists(pickerPath))
 						return;
+					// ③ (06/09) ON NOTE ICI, ET SEULEMENT ICI. C'est le seul endroit du fichier
+					//    qui SAIT que le dossier affiche vient de changer -- et il ne note qu'un
+					//    dossier qui existe : une histoire pleine de chemins morts n'aide pas.
+					NoterDansHistoire();
 					NkVector<NkDirectoryEntry> e = NkDirectory::GetEntries(
 						NkPath(pickerPath), "*", NkSearchOption::NK_TOP_DIRECTORY_ONLY);
 					NkVector<NkString> dirs, files;
@@ -976,7 +1456,27 @@ namespace nkentseu {
 					}
 					return h;
 				}
-				
+
+				/// ④ LE RAIL SUIT LE DEPLIAGE — **un seul site**, appele par le dessin du
+				/// dialogue ET par la sonde. Rend VRAI si le rail a ete rebati.
+				///
+				/// ⚠️ IL ETAIT ECRIT DANS LE CORPS DU DESSIN, donc inaccessible a tout temoin :
+				///    une sonde qui voulait mesurer « le rail montre-t-il un niveau de plus apres
+				///    un clic sur un chevron ? » devait REECRIRE cette regle, c'est-a-dire
+				///    mesurer sa propre copie. C'est la cinquieme fois de ce chantier qu'une
+				///    valeur enfermee dans le dessin echappe a sa sonde.
+				/// ⚠️ L'EMPREINTE SE RELIT APRES LA RECONSTRUCTION : `ConstruireRail` ouvre les
+				///    sections qui naissent, donc il MODIFIE l'ensemble des deplies. La relire
+				///    avant ferait rebatir le rail a l'image suivante, indefiniment.
+				bool SuivreLeDepliage() {
+					const nk_uint64 emp = EmpreinteDeplie();
+					if (emp == empreinteDeplie)
+						return false;
+					ConstruireRail();
+					empreinteDeplie = EmpreinteDeplie();
+					return true;
+				}
+
 				/// ④ Les sous-dossiers de `chemin`, ajoutes sous `parent`. Rend le nombre pose.
 				/// ⚠️ LE COUT EST BORNE, ET IL EST DIT : un `GetEntries` par dossier DEPLIE, et
 				///    un test « a-t-il des sous-dossiers » par enfant pose -- soit un acces
@@ -1006,23 +1506,97 @@ namespace nkentseu {
 						if (j < 0)
 							continue;
 						++n;
-						// et s'il est DEJA deplie, on descend
-						if (vue.folders.IsOpen(vue.folders.nodes[(uint32)j].id, false))
+						// et s'il est DEJA deplie -- ou s'il est sur le chemin du dossier
+						// affiche -- on descend. UNE SEULE PORTE, la meme que `PoserEtSuivre`.
+						if (RailOuvert(sous.CStr(), vue.folders.nodes[(uint32)j].id))
 							n += PoserSousDossiers(sous.CStr(), j, profondeur + 1);
 					}
 					return n;
 				}
-				
+
+				/// ① (06/09) LE RAIL SUIT L'UTILISATEUR : un dossier qui est SUR LE CHEMIN du
+				/// dossier affiche s'ouvre, sinon la rangee « ou l'on est » n'existerait pas
+				/// dans le rail et rien ne pourrait la surligner.
+				///
+				/// ⚠️ MESURE QUI L'A RENDU NECESSAIRE (essai 5k) : apres trois navigations et
+				///    deux retours, le rail ne surlignait RIEN -- pas parce que le marquage
+				///    etait faux (`ConstruireRail` le pose bien), mais parce que le nœud du
+				///    dossier courant n'etait pas dans l'arbre. Un marquage juste sur un nœud
+				///    absent ne se voit pas.
+				/// ⚠️ ET IL NE LE FORCE QU'UNE FOIS PAR CHEMIN (`revelerChemin`). Le forcer a
+				///    chaque reconstruction rendrait le repli d'un ancetre impossible : le clic
+				///    declenche la reconstruction, qui defait le clic -- exactement le defaut
+				///    corrige pour les titres de section.
+				/// ⚠️ ET IL NE REVELE QU'**UN SEUL NIVEAU** -- le PARENT DIRECT du dossier
+				///    affiche, jamais toute la chaine de ses ancetres. **C'est une mesure qui
+				///    l'a impose, pas un gout** : la premiere version ouvrait tous les
+				///    ancetres, et la sonde 105 de NkUIDesign est passee au ROUGE --
+				///    profondeur 4 au lieu de 2, 72 rangees avant « Dossier courant », et
+				///    seulement 2 sections peintes sur 4 (l'arbre cesse d'emettre les rangees
+				///    tombees hors du panneau). J'avais reintroduit, par un autre chemin,
+				///    exactement la chaine d'ancetres que le lot du 05/09 avait retiree pour
+				///    cette raison-la. *Le fil d'Ariane porte deja ces ancetres, et il est
+				///    cliquable.*
+				bool RailOuvert(const char *chemin, nk_uint64 id) {
+					if (revelerChemin && chemin && *chemin && !parentAffiche.Empty()
+						&& PathSame(chemin, parentAffiche.CStr()))
+						vue.folders.SetOpen(id, true, kRailDeplieParDefaut);
+					return vue.folders.IsOpen(id, kRailDeplieParDefaut);
+				}
+
+				/// ① (06/09) POSER UNE ENTREE **ET SUIVRE SON DEPLIAGE**. C'est la seule porte
+				/// du rail : partout ou l'on ajoute un dossier, on descend dedans s'il est
+				/// ouvert.
+				///
+				/// ⚠️ LE DEFAUT MESURE : `PoserSousDossiers` n'etait appele QU'UNE FOIS, sur le
+				///    « Dossier courant ». Un chevron de « Ce PC », d'« Acces rapide » ou de
+				///    « Recents » basculait bien son etat -- la reconstruction avait meme lieu
+				///    (l'empreinte changeait) -- mais **rien** n'allait chercher ses enfants.
+				///    Le rail ne montrait donc jamais un niveau de plus, quel que soit le clic.
+				///    C'est le defaut ① de Rodolf, et sa cause n'etait pas le chevron.
+				///
+				/// ⚠️ ET C'EST BIEN UNE PORTE, PAS UNE REPETITION : la regle « un dossier ouvert
+				///    montre ses enfants » n'a plus qu'un seul site. Une section qui s'ajoutera
+				///    demain l'aura sans y penser -- c'est exactement ce que `AjouterNoeud` a
+				///    corrige pour le chevron, un cran plus bas.
+				int32 PoserEtSuivre(const char *chemin, const char *libelle, int32 parent,
+									int32 profondeur) {
+					const int32 j = AjouterNoeud(chemin, libelle, parent);
+					if (j < 0)
+						return -1;
+					if (RailOuvert(chemin, vue.folders.nodes[(uint32)j].id))
+						PoserSousDossiers(chemin, j, profondeur + 1);
+					return j;
+				}
+
 				void ConstruireRail() {
+					// ① ON NE REVELE LE CHEMIN QU'UNE FOIS PAR CHEMIN — voir `RailOuvert`.
+					revelerChemin = !PathSame(cheminRevele, pickerPath);
+					CopyTo(cheminRevele, pickerPath, (int32)sizeof(cheminRevele));
+					// ...ET SUR UN SEUL NŒUD : le parent direct. Calcule ICI, une fois, plutot
+					// qu'a chaque entree posee -- `GetParent` alloue.
+					parentAffiche = pickerPath[0] ? NkPath(pickerPath).GetParent().ToString() : NkString();
 					vue.folders.nodes.Clear();
-					// ⑥ ET IL REVIENT EN HAUT. Le defilement du rail survivait a sa
-					//    reconstruction : apres une navigation il pointait sur des rangees qui
-					//    n'existaient plus -- et les sections du haut disparaissaient du champ
-					//    sans que rien ne l'explique. C'est l'hypothese la plus probable pour
-					//    la capture ou Rodolf ne voyait aucune section.
-					vue.folders.scroll = 0.f;
+					// ── ② (06/09) ON NE REVIENT PLUS EN HAUT. ───────────────────────
+					// ⚠️ IL Y AVAIT ICI `vue.folders.scroll = 0.f`, ET C'ETAIT LA CAUSE
+					//    PREMIERE DU DEFAUT QUE RODOLF DECRIT : « quand je deplie chaque
+					//    dossier a gauche, ca deplie mais ca me ramene en haut ». Le rail est
+					//    RECONSTRUIT a chaque depliage (l'empreinte de `SuivreLeDepliage`
+					//    change), donc cette ligne s'executait a chaque chevron.
+					//
+					//    Elle avait ete posee pour une raison reelle -- apres une navigation,
+					//    un defilement herite pointait sur des rangees disparues -- mais elle
+					//    la traitait en JETANT la position au lieu de la BORNER. Le remede
+					//    vit desormais dans le composant, et il est plus fort que les deux :
+					//    l'arbre garde L'ENTREE du haut (`NkTreeViewModel::ancreVue`), pas le
+					//    nombre de pixels. Une entree survit a la reconstruction (son
+					//    identifiant est celui de son chemin) ET a la naissance de rangees
+					//    au-dessus d'elle ; un nombre de pixels ne survit ni a l'une ni a
+					//    l'autre. Le cas « rangees disparues » y est traite comme un repli
+					//    nomme : ancre introuvable -> on borne, on ne remonte pas.
+					// ① UNE SEULE PORTE : poser une entree, c'est aussi suivre son depliage.
 					auto ajouter = [&](const char *chemin, const char *libelle, int32 parent) {
-						return AjouterNoeud(chemin, libelle, parent);
+						return PoserEtSuivre(chemin, libelle, parent, 1);
 					};
 					// Un TITRE de section : pas de chemin, donc rien a suivre ; `locked`, donc rien
 					// a selectionner. Deux barrieres pour un seul role -- la seconde tient meme si
@@ -1037,6 +1611,24 @@ namespace nkentseu {
 						//    systeme de fichiers et ne doit pas en avoir l'air.
 						n.silhouette = (uint8)NkAssetIcone::Section;
 						n.bandeau = true; // ③ sa bande plus sombre, sur toute la largeur
+						// ① (06/09) UNE SECTION NAIT OUVERTE — UNE SEULE FOIS. Le defaut du rail
+						// est desormais « ferme » (voir `kRailDeplieParDefaut`), ce qui est ce que
+						// Rodolf demande POUR LES DOSSIERS ; appliquer la meme regle aux titres
+						// aurait rendu un rail de quatre bandes vides a l'ouverture.
+						// ⚠️ « UNE SEULE FOIS » N'EST PAS UN DETAIL : ouvrir a chaque
+						//    reconstruction rendrait le repli d'une section IMPOSSIBLE — le clic
+						//    declenche la reconstruction, qui defait le clic. La liste
+						//    `sectionsOuvertes` est ce qui separe « naitre » de « rester ».
+						bool deja = false;
+						for (uint32 k = 0; k < (uint32)sectionsOuvertes.Size(); ++k)
+							if (sectionsOuvertes[k] == n.id) {
+								deja = true;
+								break;
+							}
+						if (!deja) {
+							sectionsOuvertes.PushBack(n.id);
+							vue.folders.SetOpen(n.id, true, kRailDeplieParDefaut);
+						}
 						vue.folders.nodes.PushBack(n);
 						return (int32)vue.folders.nodes.Size() - 1;
 					};
@@ -1045,6 +1637,12 @@ namespace nkentseu {
 						// dans un dialogue confine proposerait ce que le confinement interdit.
 						NkString nm = NkPath(pickerConfine).GetFileName();
 						ajouter(pickerConfine.CStr(), nm.Empty() ? pickerConfine.CStr() : nm.CStr(), -1);
+						// ⑤ (06/09) ET ON MARQUE OU L'ON EST, ICI AUSSI. Ce `return` sautait
+						//    par-dessus la boucle de marquage ecrite tout en bas : un parcours
+						//    CONFINE ne surlignait donc JAMAIS le dossier affiche. Mesure : essai
+						//    5k -- trois navigations, deux retours, et le rail ne surlignait rien.
+						//    Le marquage n'etait pas faux, il etait INATTEIGNABLE depuis ce chemin.
+						MarquerOuLonEst();
 						return;
 					}
 					// ── ③ RECENTS ─────────────────────────────────────────────
@@ -1161,19 +1759,25 @@ namespace nkentseu {
 						const NkString nom = aucun ? NkString("") : NomDeDossier(courant);
 						const int32 ici = aucun ? -1 : ajouter(courant, nom.CStr(), sec);
 						if (ici >= 0) {
-							vue.folders.SetOpen(vue.folders.nodes[(uint32)ici].id, true, true);
+							vue.folders.SetOpen(vue.folders.nodes[(uint32)ici].id, true,
+												kRailDeplieParDefaut);
 							// ④ UN SEUL SITE POSE LES SOUS-DOSSIERS, et il descend dans ceux qui sont
 							//    DEJA deplies : le rail retrouve son etat apres une navigation.
 							PoserSousDossiers(courant, ici, 1);
 							vue.folders.active = vue.folders.nodes[(uint32)ici].id;
 						}
 					}
-					// ⑤ OU L'ON EST : le rail le marque, MEME QUAND IL N'Y A PAS DE DOSSIER
-					// COURANT. Cette boucle vivait DANS le bloc precedent, donc elle ne tournait
-					// que si la section « Dossier courant » avait pose une entree -- le repli la
-					// posait toujours, et l'avoir retire aurait eteint le marquage. Elle est
-					// remontee d'un cran : elle cherche `pickerPath` dans TOUT le rail (recents,
-					// acces rapide, volumes, sous-dossiers) et n'appartient a aucune section.
+					MarquerOuLonEst();
+				}
+
+				/// ⑤ OU L'ON EST : le rail le marque, MEME QUAND IL N'Y A PAS DE DOSSIER
+				/// COURANT. Elle cherche `pickerPath` dans TOUT le rail (recents, acces
+				/// rapide, volumes, sous-dossiers) et n'appartient a aucune section.
+				/// ⚠️ ELLE EST UNE FONCTION, PLUS UNE BOUCLE EN FIN DE `ConstruireRail`
+				///    (06/09) : le parcours CONFINE sortait par un `return` place avant elle,
+				///    donc il ne marquait jamais rien. Une regle ecrite a la fin d'un corps ne
+				///    couvre pas les sorties anticipees de ce corps.
+				void MarquerOuLonEst() {
 					for (uint32 k = 0; k < (uint32)vue.folders.nodes.Size(); ++k)
 						if (!vue.folders.nodes[k].path.Empty()
 							&& PathSame(vue.folders.nodes[k].path.CStr(), pickerPath))
@@ -1203,11 +1807,30 @@ namespace nkentseu {
 		//    chantier qu'une valeur non lisible echappe a sa sonde.
 		struct NkGeomSelecteur {
 			NkRect cadre, ligneChemin, zone, labelNom, champNom, annuler, confirmer;
+			/// ③ (06/09) LE BANDEAU DE RESULTAT (« 1 traite(s), 0 refuse(s). »). w == 0
+			/// quand il n'y a pas de message : il ne prend alors AUCUNE place, et le
+			/// dialogue est au pixel pres celui d'avant.
+			NkRect message;
 		};
 
 		/// La geometrie complete, calculee UNE FOIS. Le dessin l'appelle, la sonde aussi.
+		///
+		/// ③ (06/09) `messagePresent` ET `largeurTexteConfirmer` N'ONT PAS DE VALEUR PAR
+		/// DEFAUT, ET C'EST LA REGLE, PAS UN OUBLI. Une valeur par defaut qui reproduit le
+		/// defaut qu'on chasse le refabrique a chaque nouvel appelant -- lecon deja payee
+		/// sur `avisPresent` du bandeau d'export. Ici, un appelant qui ne repond pas ne
+		/// compile pas.
+		///   - `messagePresent` : y a-t-il un bandeau de resultat a placer ? Le message
+		///     etait peint a `ligneChemin.y + 4` -- c'est-a-dire DANS le champ de chemin,
+		///     les deux illisibles (capture de Rodolf du 06/09 a 22h47). Un seul endroit
+		///     decide desormais qui est ou, et chaque etage connait la hauteur du dessus.
+		///   - `largeurTexteConfirmer` : la largeur MESUREE du libelle du bouton de
+		///     confirmation. « Selectionner ce fichier » ne tient pas dans 120 px, et le
+		///     bouton ne le savait pas : il centrait un texte plus large que lui, donc
+		///     debordant des DEUX cotes. Passer 0 rend l'ancienne largeur fixe.
 		inline NkGeomSelecteur NkGeometrieSelecteur(float32 W, float32 H, float32 S, bool saveMode,
-												 bool decalX, float32 offX, float32 offY) {
+												 bool decalX, float32 offX, float32 offY,
+												 bool messagePresent, float32 largeurTexteConfirmer) {
 			NkGeomSelecteur g;
 			const float32 pw = 900.f * S, ph = 620.f * S;
 			const float32 px = (W - pw) * 0.5f + (decalX ? offX : 0.f);
@@ -1215,20 +1838,40 @@ namespace nkentseu {
 			g.cadre = {px, py, pw, ph};
 			const float32 cx = px + 20.f * S, cwid = pw - 40.f * S;
 			g.ligneChemin = {cx, py + 50.f * S, cwid, 30.f * S};
+			// ③ LA PILE DU HAUT : ligne de chemin, puis -- s'il existe -- le bandeau de
+			//    resultat, puis le volet. Chaque etage part du BAS du precedent : c'est ce
+			//    qui rend une superposition impossible, et non la discipline de l'appelant.
+			const float32 basChemin = g.ligneChemin.y + g.ligneChemin.h; // py + 80 S
+			const float32 hMsg = messagePresent ? 18.f * S : 0.f;
+			g.message = messagePresent ? NkRect{cx, basChemin + 2.f * S, cwid, hMsg}
+									   : NkRect{0.f, 0.f, 0.f, 0.f};
 			// Les hauteurs du bas, UNE constante par element -- et `basH` est leur SOMME.
 			const float32 hMarge = 14.f * S, hLabel = 18.f * S, hChamp = 30.f * S;
 			const float32 hBouton = 34.f * S, hEcart = 10.f * S;
 			const float32 basH = hMarge + (saveMode ? hLabel + hChamp + hEcart : 0.f) + hBouton + hMarge;
-			const float32 yVolet = py + 90.f * S;
+			// Sans message : py + 90 S, EXACTEMENT comme avant. Avec : le volet descend de
+			// la hauteur du bandeau, il ne passe pas dessous.
+			const float32 yVolet = py + 90.f * S + hMsg;
 			g.zone = {cx, yVolet, cwid, ph - (yVolet - py) - basH};
 			float32 by = py + ph - basH + hMarge;
 			g.labelNom = saveMode ? NkRect{cx, by, cwid, hLabel} : NkRect{0.f, 0.f, 0.f, 0.f};
 			g.champNom = saveMode ? NkRect{cx, by + hLabel, cwid, hChamp} : NkRect{0.f, 0.f, 0.f, 0.f};
 			if (saveMode)
 				by += hLabel + hChamp + hEcart;
-			const float32 bw = 120.f * S;
-			g.annuler = {px + pw - 20.f * S - bw * 2.f - 10.f * S, by, bw, hBouton};
+			// ⑥ LA LARGEUR DU BOUTON SUIT SON TEXTE. Elle etait fixe a 120 px pour un
+			//    libelle qui va de « Ouvrir » a « Selectionner ces 5 fichiers » : le texte
+			//    debordait des deux cotes, puisque `pbtn` le CENTRE. On garde 120 comme
+			//    PLANCHER (deux boutons de tailles trop differentes se lisent mal) et on
+			//    prend le texte mesure plus deux marges des qu'il est plus large.
+			const float32 bwMin = 120.f * S;
+			float32 bw = largeurTexteConfirmer + 32.f * S;
+			if (bw < bwMin)
+				bw = bwMin;
+			// Et il ne mange pas le dialogue : la moitie de la largeur utile, au plus.
+			if (bw > cwid * 0.5f)
+				bw = cwid * 0.5f;
 			g.confirmer = {px + pw - 20.f * S - bw, by, bw, hBouton};
+			g.annuler = {g.confirmer.x - 10.f * S - bwMin, by, bwMin, hBouton};
 			return g;
 		}
 
@@ -1257,11 +1900,19 @@ namespace nkentseu {
 			}
 			// « Tout selectionner » n'a de sens que la ou plusieurs objets peuvent l'etre.
 			inst.SetParam("show_select_all", selectionMultiple ? 1.f : 0.f);
+			// ④ (06/09) ET LE CTRL+CLIC OBEIT A LA MEME DECLARATION. Les deux etaient
+			//    dissocies : le bouton se taisait, le geste accumulait quand meme.
+			inst.SetParam("multi_select", selectionMultiple ? 1.f : 0.f);
 			// ⑤ (05/09, nuit) LE DIALOGUE OFFRE SON PROPRE COMBO DE TRI (nom, date,
 			//    taille, type, avec le sens) : celui du navigateur -- un simple texte qui
 			//    bascule a-z / z-a sur le seul nom -- se tait. Deux commandes pour un
 			//    reglage, c'est une de trop, et la moins capable gagnerait au clic.
 			inst.SetParam("show_sort", 0.f);
+			// ① (06/09) LE RAIL S'OUVRE FERME, ET LE CHEVRON DIT LA VERITE. Une seule
+			//    constante decide, ici et dans la construction du rail : sans elle, le
+			//    peintre repondait « ouvert » et l'hote « ferme » sur le MEME nœud.
+			inst.SetParam("tree_default_open",
+						  NkFilePickerNavState::kRailDeplieParDefaut ? 1.f : 0.f);
 			return inst;
 		}
 
@@ -1308,6 +1959,14 @@ namespace nkentseu {
 				// LE CACHE MEURT AVEC LE DIALOGUE. Rouvrir, c'est relire : entre deux
 				// ouvertures, le disque a pu changer sans que personne nous previenne.
 				fp.etaitOuvert = false;
+				// ② ET LE MENU AUSSI (06/09). La confirmation ferme le dialogue SANS passer
+				//    par `PickerCancel` : c'est ici, sur l'etat « ferme », que tout ce qui
+				//    est arme se desarme, quel que soit le chemin de fermeture.
+				fp.menuContextuel.open = false;
+				// ⑦ ET LE GLISSER (06/09), pour la meme raison et au meme endroit : un
+				//    glisser qui survivrait a la fermeture se reveillerait au prochain
+				//    lacher, sur une liste qui n'a plus rien a voir.
+				fp.vue.AnnulerGlisser();
 				return false;
 			}
 			if (!fp.etaitOuvert) {
@@ -1328,19 +1987,22 @@ namespace nkentseu {
 			//    noeuds deplies ; on le CONSTATE (une empreinte) au lieu de demander a
 			//    l'arbre de nous prevenir. Meme regle qu'au point ① du 05/09 : ce qui doit
 			//    etre arme finit par ne pas l'etre.
-			{
-				const nk_uint64 emp = fp.EmpreinteDeplie();
-				if (emp != fp.empreinteDeplie) {
-					fp.empreinteDeplie = emp;
-					fp.ConstruireRail();
-				}
-			}
+			fp.SuivreLeDepliage();
 
 			auto &dl = ctx.dlOverlay;
 			const float32 W = (float32)ctx.viewW, H = (float32)ctx.viewH, S = ctx.S(1.f);
 			const float32 asc = f->Ascent(), lh = f->LineHeight();
 			const NkVec2 mp = ctx.input.mousePos;
-			const bool click = ctx.input.mouseClicked[0];
+			// ② (06/09) CE QUI EST SOUS LE MENU N'EST PAS CLIQUABLE. Le menu est peint EN
+			//    DERNIER (il doit passer par-dessus le volet), donc sa boite n'est connue
+			//    qu'a la fin — mais elle est RETENUE (`NkCtxMenu::rect`). On lit celle de
+			//    l'image precedente : c'est ce que fait deja NKCode avec le meme menu.
+			// ⚠️ SANS CETTE GARDE, un clic sur « Supprimer » aurait aussi selectionne
+			//    l'entree qui se trouve dessous : le meme clic servirait deux fois. C'est le
+			//    defaut « reagir ne suffit pas, il faut reclamer », vu du cote de l'hote.
+			const bool sousLeMenu =
+				fp.menuContextuel.open && NkGuiRectContains(fp.menuContextuel.rect, mp);
+			const bool click = ctx.input.mouseClicked[0] && !sousLeMenu;
 			auto hit = [&](const NkRect &r) { return NkGuiRectContains(r, mp); };
 			auto text = [&](float32 x, float32 y, const char *s, const NkColor &c) {
 				dl.AddText(f->Face(), f->TexId(), {x, y + asc}, s, c);
@@ -1422,8 +2084,13 @@ namespace nkentseu {
 			const bool dossierMode = (fp.pickerFor == NkFilePickerState::PK_PickFolder
 									  || fp.pickerFor == NkFilePickerState::PK_Open);
 			// ④ LA GEOMETRIE VIENT D'UNE SEULE FONCTION, celle que la sonde appelle aussi.
+			// ③⑥ (06/09) ET ELLE A BESOIN DE DEUX FAITS QUE SEUL LE DESSIN CONNAIT : y
+			//    a-t-il un bandeau de resultat a placer, et quelle largeur fait le libelle
+			//    du bouton de confirmation. Les deux sont MESURES ici, pas supposes.
 			const NkGeomSelecteur G =
-				NkGeometrieSelecteur(W, H, S, saveMode, true, fp.pickerWinOffX, fp.pickerWinOffY);
+				NkGeometrieSelecteur(W, H, S, saveMode, true, fp.pickerWinOffX, fp.pickerWinOffY,
+									 !fp.messageCreation.Empty(),
+									 f->MeasureWidth(fp.PickerConfirmLabel()));
 			const float32 pw = G.cadre.w, ph = G.cadre.h;
 			const float32 px = G.cadre.x, py = G.cadre.y;
 
@@ -1431,9 +2098,12 @@ namespace nkentseu {
 			//    la reserve protege le code propre de l'application (une toile qui lit
 			//    `ctx.input` sans passer par un widget). A re-armer a chaque image :
 			//    c'est ce qui la rend caduque toute seule a la fermeture.
-			ctx.PushOcclusion({0.f, 0.f, W, H}, 100);
-			NkGuiContext::NkInputLayerScope _couche(ctx, 100);
-			ctx.input.ReserverSaisie();
+			// ④ (06/09) LES TROIS GESTES PASSENT PAR UNE SEULE PORTE. Ils etaient
+			//    justes ici -- ce dialogue est l'un des quatre qui reclamaient tout --
+			//    mais ecrits a la main, donc recopiables de travers. La porte les rend
+			//    indivisibles, et le banc peut alors LES COMPTER.
+			NkSurfaceFlottante _surface(ctx, {0.f, 0.f, W, H}, NkCouche::Modale,
+									   NkPriseClavier::Oui);
 			const bool premiereDeLaPile = (ctx.modalDepth == 0);
 			++ctx.modalDepth;
 			if (premiereDeLaPile)
@@ -1465,10 +2135,38 @@ namespace nkentseu {
 			// ── LA LIGNE DE CHEMIN : « Remonter », le chemin editable, « Aller » ──
 			{
 				const float32 hb = 30.f * S;
-				if (sbtn({cx, y, 40.f * S, hb}, "▲"))
+				// ── ③ (06/09) PRECEDENT / SUIVANT ─────────────────────────────
+				// Rodolf : « il n'y a que le bouton monter et Aller ; je veux les deux
+				// fleches d'historique. »
+				// ⚠️ UNE FLECHE QUI NE PEUT RIEN FAIRE SE GRISE ET NE REAGIT PAS. Un bouton
+				//    qui accepte le clic et ne produit rien se lit comme une panne -- c'est
+				//    la regle du kit sur les commandes sans effet, appliquee ici.
+				// ⚠️ ET ELLES SONT TRACEES, pas ecrites : deux segments, comme le chevron du
+				//    rail et la fleche de tri. Un caractere de police depend d'une police.
+				auto fleche = [&](const NkRect &r, bool versLaDroite, bool actif) -> bool {
+					const bool hov = actif && hit(r);
+					dl.AddRectFilled(r, hov ? sty.cadre.btnHover : sty.cadre.btn, 6.f * S);
+					dl.AddRect(r, sty.cadre.border, 1.f);
+					const NkColor c = actif ? sty.cadre.text : sty.cadre.sub;
+					const float32 mx = r.x + r.w * 0.5f, my = r.y + r.h * 0.5f;
+					const float32 d = versLaDroite ? 1.f : -1.f;
+					const float32 ax = mx + 4.f * S * d, bx = mx - 3.f * S * d;
+					dl.AddLine({bx, my - 5.f * S}, {ax, my}, c, 1.6f);
+					dl.AddLine({bx, my + 5.f * S}, {ax, my}, c, 1.6f);
+					return hov && click;
+				};
+				const float32 bw = 34.f * S, ecart = 6.f * S;
+				if (fleche({cx, y, bw, hb}, false, fp.PeutReculer()))
+					fp.Reculer();
+				if (fleche({cx + bw + ecart, y, bw, hb}, true, fp.PeutAvancer()))
+					fp.Avancer();
+				const float32 xMonter = cx + (bw + ecart) * 2.f;
+				if (sbtn({xMonter, y, bw, hb}, "▲"))
 					fp.AllerA(NkPath(fp.pickerPath).GetParent().ToString().CStr());
-				const NkRect r = {cx + 48.f * S, y, cwid - 48.f * S - 84.f * S - 8.f * S
-												   - (peutCreer ? hb + 8.f * S : 0.f),
+				const float32 xChamp = xMonter + bw + 8.f * S;
+				const NkRect r = {xChamp, y,
+								   cwid - (xChamp - cx) - 84.f * S - 8.f * S
+									   - (peutCreer ? hb + 8.f * S : 0.f),
 								   hb};
 				if (hit(r) && click) {
 					fp.pickerEditing = true;
@@ -1485,16 +2183,23 @@ namespace nkentseu {
 				//    n'apparait que la ou creer a un sens ; en ouverture de fichier, creer un
 				//    dossier vide ne menerait a rien.
 				if (peutCreer && sbtn({cx + cwid - 84.f * S - 8.f * S - hb, y, hb, hb}, "+")) {
-					fp.creationOuverte = !fp.creationOuverte;
-					fp.nouveauFocus = fp.creationOuverte;
-					fp.messageCreation = NkString();
+					if (fp.creationOuverte)
+						fp.FermerSaisie();
+					else
+						fp.OuvrirSaisie(NkFilePickerNavState::SaisieDossier, nullptr, nullptr, nullptr);
 				}
 			}
 			// ⑤ LA CREATION DE DOSSIER, EN HAUT ET DISCRETE (05/09, nuit). Elle prend la
 			//    place de la ligne de chemin le temps qu'on la remplisse, puis disparait.
 			//    Une rangee permanente pleine largeur pour un geste qu'on fait une fois sur
 			//    vingt poussait le nom du fichier -- le geste PRINCIPAL -- vers le bas.
-			if (peutCreer && fp.creationOuverte) {
+			// \u2461 (06/09) LA MEME RANGEE SERT AUX TROIS SAISIES \u2014 creer un dossier, creer un
+			//    fichier, renommer. Une rangee par geste aurait fabrique trois geometries
+			//    pour un champ de texte et un bouton, et le jour ou le champ change de
+			//    hauteur, deux des trois l'oublieraient.
+			// \u26a0\ufe0f ET ELLE S'AFFICHE MEME HORS DES MODES \u00ab creer \u00bb : le menu contextuel peut
+			//    demander un renommage dans un dialogue d'OUVERTURE, ou `peutCreer` est faux.
+			if (fp.creationOuverte) {
 				const float32 hb = 30.f * S;
 				const NkRect rc = {cx, y, cwid - 200.f * S, hb};
 				if (hit(rc) && click) {
@@ -1506,19 +2211,32 @@ namespace nkentseu {
 				NkOverlayTextField(ctx, dl, f, rc, fp.nouveauNom, (int32)sizeof(fp.nouveauNom),
 								   fp.nouveauFocus);
 				if (!fp.nouveauNom[0] && !fp.nouveauFocus)
-					text(rc.x + 8.f * S, rc.y + (hb - lh) * 0.5f, "Nom du nouveau dossier", sty.cadre.sub);
-				if (sbtn({cx + cwid - 196.f * S, y, 96.f * S, hb}, "Cr\u00e9er")) {
-					if (fp.CreerDossier())
-						fp.creationOuverte = false;
+					text(rc.x + 8.f * S, rc.y + (hb - lh) * 0.5f, fp.LibelleSaisie(), sty.cadre.sub);
+				if (sbtn({cx + cwid - 196.f * S, y, 96.f * S, hb},
+						 fp.saisieMode == NkFilePickerNavState::SaisieRenommer ? "Renommer"
+																			  : "Cr\u00e9er")) {
+					if (fp.AppliquerSaisie())
+						fp.FermerSaisie();
 				}
-				if (sbtn({cx + cwid - 96.f * S, y, 96.f * S, hb}, "Annuler")) {
-					fp.creationOuverte = false;
-					fp.nouveauNom[0] = '\0';
-					fp.messageCreation = NkString();
-				}
-				if (!fp.messageCreation.Empty())
-					text(cx, y + 32.f * S, fp.messageCreation.Data(), sty.cadre.sub);
+				if (sbtn({cx + cwid - 96.f * S, y, 96.f * S, hb}, "Annuler"))
+					fp.FermerSaisie();
 			}
+			// \u26a0\ufe0f LE MESSAGE VIT HORS DE LA RANGEE (06/09) : \u00ab 3 mis a la corbeille \u00bb vient
+			//    d'un geste du MENU, qui n'ouvre aucune rangee. Le laisser sous le champ
+			//    l'aurait rendu invisible exactement pour les actions qui n'ont pas de
+			//    champ -- \u00ab un refus range dans un coin de l'interface est un echec
+			//    silencieux \u00bb.
+			// ③ (06/09) IL A SA PROPRE PLACE, ET ELLE VIENT DE LA GEOMETRIE. Avant, il
+			//    etait peint a `y + 4 S` -- c'est-a-dire DANS la ligne de chemin, par-dessus
+			//    le champ : « 1 traite(s) 0 refuse(s) » et
+			//    `C:/Users/Rihen/Documents/banani-ui-export (3)` au meme endroit, les deux
+			//    illisibles. Le commentaire d'a cote disait pourtant « LE MESSAGE VIT HORS
+			//    DE LA RANGEE » : une justification ecrite se croit, un oubli se voit.
+			//    Desormais la pile du haut (`NkGeometrieSelecteur`) donne au bandeau son
+			//    etage et pousse le volet d'autant -- un seul endroit decide qui est ou.
+			if (!fp.messageCreation.Empty() && G.message.w > 0.f)
+				text(G.message.x, G.message.y + (G.message.h - lh) * 0.5f,
+					 fp.messageCreation.Data(), sty.cadre.sub);
 			y += 40.f * S;
 
 			// ── LE VOLET : le navigateur de contenu du kit, tel quel ────────────
@@ -1537,6 +2255,22 @@ namespace nkentseu {
 			//    Voir le bloc « L'INCRUSTATION SE PEINT EN DERNIER » a la fin.
 			NkString bulle;
 			float32 bulleX = 0.f, bulleY = 0.f, bulleH = 0.f;
+			// ① (06/09) OU COMMENCENT LES DEUX VOLETS. Releve du volet, utilise plus bas
+			//    par la POIGNEE de partage. Le repli est la zone entiere : c'est
+			//    exactement le comportement d'avant, donc rien ne casse si le volet
+			//    n'etait pas dessine.
+			float32 panneauxY = zone.y, panneauxH = zone.h;
+			// ② (06/09) LA BOITE DE RECHERCHE, telle que le volet l'a reservee. `w == 0`
+			//    veut dire « pas de boite » — l'hote n'y peint alors rien.
+			NkRect recherche = {0.f, 0.f, 0.f, 0.f};
+			// ② UN SEUL CHAMP EDITE A LA FOIS, ET LE VOLET NE PEUT PAS LE SAVOIR. Quand
+			//    un champ du CADRE vient d'etre clique, `in.mousePressed` est eteint pour
+			//    le volet (`click && !fieldClicked`) : il ne verra donc pas le clic et ne
+			//    reprendra pas le focus de sa boite de recherche tout seul. On le lui
+			//    retire ici. Sans cette ligne, cliquer le champ de chemin laisserait DEUX
+			//    champs focalises et la frappe partirait dans les deux.
+			if (fieldClicked)
+				fp.vue.searchFocused = false;
 			{
 				// ④ Le volet se tait sur ce que ce mode n'exige pas -- un seul site, nomme.
 				NkContentBrowserStyle volet = sty.volet;
@@ -1551,8 +2285,19 @@ namespace nkentseu {
 				// L'instance est MODIFIEE a chaque image (le mode, puis la largeur du rail) :
 				// la fonction rend donc une reference NON constante. Un `const_cast` ici
 				// aurait ete l'aveu que la signature ment.
-				NkComponentInstance &inst = NkInstanceVoletSelecteur(!saveMode && !dossierMode);
+				// ④ (06/09) C'EST L'APPELANT QUI DECLARE, plus le mode qui devine. Le calcul
+				//    d'avant (`!saveMode && !dossierMode`) allumait la selection multiple pour
+				//    TOUT dialogue de fichier, y compris ceux qui n'en veulent pas -- et il
+				//    l'eteignait pour ceux qui en voudraient un jour sur des dossiers.
+				NkComponentInstance &inst =
+					NkInstanceVoletSelecteur(fp.selectionMultiple && !saveMode && !dossierMode);
 				inst.SetParam("tree_width", zone.w > 0.f ? fp.largeurRail / zone.w : 0.18f);
+				// ⑦ (06/09) LE RAIL NE SE REORDONNE PAS. Un systeme de fichiers range par
+				//    nom : « avant » et « apres » n'y designent aucun geste. Sans ce
+				//    reglage, l'arbre proposerait un trait d'insertion pour un
+				//    deplacement qui n'existe pas -- un controle qui promet ce qu'il ne
+				//    peut pas tenir.
+				inst.SetParam("drop_into_only", 1.f);
 				volet.values = &inst;
 				// ② RE-TRONQUER LES LIBELLES AU MILIEU, ici et pas a la construction : c'est
 				//    ici qu'on connait la police ET la largeur. Le nom complet reste dans
@@ -1608,6 +2353,19 @@ namespace nkentseu {
 					NkDrawContentBrowser(peintre, in, {zone.x, zone.y, zone.w, zone.h}, fp.vue,
 										 volet, h);
 				nkgui::PopOverlay(ctx);
+				// ① (06/09) LE HAUT DES DEUX VOLETS, RELEVE. La poignee de partage se
+				//    posait sur `zone`, qui contient AUSSI les rangees pleine largeur du
+				//    volet (fil d'Ariane, filtres, compteur) : le trait bleu traversait
+				//    donc le fil d'Ariane, coupant « Nkentseu » de « Nkentseu-merge » sur
+				//    la capture de Rodolf. Le volet est le seul a savoir ou ses rangees
+				//    s'arretent -- il le dit maintenant, et on le lit.
+				if (res.panneauxH > 0.f) {
+					panneauxY = res.panneauxY;
+					panneauxH = res.panneauxH;
+				}
+				// ② (06/09) LA BOITE DE RECHERCHE, RELEVEE POUR ETRE VRAIMENT SAISIE.
+				if (res.rechercheW > 0.f)
+					recherche = {res.rechercheX, res.rechercheY, res.rechercheW, res.rechercheH};
 				// ── VIDE OU PLEIN : SEULEMENT CE QUI EST A L'ECRAN (05/09, v5) ─────
 				// Le volet vient de dire quelles entrees il a REELLEMENT dessinees. On ne
 				// sonde que celles-la : sur un dossier de 124 entrees, c'est la quinzaine
@@ -1628,11 +2386,131 @@ namespace nkentseu {
 						e.contenu = fp.cacheDossiers.Etat(e.path.CStr(), e.dateModif, false);
 					}
 				}
+				// ── ② LE CLIC DROIT OUVRE LE MENU (06/09) ─────────────────────────
+				// ⚠️ ON DECIDE ICI, ON DESSINE TOUT EN BAS. Le menu doit passer par-dessus
+				//    le volet : le peindre au moment ou on apprend le clic le mettrait
+				//    DESSOUS. Meme regle que l'infobulle, et pour la meme raison.
+				// ⚠️ ET LES CIBLES SE FIGENT A L'OUVERTURE : les lire au moment du clic sur
+				//    l'item les ferait dependre de ce que la liste est devenue entre-temps
+				//    (un collage, une suppression, une relecture). Un menu agit sur ce qu'on
+				//    a designe, pas sur ce qui se trouve la quand on relache.
+				if (res.menuIndex != -2) {
+					fp.menuCibles.Clear();
+					fp.menuSurRail = !res.menuCheminRail.Empty();
+					if (fp.menuSurRail) {
+						fp.menuCibles.PushBack(res.menuCheminRail);
+						fp.saisieDossier = res.menuCheminRail;
+					} else {
+						fp.saisieDossier = NkString(); // = le dossier affiche
+						if (res.menuIndex >= 0 && res.menuIndex < (int32)fp.vue.entries.Size()) {
+							const bool groupe =
+								fp.selectionMultiple && fp.vue.IsChosen(res.menuIndex)
+								&& (uint32)fp.vue.chosen.Size() > 1u;
+							if (groupe) {
+								for (uint32 k = 0; k < (uint32)fp.vue.chosen.Size(); ++k) {
+									const int32 idx = fp.vue.chosen[k];
+									if (idx >= 0 && idx < (int32)fp.vue.entries.Size())
+										fp.menuCibles.PushBack(fp.vue.entries[(uint32)idx].path);
+								}
+							} else
+								fp.menuCibles.PushBack(fp.vue.entries[(uint32)res.menuIndex].path);
+						}
+					}
+					fp.menuContextuel.open = true;
+					fp.menuContextuel.pos = {res.menuX, res.menuY};
+					fp.menuContextuel.sx = fp.menuContextuel.sy = 0.f;
+				}
+				// ── ① (06/09) LES DEUX BARRES DE DEFILEMENT ───────────────────────
+				// Rodolf : « il n'y a pas de scrollbar vertical ni a gauche ni a droite
+				// pour montrer LA PROFONDEUR ». Le mot est le sien, et il commande le
+				// choix : une barre qui n'apparaitrait qu'au survol ne dirait rien tant
+				// qu'on ne la cherche pas. Ici la gouttiere est PEINTE EN PERMANENCE, le
+				// pouce n'apparait que s'il y a de quoi defiler — un rail de 70 rangees
+				// cesse donc de ressembler a un rail de 15.
+				//
+				// ⚠️ C'EST LA BARRE DU KIT, PAS UNE SECONDE. `NkVScrollbar`
+				//    (`NkEditorScrollbar.h`) est celle de l'editeur de code, extraite
+				//    pour toute l'interface Nkentseu. Le composant ne peut pas l'appeler
+				//    (elle prend un `NkGuiContext`, et il compile sans NKGui) : il
+				//    RESERVE la gouttiere et RAPPORTE son rectangle, on la peint ici.
+				//    Meme partage que l'infobulle et le menu contextuel.
+				// ⚠️ PEINTE APRES LE COMPOSANT, DANS LA MEME LISTE : elle passe donc
+				//    par-dessus, et le clic qu'elle prend ne peut atteindre aucune
+				//    rangee — les rangees s'arretent avant la gouttiere.
+				{
+					// Deux identifiants distincts : sans eux, glisser l'un des pouces
+					// piloterait les deux (`ctx.activeId` est unique).
+					static const uint32 kIdRail = 0x4E4B5342u;	 // « NKSB »
+					static const uint32 kIdGrille = 0x4E4B5347u; // « NKSG »
+					if (res.railDefilW > 0.f && res.railDefilH > 0.f)
+						NkVScrollbar(ctx, dl,
+									 {res.railDefilX, res.railDefilY, res.railDefilW, res.railDefilH},
+									 fp.vue.folders.scroll, res.railDefilContenu, res.railDefilVue,
+									 kIdRail, res.railDefilPas);
+					if (res.defilW > 0.f && res.defilH > 0.f)
+						NkVScrollbar(ctx, dl, {res.defilX, res.defilY, res.defilW, res.defilH},
+									 fp.vue.scroll, res.defilContenu, res.defilVue, kIdGrille,
+									 res.defilPas);
+				}
+				// ── ⑦ (06/09) LE LACHER : C'EST ICI QU'ON DEPLACE ─────────────────
+				// Le volet a dit QUOI et OU ; l'hote est le seul a savoir ce qu'un
+				// deplacement veut dire ici -- un couper/coller sur le disque.
+				//
+				// ⚠️ ON REUTILISE LE COUPER/COLLER DU MENU, sans une ligne de plus.
+				//    Ecrire un second deplacement aurait donne deux facons de deplacer
+				//    un fichier dans le meme dialogue : l'une qui refuse un dossier
+				//    dans son propre sous-dossier, suffixe les homonymes et vide le
+				//    presse-papiers, l'autre qui redecouvrirait les trois cas -- et qui
+				//    en oublierait un. Le glisser est une PORTE de plus vers le meme
+				//    geste, jamais un second geste.
+				if (!res.deposeSource.Empty() && !res.deposeCible.Empty()) {
+					// Le presse-papiers est sauvegarde et rendu : un glisser ne doit pas
+					// effacer ce que l'utilisateur avait copie avant.
+					NkVector<NkString> gardePP = fp.pressePapier;
+					const bool gardeCouper = fp.presseCouper;
+					const NkString gardeDossier = fp.saisieDossier;
+					fp.menuCibles.Clear();
+					fp.menuCibles.PushBack(res.deposeSource);
+					fp.MettreAuPressePapier(true); // couper : un glisser DEPLACE
+					fp.saisieDossier = res.deposeCible;
+					const uint32 deplaces = fp.Coller();
+					fp.saisieDossier = gardeDossier;
+					fp.pressePapier = gardePP;
+					fp.presseCouper = gardeCouper;
+					fp.menuCibles.Clear();
+					if (deplaces == 0u && fp.messageCreation.Empty())
+						fp.messageCreation = NkString("Déplacement refusé.");
+					// ② (06/09) ON RELIT TOUT DE SUITE, PAS AU DEBUT DE L'IMAGE SUIVANTE.
+					//    `Coller` pose `relire`, et la porte qui le consomme est en TETE de
+					//    fonction -- donc deja passee quand le lacher arrive, qui a lieu en
+					//    fin d'image. La liste ne changeait qu'a l'image d'apres, et une
+					//    application qui ne redessine que sur evenement ne redessine pas
+					//    apres un relachement : « ca ne met pas directement a jour ».
+					// ⚠️ ICI ET PAS PLUS HAUT : le composant tenait `vue.entries` par
+					//    reference pendant son dessin ; il a rendu la main depuis.
+					if (fp.DoitRelire()) {
+						fp.RelireDossier();
+						fp.SuivreLeDepliage();
+					}
+				}
 				if (!res.infobulle.Empty()) {
 					bulle = res.infobulle;
 					bulleX = res.infobulleX;
 					bulleY = res.infobulleY;
 					bulleH = res.infobulleH;
+				}
+				// ⑦ LE FANTOME : ce qu'on traine suit le curseur. Peint APRES le volet,
+				//    dans la couche modale, comme l'infobulle et le menu -- sans lui, un
+				//    glisser est un geste dont rien ne dit qu'il a commence.
+				if (!res.glisserChemin.Empty()) {
+					const char *lib = res.glisserLibelle.Empty() ? res.glisserChemin.CStr()
+																 : res.glisserLibelle.CStr();
+					const float32 lw = f->MeasureWidth(lib);
+					const NkRect fant = {res.glisserX + 14.f * S, res.glisserY + 10.f * S,
+										 lw + 16.f * S, lh + 8.f * S};
+					dl.AddRectFilled(fant, sty.cadre.btn, 4.f * S);
+					dl.AddRect(fant, sty.cadre.accent, 1.f, 4.f * S);
+					text(fant.x + 8.f * S, fant.y + 4.f * S, lib, sty.cadre.text);
 				}
 				if (res.navigatedCrumb >= 0
 					&& res.navigatedCrumb < (int32)fp.cheminsCrumb.Size())
@@ -1651,8 +2529,13 @@ namespace nkentseu {
 			// ② LA POIGNEE : une bande verticale entre les deux volets. Elle est plus large
 			//    que le trait qu'elle deplace (8 px contre 1) -- une poignee qu'il faut
 			//    viser au pixel n'est pas une poignee.
+			// ① (06/09) ELLE COMMENCE OU LES VOLETS COMMENCENT, PAS OU LA ZONE COMMENCE.
+			//    `panneauxY/H` viennent du volet lui-meme (voir plus haut) : c'est le
+			//    MEME bord que celui de son trait de separation. Une hauteur en dur
+			//    aurait ete juste ce soir et fausse a la prochaine rangee ajoutee --
+			//    c'est precisement comme ca que le defaut est ne.
 			{
-				const NkRect p = {zone.x + fp.largeurRail - 4.f * S, zone.y, 8.f * S, zone.h};
+				const NkRect p = {zone.x + fp.largeurRail - 4.f * S, panneauxY, 8.f * S, panneauxH};
 				const bool surP = hit(p);
 				if (surP || fp.railGlisse)
 					dl.AddRectFilled({p.x + 3.f * S, p.y, 2.f * S, p.h}, sty.cadre.accent);
@@ -1662,6 +2545,47 @@ namespace nkentseu {
 					fp.largeurRail = mp.x - zone.x;
 				if (!ctx.input.mouseDown[0])
 					fp.railGlisse = false;
+			}
+
+			// ── ② LA BARRE DE RECHERCHE, ENFIN SAISISSABLE (06/09) ──────────────
+			// LA CAUSE, MESUREE AVANT D'ECRIRE : des trois possibles, c'est la
+			// PREMIERE. Le champ ne recevait pas la frappe. `NkContentBrowserModel`
+			// porte `filter` ET `searchFocused` ; `NkDrawContentBrowser` POSAIT le
+			// focus au clic et APPLIQUAIT deja `PassesFilter` a la liste visible ;
+			// mais `NkComponentInput` n'a aucune entree clavier, et un `grep` sur tout
+			// le depot ne trouvait AUCUN ecrivain de `fp.vue.filter`. Le filtrage
+			// n'etait donc pas casse : il n'avait jamais rien a filtrer.
+			//
+			// ⚠️ ON NE REECRIT PAS UN CHAMP : c'est `NkOverlayTextField`, le meme que le
+			//    champ de chemin et le champ de nom -- caret, selection, copier/coller.
+			//    Le volet a RESERVE la place et l'a rapportee ; l'hote peint dedans.
+			//    C'est la forme deja etablie pour l'infobulle et les deux gouttieres.
+			//
+			// ⚠️ CE QUE « CHERCHER » VEUT DIRE ICI, ET C'EST UN CHOIX : **le dossier
+			//    courant seulement**. Le filtre porte sur `vue.entries`, deja en
+			//    memoire -- cout : zero acces disque, une comparaison par entree
+			//    affichee. Descendre dans les sous-dossiers couterait un parcours
+			//    recursif A CHAQUE FRAPPE (le dossier de la capture porte 120 entrees
+			//    au premier niveau ; sous `D:/Projets` c'est plusieurs dizaines de
+			//    milliers), donc un cache, un fil d'execution et une annulation. Ce
+			//    n'est pas la meme fonctionnalite, et elle n'est PAS livree ici.
+			// ⚠️ UN SEUL DECIDEUR DU FOCUS, et ce n'est pas ici : c'est le volet qui
+			//    POSE `searchFocused` au clic dans la boite et le REPREND au clic
+			//    ailleurs. Le redecider ici ferait deux reponses pour un meme geste.
+			if (recherche.w > 0.f) {
+				if (fp.vue.searchFocused) {
+					// Le focus est exclusif : les trois autres champs le lachent.
+					fp.pickerEditing = false;
+					fp.pickerSaveFocus = false;
+					fp.nouveauFocus = false;
+				}
+				NkOverlayTextField(ctx, dl, f, recherche, fp.vue.filter,
+								   (int32)sizeof(fp.vue.filter), fp.vue.searchFocused);
+				// L'INVITE : le volet l'a peinte, le champ l'a recouverte. On la
+				// repose ici — meme geste que sous le champ de creation de dossier.
+				if (!fp.vue.filter[0] && !fp.vue.searchFocused)
+					text(recherche.x + 8.f * S, recherche.y + (recherche.h - lh) * 0.5f,
+						 "Rechercher...", sty.cadre.sub);
 			}
 
 			// ── LE BAS : le nom (mode enregistrer), puis Annuler / Confirmer ────
@@ -1734,18 +2658,43 @@ namespace nkentseu {
 				if (pbtn(G.confirmer, fp.PickerConfirmLabel(), pret)) {
 					fp.pickerConfirmed = true;
 					fp.pickerResultFor = fp.pickerFor;
+					fp.resultatsMultiples.Clear();
+					fp.nomsMultiples.Clear();
 					NkFilePickerState::CopyTo(fp.pickerResultPath, fp.pickerPath,
 											  (int32)sizeof(fp.pickerResultPath));
-					if (saveMode)
+					if (saveMode) {
 						NkFilePickerState::CopyTo(fp.pickerResultName, fp.pickerSaveName,
 												  (int32)sizeof(fp.pickerResultName));
-					else if (!dossierMode && fp.vue.active >= 0
-							 && fp.vue.active < (int32)fp.vue.entries.Size()) {
-						const NkAssetEntry &e = fp.vue.entries[(uint32)fp.vue.active];
-						NkFilePickerState::CopyTo(fp.pickerResultPath, e.path.CStr(),
-												  (int32)sizeof(fp.pickerResultPath));
-						NkFilePickerState::CopyTo(fp.pickerResultName, e.name.CStr(),
-												  (int32)sizeof(fp.pickerResultName));
+						fp.resultatsMultiples.PushBack(NkString(fp.pickerResultPath));
+						fp.nomsMultiples.PushBack(NkString(fp.pickerResultName));
+					} else if (dossierMode) {
+						fp.resultatsMultiples.PushBack(NkString(fp.pickerResultPath));
+						fp.nomsMultiples.PushBack(NkPath(fp.pickerResultPath).GetFileName());
+					} else {
+						// ④ (06/09) LA LISTE D'ABORD, LE PREMIER ENSUITE. `pickerResultPath`
+						//    est le PREMIER element, pas un second calcul : deux chemins de
+						//    remplissage auraient fini par ne plus dire la meme chose.
+						//    L'ordre est celui du dossier affiche, pas celui des clics --
+						//    c'est celui que l'utilisateur voit.
+						for (uint32 i = 0; i < (uint32)fp.vue.entries.Size(); ++i) {
+							const NkAssetEntry &e = fp.vue.entries[i];
+							if (e.isFolder)
+								continue;
+							const bool retenu = fp.selectionMultiple
+													? fp.vue.IsChosen((int32)i)
+													: (fp.vue.active == (int32)i);
+							if (!retenu)
+								continue;
+							fp.resultatsMultiples.PushBack(e.path);
+							fp.nomsMultiples.PushBack(e.name);
+						}
+						if (!fp.resultatsMultiples.Empty()) {
+							NkFilePickerState::CopyTo(fp.pickerResultPath,
+													  fp.resultatsMultiples[0].CStr(),
+													  (int32)sizeof(fp.pickerResultPath));
+							NkFilePickerState::CopyTo(fp.pickerResultName, fp.nomsMultiples[0].CStr(),
+													  (int32)sizeof(fp.pickerResultName));
+						}
 					}
 					fp.pickerOpen = false;
 					fp.pickerFor = NkFilePickerState::PK_None;
@@ -1764,6 +2713,13 @@ namespace nkentseu {
 				else if (!saveMode) { // double-clic sur un fichier = confirmer
 					fp.pickerConfirmed = true;
 					fp.pickerResultFor = fp.pickerFor;
+					// ④ UN DOUBLE-CLIC DESIGNE UN SEUL FICHIER, et la liste le dit aussi :
+					//    un appelant qui lit `resultatsMultiples` ne doit pas la trouver vide
+					//    parce que l'utilisateur a double-clique au lieu de confirmer.
+					fp.resultatsMultiples.Clear();
+					fp.nomsMultiples.Clear();
+					fp.resultatsMultiples.PushBack(e.path);
+					fp.nomsMultiples.PushBack(e.name);
 					NkFilePickerState::CopyTo(fp.pickerResultPath, e.path.CStr(),
 											  (int32)sizeof(fp.pickerResultPath));
 					NkFilePickerState::CopyTo(fp.pickerResultName, e.name.CStr(),
@@ -1801,6 +2757,67 @@ namespace nkentseu {
 			}
 			if (!cible.Empty())
 				fp.AllerA(cible.CStr());
+
+			// ── ② LE MENU CONTEXTUEL, PEINT EN DERNIER (06/09) ──────────────────
+			// Rodolf : « dans le panneau de gauche COMME dans celui de droite, le clic
+			// droit doit ouvrir un menu : creer un dossier, creer un fichier, copier,
+			// couper, coller, renommer, supprimer. »
+			//
+			// ⚠️ C'EST `NkCtxMenuDraw` DU KIT, PAS UN MENU DE PLUS. Il peint dans
+			//    `ctx.dlOverlay` — la couche ou ce dialogue peint deja — donc il suffit de
+			//    l'appeler EN DERNIER pour qu'il passe au-dessus. C'est precisement ce que
+			//    `NkComboButton` ne pouvait pas faire (sa liste part dans la couche de la
+			//    coquille, sous le dialogue), et c'est pour ca que le combo de tri, lui, a
+			//    du etre dessine sur place.
+			// ⚠️ CE QUI NE PEUT RIEN FAIRE EST GRISE ET RESTE VISIBLE : un menu dont les
+			//    items apparaissent et disparaissent oblige a relire la liste a chaque
+			//    ouverture, et cache POURQUOI une action est impossible.
+			if (fp.menuContextuel.open) {
+				const uint32 nCibles = (uint32)fp.menuCibles.Size();
+				const bool uneSeule = (nCibles == 1u);
+				static const char *const kItems[7] = {"Créer un dossier", "Créer un fichier",
+													  "Copier",			  "Couper",
+													  "Coller",			  "Renommer",
+													  "Supprimer"};
+				const bool en[7] = {true,	  true,		 nCibles > 0u, nCibles > 0u,
+									!fp.pressePapier.Empty(), uneSeule, nCibles > 0u};
+				static const bool kSep[7] = {false, true, false, false, true, false, false};
+				const int32 act = NkCtxMenuDraw(ctx, fp.menuContextuel, kItems, en, 7, nullptr,
+												nullptr, nullptr, nullptr, 0, nullptr, nullptr,
+												kSep);
+				switch (act) {
+					case 0:
+						fp.OuvrirSaisie(NkFilePickerNavState::SaisieDossier,
+										fp.saisieDossier.Empty() ? nullptr : fp.saisieDossier.CStr(),
+										nullptr, nullptr);
+						break;
+					case 1:
+						fp.OuvrirSaisie(NkFilePickerNavState::SaisieFichier,
+										fp.saisieDossier.Empty() ? nullptr : fp.saisieDossier.CStr(),
+										nullptr, nullptr);
+						break;
+					case 2:
+						fp.MettreAuPressePapier(false);
+						break;
+					case 3:
+						fp.MettreAuPressePapier(true);
+						break;
+					case 4:
+						fp.Coller();
+						break;
+					case 5:
+						if (uneSeule)
+							fp.OuvrirSaisie(NkFilePickerNavState::SaisieRenommer, nullptr,
+											fp.menuCibles[0].CStr(),
+											NkPath(fp.menuCibles[0]).GetFileName().CStr());
+						break;
+					case 6:
+						fp.Supprimer();
+						break;
+					default:
+						break;
+				}
+			}
 			--ctx.modalDepth;
 			return true;
 		}
