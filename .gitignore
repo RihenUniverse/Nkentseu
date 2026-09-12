@@ -816,3 +816,9 @@ nkuidesign_roundtrip_controles.txt
 nkuidesign_validation.txt
 nkuidesign_releve_ui.txt
 nkuidesign_releve_menus.txt
+
+# Bancs materiaux/graphe : les captures PNG et les journaux bruts sont des
+# SORTIES rejouables (scripts/matgraph_temoin_demos.sh les regenere). Seules les
+# signatures .sig se versionnent -- ce sont elles qu on compare.
+mesures_matgraph/**/*.png
+mesures_matgraph/**/*.log
