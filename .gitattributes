@@ -45,3 +45,16 @@
 *.apk binary
 *.exe binary
 *.pdf binary
+
+# ── Apporte par feat/verificateur (27/08) ──────────────────────────────────
+# Fixtures de bancs : fins de ligne FIGEES en LF.
+# Une entree de test doit etre identique octet pour octet partout, sinon le
+# banc mesure la machine. Sans cette ligne, `* text=auto` + core.autocrlf=true
+# rendaient tree.obj / rock.obj en CRLF a la sortie de caisse, alors qu'AUCUN
+# des deux lecteurs OBJ (NkOBJLoader.cpp, NkOBJIO.cpp) ne mentionne le CR.
+*.obj text eol=lf
+# Les fichiers de classement des verificateurs sont lus caractere pour
+# caractere par des scripts ; un CRLF injecte par la normalisation y serait
+# invisible dans tout diff. Voir VERIFICATEUR.md, « une regle de normalisation
+# peut defaire une correction sans toucher au code corrige ».
+*.list text eol=lf

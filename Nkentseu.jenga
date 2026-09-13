@@ -1515,6 +1515,29 @@ with workspace("Nkentseu", location="."):
 
         pass
 
+    with include("Applications/NkMsaaContractCheck/NkMsaaContractCheck.jenga"):
+
+        pass
+
+
+
+    with include("Applications/NkMsaaDeviceCheck/NkMsaaDeviceCheck.jenga"):
+
+        pass
+
+
+    with include("Applications/NkMsaaVulkanCheck/NkMsaaVulkanCheck.jenga"):
+
+        pass
+
+    with include("Applications/NkIblEnabledCheck/NkIblEnabledCheck.jenga"):
+
+        pass
+
+    with include("Applications/NkDebugOverlayCheck/NkDebugOverlayCheck.jenga"):
+
+        pass
+
 
 
     with include("Applications/NKEditTargetTest/NKEditTargetTest.jenga"):

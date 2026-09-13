@@ -810,6 +810,9 @@ Kernel/logs/
 # a chaque lancement, et surtout un rapport perime ressemble exactement a un
 # rapport frais (piege deja paye le 19/08 -- d ou l horodatage de compilation
 # qu ils portent desormais).
+# Artefact depose a la racine par le banc NKUIDesign a chaque execution
+# (--roundtrip-controles). Le verificateur le lance a chaque passe : sans cette
+# ligne, tout agent voit un fichier non suivi apparaitre sans savoir d ou il vient.
 nkuidesign_probe.txt
 nkuidesign_roundtrip.txt
 nkuidesign_roundtrip_controles.txt
