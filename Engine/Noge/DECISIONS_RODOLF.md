@@ -3135,6 +3135,96 @@ rendu 74,02 et 1,34, Wien 0,0079 %, D65 (0,3134 / 0,3237). *Le confinement à
    grille décalée MAC n'est plus un raffinement — c'est ce qui rend le confinement
    payable.
 
+### 📏 12/09 (soir) — LES VOLUTES QUI MANQUENT : c'est la BOÎTE (la résolution), pas le schéma — mesuré, pas jugé à l'œil
+
+**La question** (reprise de Rodolf, 12/09) : le panache du 07/09 est « plus large et
+structuré, **mais sans grosses volutes qui s'enroulent** (boîte de 0,5 m, caméra
+proche : les tourbillons restent de la taille de quelques cellules) ». Cette
+parenthèse était une **prédiction mesurable**. Est-ce la **boîte** (la résolution :
+la source fait 3 cellules de rayon) ou le **schéma** (la dissipation numérique et
+le confinement en `epsilon·h` accrochent les structures à la grille) ? Si c'est la
+boîte, on s'arrête : une limite comprise coûte moins qu'un solveur réécrit.
+
+**Pré-enregistrement AVANT la première ligne de code** : `PLAN_VOLUTES.md` (commit
+`2e0f2c78`), à côté du solveur. Critères, contrôles et **règle de décision** écrits
+d'avance : `r = D(h = 1 cm) / D(h = 2 cm)` sur la scène du panache — **r ≥ 1,6 →
+la boîte ; r ≤ 1,3 → le schéma ; entre → indéterminé.** Rien n'a bougé après.
+
+**L'instrument (n1)** — une échelle de longueur EN CELLULES, pas un jugement à
+l'œil : autocorrélation **signée** de `omega` (tel que le solveur le calcule,
+accesseurs en lecture seule) le long des deux axes horizontaux, intégrée jusqu'au
+premier zéro ; diamètre `D = (3π/4)·L`, facteur **dérivé** sur un tourbillon de
+Rankine, pas ajusté. **Cinq contrôles verts** : Rankine R = 6 → **13,16** (12 ± 12 %),
+R = 3 → **7,17** (6 ± 20 %), rapport **1,836** ([1,8 ; 2,2]) ; bruit blanc → 1,48
+(< 2) ; rotation uniforme → **false** ; grille vide → **false**.
+
+**Le résultat, sur la scène EXACTE des deux images du 07/09** (`ConstruirePanache`,
+fidélité de la copie éprouvée au dernier chiffre), D moyenné sur les 60 derniers
+pas de 255 :
+
+```
+                                      h        D (cellules)   D (m)     D / source
+ A  jet,     epsilon = 0             2 cm      2,84            0,057    0,47
+ B  panache, epsilon = 8             2 cm      2,20            0,044    0,37     <- la phrase du 07/09 etait JUSTE
+ B  boite / 2, cellules constantes   1 cm      2,33            0,023    0,19     (n2a : parois a 0,125 m, confondant DIT)
+ B  meme boite, h seul change        1 cm      4,77            0,048    0,40     (n2b : 400 000 cellules, 3,3 s/pas)
+
+ r(n2b) = 4,769 / 2,201 = 2,167 >= 1,6   ->   C'EST LA BOITE.   En metres : x 1,08.
+```
+
+**Ce que ça veut dire, sans plus.** La taille des structures est fixée par la
+**physique** (≈ 0,045 m, 0,4 fois le diamètre de la source de 0,12 m) et **ne bouge
+pas quand la grille s'affine** ; à 2 cm elle tombait à 2,2 cellules parce que
+4,5 cm font 2,2 cellules de 2 cm, et c'est tout. La grille de 2 cm était trop grosse
+pour la montrer — **pas le schéma**. Et (n2a), la boîte divisée par deux à cellules
+constantes, disait r = 1,06 : **le confondant des parois annoncé d'avance a parlé**
+(source de 12 cm entre des parois à 12,5 cm de l'axe, D en mètres y tombe à 2,3 cm).
+Une question posée à une seule géométrie ne pouvait pas trancher — c'est pour ça
+qu'il y avait deux expériences.
+
+⚠️ **Ce que « c'est la boîte » n'achète PAS.** Affiner ne fait pas apparaître de
+*plus grosses* volutes : l'image à 1 cm (`Captures/fumee_panache_h1cm_2026-09-12.png`,
+même caméra, regardée) montre une colonne **plus fine et plus filamentée, pas plus
+enroulée**. Des structures de 4-5 cm à 3 pixels par centimètre font ~14 pixels : ce
+sont les « bouffées » qu'on voyait déjà. Des *grosses* volutes seraient des
+structures plus grandes **par rapport à la source** — une autre physique (temps,
+poussée, taille de source), pas une autre grille. Coût de la résolution qui montre
+proprement ces 4-5 cm : ×8 cellules, ×9,4 le temps par pas sur un fil (348 → 3 275 ms).
+
+**Le second instrument (n1'), le critère Q** (Hunt, Wray & Moin 1988) — écrit et daté
+en cours de route (`PLAN_VOLUTES.md` § 5bis), **sur une prémisse que (n2b) a ensuite
+réfutée** (§ 5ter : je croyais (n1) accroché à l'épaisseur de nappe, grid-mince ; il
+ne l'est pas). Il reste parce qu'il sépare **rotation et cisaillement**, ce que (n1)
+ne fait pas — six contrôles verts, dont le décisif : un cisaillement pur `u = a z`
+rend **zéro cellule** (Q = 0 exactement) là où (n1) y verrait une échelle. Ce qu'il
+dit : avec le confinement, **60 % de l'enstrophie est dans des cellules à rotation
+dominante contre 12 % pour le jet** — « ça tourne » est un nombre — mais en **~680
+petits cœurs de ~4 cellules (8 cm)**, pas en quelques gros. Et il rend le **même
+verdict** : r' = 10,24 / 4,13 = **2,48 → la boîte**. 🔴 **Sa limite, rouge telle
+qu'écrite** : à son seuil pré-enregistré (Q ≥ 1 % de Q_max) un fond de faible Q
+percole jusqu'aux parois latérales et il **refuse 40 pas sur 60** à 2 cm, 14 sur 60
+à 1 cm ; le chiffre est la moyenne des pas acceptés. Levier nommé, non fait : un
+seuil sur |omega| en plus du seuil sur Q.
+
+🔴 **Les autres rouges, dits.** (n3b) invariance par translation : **5,8 % d'écart
+pour 1e-4 exigé** — et la cause est **mesurée**, pas supposée ((n3b') vert) : après
+UNE émission, **13 cellules** de densité diffèrent entre les deux repères (arrondi
+float32 de `bmin + (i−0,5)h` sur le bord de la sphère de `EmitSphere`), donc les deux
+courses ne sont pas le même problème discret, et l'écart mesure la sensibilité de
+l'écoulement, pas l'instrument. Le seuil reste écrit tel quel. (n3a) déterminisme
+et (n3c) fidélité de la copie : verts au dernier chiffre.
+
+**Un piège payé, écrit dans le code** : le premier contrôle positif posait une rotation
+solide *tronquée* (vitesse nulle hors du disque) — ce n'est pas « omega uniforme dans
+un disque, nul dehors » : le saut de vitesse est une **nappe de signe opposé** dont
+l'enstrophie domine, et l'instrument, juste, la mesurait (D = 3,65 pour 12). Montage
+corrigé en Rankine (irrotationnel dehors), **seuils intacts**.
+
+**Aucune ligne du solveur n'a changé.** Ajoutés : `OmegaX/Y/Z/Mag()` en lecture seule
+(`NkFluidGrid.h`), `volutes.cpp` dans `NkFluidGridProbe`, le mode `NK_FLUID_VOLUTES=1`
+(la course complète joue les contrôles, (n1), (n3), (n2a) ; seul le mode joue (n2b),
+~20 min). **Rien n'est poussé.**
+
 ### 🔩 04/09 (nuit) — JENGA 2.6 : ce qui est appliqué, ce qui est mesuré en retour
 
 - **`-static` — le défaut était chez nous** : `config/toolchain.jenga:55` (bloc Windows natif) promettait

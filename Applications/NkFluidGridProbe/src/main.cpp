@@ -57,6 +57,7 @@ void EnqueteLePrix();		// (f2) LE PRIX du donor-cell (NK_FLUID_MAC=4)
 void EnqueteStabilite();	// (f3) LA STABILITÉ, filet coupé (NK_FLUID_MAC=5)
 void EnqueteRuptureFine();	// (g1) la rupture ENCADRÉE par dichotomie (NK_FLUID_MAC=6)
 void EnqueteCibleSousCyclage(); // (g2)+(g3) la courbe, la cible, le NOUVEAU prix (NK_FLUID_MAC=7)
+void PalierVolutes(bool complet); // (n1)(n3)(n2a) toujours ; (n2b) sous NK_FLUID_VOLUTES=1 (PLAN_VOLUTES.md)
 void ImagesDuConfinement(float32 epsilon);
 float32 EpsilonConfinement();
 
@@ -602,6 +603,20 @@ int main(int argc, char **argv) {
 	// Le verdict, lui, reste celui de la course complete, qu'on relance AVANT de
 	// conclure quoi que ce soit -- sans quoi on jugerait la bascule sur un banc
 	// qu'on aurait choisi parce qu'il est rapide.
+	// NK_FLUID_VOLUTES=1 : la taille des tourbillons EN CELLULES, boite ou schema
+	// (PLAN_VOLUTES.md). Seul ce mode joue (n2b), la course a 400 000 cellules :
+	// son cout ne doit pas s'ajouter aux ~15 minutes de la course complete. Les
+	// controles de l'instrument, (n1), (n3) et (n2a) sont aussi joues par la course
+	// complete, pour que l'instrument reste garde.
+	const char *volutes = ::nkentseu::env::GetEnvVar("NK_FLUID_VOLUTES");
+	if (volutes != nullptr && volutes[0] == '1') {
+		PalierVolutes(true);
+		printf("\n=============================================================\n");
+		printf("BILAN (mode NK_FLUID_VOLUTES=1, boite ou schema) : %d controles, %d ROUGES\n", gChecks, gFailures);
+		printf("=============================================================\n");
+		return gFailures == 0 ? 0 : 1;
+	}
+
 	const char *mac = ::nkentseu::env::GetEnvVar("NK_FLUID_MAC");
 	// NK_FLUID_MAC=3 : les deux ENQUETES de la bascule. Ce ne sont PAS des temoins
 	// et elles ne rendent AUCUN verdict : elles font varier la RESOLUTION pour
@@ -719,6 +734,7 @@ int main(int argc, char **argv) {
 	PalierFeu();
 	PalierVorticite();
 	PalierBranchement();
+	PalierVolutes(false); // sans (n2b) : son cout est celui du mode NK_FLUID_VOLUTES=1
 	ImagesDuConfinement(EpsilonConfinement());
 	MasseEtDivergence(true); // mutation 1
 	Transport(true);		 // mutation 2

@@ -171,3 +171,10 @@ LE CONFINEMENT DE VORTICITÉ, ET LA GRILLE BRANCHÉE ».
   ⚠️ Meme avertissement : trace du banc, pas capture du rendu. Le nuanceur PBR ne
   lit PAS encore cette carte (l'entree materiau n'est pas branchee -- nommee dans
   le rapport) ; ce que l'image montre est la valeur que le nuanceur RECEVRAIT.
+
+
+### Les volutes : BOÎTE ou SCHÉMA ? (12/09) — `NkFluidGridProbe`, mode `NK_FLUID_VOLUTES=1`
+
+| image | octets | ce qu'elle prouve, et ce qu'elle ne prouve pas |
+|---|---:|---|
+| `fumee_panache_h1cm_2026-09-12.png` | 23 687 | **Le même panache que `fumee_panache_confinement_2026-09-07.png`, à h = 1 cm au lieu de 2** — même boîte 0,5 × 1,6 × 0,5 m, même source, même `dt`, mêmes 255 pas, même `epsilon = 8`, **même caméra** ; 25 × 80 × 25 → **50 × 160 × 50 = 400 000 cellules**, 3,3 s par pas sur un fil. Elle se regarde À CÔTÉ de celle du 07/09 : **c'est une aide à l'œil, pas une preuve** — la preuve est la mesure, dans `PLAN_VOLUTES.md` et le bloc du 12/09 de `DECISIONS_RODOLF.md`. Mesuré sur la grille (pas sur les pixels) : l'échelle des structures tourbillonnaires vaut **2,20 cellules à 2 cm et 4,77 cellules à 1 cm** — soit **0,044 m → 0,048 m, constante en MÈTRES** (0,4 fois le diamètre de la source). ⚠️ **Ce que l'œil voit, exactement** : la colonne à 1 cm est **plus fine et plus filamentée** (des stries, des bouffées mieux découpées), **pas plus enroulée** — les structures ont la même taille en mètres, elles sont seulement mieux résolues. **Elle ne montre pas de grosses volutes non plus**, et la mesure dit pourquoi ce n'est pas la grille qui les cache : leur taille est physique, ~4-5 cm sur une source de 12 cm, à 3 pixels par centimètre. ⚠️ Rendu **CPU** (`NkFluidGridRaymarch`), aucune fenêtre, aucun device. |
