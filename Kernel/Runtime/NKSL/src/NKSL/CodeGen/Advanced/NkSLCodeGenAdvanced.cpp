@@ -1,4 +1,5 @@
 // =============================================================================
+// AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // NkSLCodeGen_Advanced.cpp  — v3.0
 //
 // CORRECTION BUG: SemanticFor() ne prend plus de static local.
@@ -7,12 +8,12 @@
 // Le compteur autoIndex est passé depuis GenInputOutputStructs() comme variable locale.
 // =============================================================================
 #include "NKSL/CodeGen/NkSLCodeGen.h"
+#include "NKCore/Text/NkSnprintf.h"
 #include "NKSL/Frontend/NkSLSemantic.h"
 #include "NKSL/Compiler/NkSLCompiler.h"
 #include "NKSL/Frontend/NkSLLexer.h"
 #include "NKSL/Frontend/NkSLParser.h"
 #include "NKLogger/NkLog.h"
-#include <cstdio>
 
 namespace nkentseu {
 
@@ -325,10 +326,10 @@ namespace nkentseu {
 		bool isReadWrite = (b->storage == NkSLStorageQual::NK_BUFFER);
 		char buf[256];
 		if (isReadWrite) {
-			snprintf(buf, sizeof(buf), "RWStructuredBuffer<%s> %s : register(u%d);", b->blockName.CStr(),
+			nkentseu::NkSnprintf(buf, sizeof(buf), "RWStructuredBuffer<%s> %s : register(u%d);", b->blockName.CStr(),
 					 b->instanceName.Empty() ? b->blockName.ToLower().CStr() : b->instanceName.CStr(), reg);
 		} else {
-			snprintf(buf, sizeof(buf), "StructuredBuffer<%s> %s : register(t%d);", b->blockName.CStr(),
+			nkentseu::NkSnprintf(buf, sizeof(buf), "StructuredBuffer<%s> %s : register(t%d);", b->blockName.CStr(),
 					 b->instanceName.Empty() ? b->blockName.ToLower().CStr() : b->instanceName.CStr(), reg);
 		}
 		EmitLine(NkString(buf));

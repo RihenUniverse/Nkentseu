@@ -1,14 +1,15 @@
 // AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // =============================================================================
+// AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // NkGuiWidgets.cpp — widgets immédiats NKGui (Phase 2-3 : Button, Panel, Text).
 // =============================================================================
 #include "NKGui/Widgets/NkGuiWidgets.h"
+#include "NKCore/Text/NkSnprintf.h"
 #include "NKGui/Core/NkGuiFont.h"
 #include "NKFont/NkFont.h"				  // NkFontEncodeUTF8 / CalcTextSizeX
 #include "NKContainers/String/NkString.h" // NkString : parse (ToFloat) + format (Format)
 #include "NKGui/Core/NkGuiIntrospect.h"   // le releve : ce que cette trame dessine
 #include "NKMath/NkFunctions.h"			  // math::NkClamp / NkRound (zéro stdlib)
-#include <cstdio>
 #include <cstring>
 
 namespace nkentseu {
@@ -618,7 +619,7 @@ namespace nkentseu {
 			if (ctx.font && ctx.font->Valid()) {
 				const float32 baseY = CenteredBaseline(ctx, r);
 				char buf[32];
-				::snprintf(buf, sizeof(buf), "%.2f", static_cast<double>(value));
+				nkentseu::NkSnprintf(buf, sizeof(buf), "%.2f", static_cast<double>(value));
 				const float32 vx = track.x + track.w + 12.f;
 				ctx.DL().AddText(ctx.font->Face(), ctx.font->TexId(), {vx, baseY}, buf, ctx.theme.text);
 				ctx.DL().AddText(ctx.font->Face(), ctx.font->TexId(), {vx + ctx.font->MeasureWidth(buf) + 14.f, baseY},

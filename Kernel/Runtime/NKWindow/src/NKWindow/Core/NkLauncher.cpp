@@ -1,4 +1,5 @@
 // =============================================================================
+// AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // NkLauncher.cpp
 // AUTEUR (ajout RevealFile, 2026-09-05) : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // -----------------------------------------------------------------------------
@@ -7,6 +8,7 @@
 // =============================================================================
 
 #include "NKWindow/Core/NkLauncher.h"
+#include "NKCore/Text/NkSnprintf.h"
 #include "NKPlatform/NkPlatformDetect.h"
 #include "NKLogger/NkLog.h"
 
@@ -161,12 +163,12 @@ namespace nkentseu {
 		// l'expansion shell. Pas de sanitization -- l'appelant doit garantir
 		// que l'URL ne contient pas de "'" malveillant.
 		char cmd[2048];
-		std::snprintf(cmd, sizeof(cmd), "xdg-open '%s' >/dev/null 2>&1 &", url);
+		nkentseu::NkSnprintf(cmd, sizeof(cmd), "xdg-open '%s' >/dev/null 2>&1 &", url);
 		return std::system(cmd) == 0;
 
 #elif defined(NKENTSEU_PLATFORM_MACOS)
 		char cmd[2048];
-		std::snprintf(cmd, sizeof(cmd), "open '%s' >/dev/null 2>&1 &", url);
+		nkentseu::NkSnprintf(cmd, sizeof(cmd), "open '%s' >/dev/null 2>&1 &", url);
 		return std::system(cmd) == 0;
 
 #elif defined(NKENTSEU_PLATFORM_IOS)
@@ -211,11 +213,11 @@ namespace nkentseu {
 		return (reinterpret_cast<INT_PTR>(r) > 32);
 #elif defined(NKENTSEU_PLATFORM_LINUX)
 		char cmd[2048];
-		std::snprintf(cmd, sizeof(cmd), "xdg-open '%s' >/dev/null 2>&1 &", filePath);
+		nkentseu::NkSnprintf(cmd, sizeof(cmd), "xdg-open '%s' >/dev/null 2>&1 &", filePath);
 		return std::system(cmd) == 0;
 #elif defined(NKENTSEU_PLATFORM_MACOS)
 		char cmd[2048];
-		std::snprintf(cmd, sizeof(cmd), "open '%s' >/dev/null 2>&1 &", filePath);
+		nkentseu::NkSnprintf(cmd, sizeof(cmd), "open '%s' >/dev/null 2>&1 &", filePath);
 		return std::system(cmd) == 0;
 #elif defined(NKENTSEU_PLATFORM_ANDROID)
 		// Android : pour ouvrir un fichier local on doit passer par un Intent
@@ -251,11 +253,11 @@ namespace nkentseu {
 		return (reinterpret_cast<INT_PTR>(r) > 32);
 #elif defined(NKENTSEU_PLATFORM_LINUX)
 		char cmd[2048];
-		std::snprintf(cmd, sizeof(cmd), "xdg-open '%s' >/dev/null 2>&1 &", folderPath);
+		nkentseu::NkSnprintf(cmd, sizeof(cmd), "xdg-open '%s' >/dev/null 2>&1 &", folderPath);
 		return std::system(cmd) == 0;
 #elif defined(NKENTSEU_PLATFORM_MACOS)
 		char cmd[2048];
-		std::snprintf(cmd, sizeof(cmd), "open '%s' >/dev/null 2>&1 &", folderPath);
+		nkentseu::NkSnprintf(cmd, sizeof(cmd), "open '%s' >/dev/null 2>&1 &", folderPath);
 		return std::system(cmd) == 0;
 #elif defined(NKENTSEU_PLATFORM_HARMONYOS)
 		// HarmonyOS : pas de notion d'explorateur de fichiers ouvrable depuis

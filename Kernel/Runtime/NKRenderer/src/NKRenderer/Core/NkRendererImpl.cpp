@@ -1,8 +1,10 @@
 // AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // =============================================================================
+// AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // NkRendererImpl.cpp  — NKRenderer v5.0
 // =============================================================================
 #include "NkRendererImpl.h"
+#include "NKCore/Text/NkSnprintf.h"
 #include "NKRenderer/Tools/Reflection/NkPlanarReflectionSystem.h"
 #include "NKRenderer/Tools/VoxelAO/NkVoxelAOSystem.h"
 #include "NKRenderer/Materials/NkMaterialCollection.h"
@@ -1021,7 +1023,7 @@ namespace nkentseu {
 					uint32 bw = mCfg.width / div ? mCfg.width / div : 1;
 					uint32 bh = mCfg.height / div ? mCfg.height / div : 1;
 					char name[32];
-					snprintf(name, sizeof(name), "BloomMip%d", i);
+					nkentseu::NkSnprintf(name, sizeof(name), "BloomMip%d", i);
 					bloomMip[i] =
 						g.CreateTransient(name, NkTextureDesc::RenderTarget(bw, bh, NkGPUFormat::NK_RGBA16_FLOAT));
 				}
@@ -1037,7 +1039,7 @@ namespace nkentseu {
 				// porte l'ancrage sur le blanc affiche et la sortie de circularite.
 				for (int i = 0; i < kBloomMipsRG; i++) {
 					char passName[32];
-					snprintf(passName, sizeof(passName), "Bloom_Down_%d", i);
+					nkentseu::NkSnprintf(passName, sizeof(passName), "Bloom_Down_%d", i);
 					auto &dp = g.AddPass(passName, NkPassType::NK_POST_PROCESS);
 					NkGraphResId src = (i == 0) ? mainColor : bloomMip[i - 1];
 					dp.Reads(src);
@@ -1065,7 +1067,7 @@ namespace nkentseu {
 				// Ordre : Bloom_Up_4 (mip5->mip4), ..., Bloom_Up_0 (mip1->mip0).
 				for (int i = kBloomMipsRG - 2; i >= 0; i--) {
 					char passName[32];
-					snprintf(passName, sizeof(passName), "Bloom_Up_%d", i);
+					nkentseu::NkSnprintf(passName, sizeof(passName), "Bloom_Up_%d", i);
 					auto &up = g.AddPass(passName, NkPassType::NK_POST_PROCESS);
 					up.Reads(bloomMip[i + 1]);
 					// NK_LOAD pour preserver le downsample de la mip courante

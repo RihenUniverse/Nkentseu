@@ -34,6 +34,7 @@
                                // pas `std::` (règle de Rodolf du 18/08).
 #if defined(_WIN32)
 #include <windows.h> // GetLogicalDrives (barre latérale disques)
+#include "NKCore/Text/NkSnprintf.h"
 #endif
 
 using namespace nkentseu;
@@ -2063,7 +2064,7 @@ namespace nkentseu {
 			if (mFooterZoom) {
 				const int32 pct = static_cast<int32>(ActiveCodeSize() / kDefaultCodeFontSize * 100.f + 0.5f);
 				char z[24];
-				std::snprintf(z, sizeof(z), "Zoom %d%%", pct);
+				nkentseu::NkSnprintf(z, sizeof(z), "Zoom %d%%", pct);
 				const float32 zw = mUI.font->MeasureWidth(z);
 				const NkRect zr = {rightX - zw - pad, bar.y + 2.f, zw + pad * 2.f, footerH - 3.f};
 				const bool zhov = nkgui::NkGuiRectContains(zr, mUI.input.mousePos);
@@ -2832,7 +2833,7 @@ void NkEditorShell::MaximizeWindow() noexcept {
 					const NkGuiDockNode &d = mUI.dockNodes[order[k]];
 					const int32 c0 = (d.kind == 1 && d.child0 >= 0 && d.child0 < 256) ? map[d.child0] : -1;
 					const int32 c1 = (d.kind == 1 && d.child1 >= 0 && d.child1 < 256) ? map[d.child1] : -1;
-					std::snprintf(buf, sizeof(buf), "node=%d|%d|%d|%.4f|%d|%d|%d\n", k, static_cast<int32>(d.kind),
+					nkentseu::NkSnprintf(buf, sizeof(buf), "node=%d|%d|%d|%.4f|%d|%d|%d\n", k, static_cast<int32>(d.kind),
 								  d.vertical ? 1 : 0, static_cast<double>(d.ratio), c0, c1, d.activeTab);
 					out += buf;
 					if (d.kind == 2)
@@ -2840,7 +2841,7 @@ void NkEditorShell::MaximizeWindow() noexcept {
 							for (uint32 m2 = 0; m2 < mUI.windowMeta.Size(); ++m2)
 								if (mUI.windowMeta[m2].id == d.windows[w]) {
 									if (mUI.windowMeta[m2].title[0]) {
-										std::snprintf(buf, sizeof(buf), "nwin=%d|%s\n", k, mUI.windowMeta[m2].title);
+										nkentseu::NkSnprintf(buf, sizeof(buf), "nwin=%d|%s\n", k, mUI.windowMeta[m2].title);
 										out += buf;
 									}
 									break;
@@ -2853,7 +2854,7 @@ void NkEditorShell::MaximizeWindow() noexcept {
 						if (wm.id != wid)
 							continue;
 						if (wm.dockNode < 0 && wm.hostRoot < 0 && wm.init) {
-							std::snprintf(buf, sizeof(buf), "float=%.1f|%.1f|%.1f|%.1f|%s\n",
+							nkentseu::NkSnprintf(buf, sizeof(buf), "float=%.1f|%.1f|%.1f|%.1f|%s\n",
 										  static_cast<double>(wm.rect.x), static_cast<double>(wm.rect.y),
 										  static_cast<double>(wm.rect.w), static_cast<double>(wm.rect.h),
 										  mPanels[i]->Title());
@@ -3324,7 +3325,7 @@ void NkEditorShell::MaximizeWindow() noexcept {
 							sz = 8.f;
 					}
 					char sb[8];
-					std::snprintf(sb, sizeof(sb), "%d", static_cast<int>(sz + 0.5f));
+					nkentseu::NkSnprintf(sb, sizeof(sb), "%d", static_cast<int>(sz + 0.5f));
 					const NkRect szBox = {cx + 338.f, y, 36.f, 26.f};
 					dl.AddRectFilled(szBox, NkColor{22, 27, 34, 255}, 4.f);
 					const float32 sw = mFont.MeasureWidth(sb);

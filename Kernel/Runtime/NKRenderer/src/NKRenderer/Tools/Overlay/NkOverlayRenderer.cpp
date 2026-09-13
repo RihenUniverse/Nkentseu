@@ -5,6 +5,7 @@
 #include "NKRenderer/Tools/Render2D/NkRender2D.h"
 #include <cstdio>
 #include <cstdarg>
+#include "NKCore/Text/NkSnprintf.h"
 // Suppress Win32 GDI macro after all headers
 #ifdef DrawText
 #undef DrawText
@@ -53,7 +54,7 @@ namespace nkentseu {
 				snprintf(gpu, sizeof(gpu), "%.2fms", s.gpuTimeMs);
 			else
 				snprintf(gpu, sizeof(gpu), "--");
-			snprintf(buf, sizeof(buf), "Draw:%u  Tris:%u  GPU:%s  CPU:%.2fms  Batches:%u", s.drawCalls, s.triangles, gpu,
+			nkentseu::NkSnprintf(buf, sizeof(buf), "Draw:%u  Tris:%u  GPU:%s  CPU:%.2fms  Batches:%u", s.drawCalls, s.triangles, gpu,
 					 s.cpuTimeMs, s.batchCount);
 			mTxt->DrawText(pos, buf, mFont, 14.f, 0xFFFFFFFF);
 
@@ -75,7 +76,7 @@ namespace nkentseu {
 			char buf[512];
 			va_list va;
 			va_start(va, fmt);
-			vsnprintf(buf, sizeof(buf), fmt, va);
+			nkentseu::NkVsnprintf(buf, sizeof(buf), fmt, va);
 			va_end(va);
 			mTxt->DrawText(pos, buf, mFont, 14.f, 0xFFFFFFFF);
 		}

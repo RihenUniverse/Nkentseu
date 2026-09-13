@@ -2,7 +2,7 @@
 // -----------------------------------------------------------------------------
 // @File    NkNodeGraphIO.inl
 // @Brief   Serialisation `.nkgraph` et historique annuler/refaire.
-// @Author  Rihen
+// AUTEUR : TEUGUIA TADJUIDJE Rodolf Séderis — Rihen
 // @License Proprietary - All Rights Reserved (see LICENSE)
 //
 // FORMAT TEXTE, une directive par ligne. Le choix du texte n'est pas de la
@@ -65,6 +65,7 @@
 // -----------------------------------------------------------------------------
 
 #include <stdio.h>	// snprintf : formatage des nombres, pas de flux
+#include "NKCore/Text/NkSnprintf.h"
 #include <stdlib.h> // strtod
 
 namespace nkentseu {
@@ -74,7 +75,7 @@ namespace nkentseu {
 
 			inline void PutU32(NkString &s, uint32 v) {
 				char b[16];
-				snprintf(b, sizeof(b), "%u", v);
+				nkentseu::NkSnprintf(b, sizeof(b), "%u", v);
 				s.Append(b);
 			}
 
@@ -96,7 +97,7 @@ namespace nkentseu {
 
 			inline void PutF32(NkString &s, float32 v) {
 				char b[32];
-				snprintf(b, sizeof(b), "%.6f", (double)v);
+				nkentseu::NkSnprintf(b, sizeof(b), "%.6f", (double)v);
 				s.Append(b);
 			}
 
